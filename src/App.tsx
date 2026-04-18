@@ -1,5 +1,7 @@
 // @ts-nocheck
 import { useState, useRef, useEffect, useCallback } from "react";
+import ReactCrop from 'react-image-crop';
+import 'react-image-crop/dist/ReactCrop.css';
 
 // ── Paleta e estilos globais ──────────────────────────────────────────────────
 const G = {
@@ -148,6 +150,47 @@ const css = `
     font-family: 'DM Mono', monospace;
   }
   .badge.accent { border-color: ${G.accentDim}; color: ${G.accent}; }
+
+  .action-buttons-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .action-card {
+    background: ${G.card};
+    border: 1px solid ${G.border};
+    border-radius: 14px;
+    padding: 24px 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .2s;
+    color: ${G.text};
+    font-family: 'DM Sans', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .action-card:hover {
+    border-color: ${G.accent};
+    background: #1f2333;
+  }
+  .action-card-full {
+    grid-column: span 2;
+  }
+  .action-icon {
+    font-size: 32px;
+    margin-bottom: 10px;
+  }
+  .action-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: ${G.text};
+  }
+  .action-desc {
+    font-size: 11px;
+    color: ${G.muted};
+    margin-top: 4px;
+  }
 
   /* Camera button */
   .cam-btn {
@@ -670,9 +713,15 @@ export default function ScannerJuridico() {
   const [camera, setCamera] = useState(false);
   const [stream, setStream] = useState(null);
 
-  const fileRef = useRef();
+  const [isCropping, setIsCropping] = useState(false);
+  const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+  const [completedCrop, setCompletedCrop] = useState(null);
+
+  const fileRefImg = useRef();
+  const fileRefPdf = useRef();
   const videoRef = useRef();
   const canvasRef = useRef();
+  const croppedImgRef = useRef();
 
   useEffect(() => { setHistory(getHistory()); }, []);
 
@@ -743,6 +792,52 @@ export default function ScannerJuridico() {
     }
   };
 
+  const applyCrop = async () => {
+    if (!completedCrop || !croppedImgRef.current || !completedCrop.width || !completedCrop.height) {
+      setIsCropping(false);
+      return;
+    }
+    const image = croppedImgRef.current;
+    const canvas = document.createElement('canvas');
+    const scaleX = image.naturalWidth / image.width;
+    const scaleY = image.naturalHeight / image.height;
+
+    const pixelRatio = window.devicePixelRatio;
+    canvas.width = Math.floor(completedCrop.width * scaleX * pixelRatio);
+    canvas.height = Math.floor(completedCrop.height * scaleY * pixelRatio);
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.scale(pixelRatio, pixelRatio);
+      ctx.imageSmoothingQuality = 'high';
+
+      const cropX = completedCrop.x * scaleX;
+      const cropY = completedCrop.y * scaleY;
+      const cropWidth = completedCrop.width * scaleX;
+      const cropHeight = completedCrop.height * scaleY;
+
+      ctx.drawImage(
+        image,
+        cropX,
+        cropY,
+        cropWidth,
+        cropHeight,
+        0,
+        0,
+        cropWidth,
+        cropHeight
+      );
+
+      canvas.toBlob(blob => {
+        if (!blob) return;
+        const newFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_corte.jpg", { type: "image/jpeg" });
+        setFile(newFile);
+        setPreview(URL.createObjectURL(blob));
+        setIsCropping(false);
+      }, "image/jpeg", 0.95);
+    }
+  };
+
   // Camera
   const openCamera = async () => {
     try {
@@ -762,9 +857,11 @@ export default function ScannerJuridico() {
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0);
     canvas.toBlob(blob => {
+      if(!blob) return;
       const f = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
       handleFile(f);
       closeCamera();
+      setTimeout(() => setIsCropping(true), 150);
     }, "image/jpeg", 0.95);
   };
 
@@ -794,11 +891,31 @@ export default function ScannerJuridico() {
 
       {/* Camera modal */}
       {camera && (
-        <div className="modal-overlay">
+        <div className="modal-overlay" style={{zIndex: 100}}>
           <video ref={videoRef} autoPlay playsInline className="modal-video" />
           <div className="modal-actions">
             <button className="modal-btn cancel" onClick={closeCamera}>✕ Cancelar</button>
             <button className="modal-btn capture" onClick={capture}>📸 Capturar</button>
+          </div>
+        </div>
+      )}
+
+      {/* Crop Modal */}
+      {isCropping && preview && file && file.type.startsWith("image/") && (
+        <div className="modal-overlay" style={{zIndex: 110}}>
+          <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '100%', maxWidth: '440px'}}>
+            <h3 style={{marginBottom: 16, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center'}}>
+               ✂️ Cortar Documento
+            </h3>
+            <div style={{maxHeight: '55vh', overflow: 'auto', textAlign: 'center', background: '#000', borderRadius: '8px'}}>
+              <ReactCrop crop={crop} onChange={c => setCrop(c)} onComplete={c => setCompletedCrop(c)}>
+                <img ref={croppedImgRef} src={preview} alt="Crop" style={{maxHeight: '55vh', width: 'auto'}} />
+              </ReactCrop>
+            </div>
+            <div className="modal-actions" style={{marginTop: 20}}>
+              <button className="modal-btn cancel" style={{flex: 1}} onClick={() => setIsCropping(false)}>Pular</button>
+              <button className="modal-btn capture" style={{flex: 1}} onClick={applyCrop}>Salvar</button>
+            </div>
           </div>
         </div>
       )}
@@ -843,29 +960,39 @@ export default function ScannerJuridico() {
 
               {/* Upload zone */}
               {!file && (
-                <>
-                  <div
-                    className={`upload-zone ${drag ? "drag-over" : ""}`}
-                    onClick={() => fileRef.current.click()}
-                    onDragOver={e => { e.preventDefault(); setDrag(true); }}
-                    onDragLeave={() => setDrag(false)}
-                    onDrop={handleDrop}
-                  >
-                    <div className="upload-icon">⚖️</div>
-                    <div className="upload-title">Solte o documento aqui</div>
-                    <div className="upload-sub">ou toque para selecionar arquivo</div>
-                    <div className="upload-formats">
-                      <span className="badge">JPG</span>
-                      <span className="badge">PNG</span>
-                      <span className="badge">WEBP</span>
-                      <span className="badge accent">PDF</span>
-                    </div>
+                <div
+                  onDragOver={e => { e.preventDefault(); setDrag(true); }}
+                  onDragLeave={() => setDrag(false)}
+                  onDrop={handleDrop}
+                  style={{
+                    border: drag ? `2px dashed ${G.accent}` : "2px dashed transparent",
+                    padding: drag ? '10px' : '0',
+                    borderRadius: '16px',
+                    transition: 'all 0.2s',
+                    position: 'relative',
+                    zIndex: 10
+                  }}
+                >
+                  <div className="action-buttons-grid">
+                    <button className="action-card" onClick={() => fileRefPdf.current.click()}>
+                      <div className="action-icon">📄</div>
+                      <div className="action-title">Upload de PDF</div>
+                      <div className="action-desc">Extração rápida</div>
+                    </button>
+
+                    <button className="action-card" onClick={() => fileRefImg.current.click()}>
+                      <div className="action-icon">🖼️</div>
+                      <div className="action-title">Upload de Imagem</div>
+                      <div className="action-desc">OCR inteligente</div>
+                    </button>
+
+                    <button className="action-card action-card-full" onClick={openCamera}>
+                      <div className="action-icon">📷</div>
+                      <div className="action-title">Escanear com Câmera</div>
+                      <div className="action-desc">Tire foto do documento</div>
+                    </button>
                   </div>
-                  <div className="divider">ou</div>
-                  <button className="cam-btn" onClick={openCamera}>
-                    📷 Escanear com câmera
-                  </button>
-                </>
+                </div>
               )}
 
               {/* Preview */}
@@ -880,6 +1007,17 @@ export default function ScannerJuridico() {
                     <span className="preview-name">{file.name.length > 28 ? file.name.slice(0, 25) + "..." : file.name}</span>
                     <button className="remove-btn" onClick={() => { setFile(null); setPreview(null); setResult(null); }}>✕</button>
                   </div>
+                  {file.type.startsWith("image/") && (
+                    <div style={{padding: '0 14px 10px'}}>
+                      <button onClick={() => setIsCropping(true)} style={{
+                         width: '100%', padding: '8px', borderRadius: '8px', border: `1px solid ${G.border}`,
+                         background: G.bg, color: G.text, cursor: 'pointer', fontFamily: 'DM Sans',
+                         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+                      }}>
+                        <span>✂️</span> Ajustar Recorte
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -935,7 +1073,9 @@ export default function ScannerJuridico() {
                 </>
               )}
 
-              <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
+              <input ref={fileRefImg} type="file" accept="image/*" style={{ display: "none" }}
+                onChange={e => handleFile(e.target.files[0])} />
+              <input ref={fileRefPdf} type="file" accept="application/pdf" style={{ display: "none" }}
                 onChange={e => handleFile(e.target.files[0])} />
             </div>
           )}
