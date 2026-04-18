@@ -1093,6 +1093,30 @@ export default function ScannerJuridico() {
     }
   };
 
+  const compileFolderTXT = () => {
+    const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
+    // Clona e ordena do mais antigo pro mais novo para uma leitura cronológica natural
+    const sortedDocs = [...docs].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+    
+    const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
+    
+    let compiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
+    compiledText += `Pasta: ${folderName}\n`;
+    compiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
+    compiledText += `Quantidade de Documentos: ${sortedDocs.length}\n`;
+    compiledText += `======================================================\n\n`;
+
+    sortedDocs.forEach((doc, i) => {
+      compiledText += `------------------------------------------------------\n`;
+      compiledText += `DOCUMENTO ${i + 1}: ${doc.name}\n`;
+      compiledText += `Originalmente Escaneado em: ${formatDate(doc.ts)}\n`;
+      compiledText += `------------------------------------------------------\n\n`;
+      compiledText += `${doc.text}\n\n\n\n`;
+    });
+
+    downloadTXT(compiledText, `COMPILADO_${folderName.replace(/\s+/g, '_')}`);
+  };
+
   return (
     <>
       <style>{css}</style>
@@ -1397,16 +1421,24 @@ export default function ScannerJuridico() {
               ) : (
                 // View: Arquivos dentro da Pasta
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
                     <button 
                       onClick={() => setViewingClient(null)}
                       style={{ background: 'none', border: 'none', color: G.muted, cursor: 'pointer', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}
                     >
                       <span>←</span> Voltar
                     </button>
-                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent, flex: 1 }}>
                       {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
                     </h3>
+                    {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
+                      <button 
+                        onClick={compileFolderTXT}
+                        style={{ background: G.accent, color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <span>📑</span> Compilar em TXT Único
+                      </button>
+                    )}
                   </div>
 
                   {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length === 0 ? (
