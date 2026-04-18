@@ -844,6 +844,12 @@ export default function ScannerJuridico() {
     loadData();
   }, []);
 
+  const confColor = (c) => {
+    if (c >= 90) return G.success;
+    if (c >= 70) return G.warning;
+    return G.error;
+  };
+
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2800);
