@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import ReactCrop from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
+import { createClient } from '@supabase/supabase-js';
 
 // ── Paleta e estilos globais ──────────────────────────────────────────────────
 const G = {
@@ -731,7 +732,12 @@ async function runOCR(imageBlob, onProgress) {
   };
 }
 
-// ── LocalStorage (simula Supabase para demo) ──────────────────────────────────
+// ── Integração Bancos de Dados ────────────────────────────────────────────────
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+
+// ── LocalStorage (Fallback para quando o Supabase não estiver disponível) ─────
 const DB_KEY = "juridico_scanner_history";
 const CLIENTS_KEY = "juridico_scanner_clients";
 
@@ -807,8 +813,35 @@ export default function ScannerJuridico() {
   const croppedImgRef = useRef();
 
   useEffect(() => { 
-    setHistory(getHistory()); 
-    setClients(getClients());
+    async function loadData() {
+      if (supabase) {
+        try {
+          const { data: cData } = await supabase.from('clients').select('*').order('created_at', { ascending: false });
+          if (cData) setClients(cData.map(c => ({ id: c.id, name: c.name, ts: c.created_at })));
+          
+          const { data: dData } = await supabase.from('documents').select('*').order('created_at', { ascending: false });
+          if (dData) {
+            setHistory(dData.map(d => ({
+              id: d.id,
+              clientId: d.client_id || 'unassigned',
+              name: d.name,
+              type: d.file_type || '',
+              preview: d.file_url || null,
+              fileUrl: d.file_url || null,
+              text: d.extracted_text,
+              confidence: d.confidence,
+              chars: d.chars_count,
+              words: d.words_count,
+              ts: d.created_at
+            })));
+          }
+        } catch(e) { console.error('Erro Supabase:', e); }
+      } else {
+        setHistory(getHistory()); 
+        setClients(getClients());
+      }
+    }
+    loadData();
   }, []);
 
   const showToast = (msg, type = "success") => {
@@ -857,13 +890,52 @@ export default function ScannerJuridico() {
         }
       }
 
+      onProgress(80, "Verificando nuvem...");
+
+      let fileUrl = null;
+      let finalId = Date.now().toString();
+
+      if (supabase) {
+        onProgress(85, "Armazenando PDF/Imagem na Nuvem...");
+        const ext = file.name.split('.').pop() || 'jpg';
+        const rawName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const fileName = `${Date.now()}_${rawName}.${ext}`;
+        
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file);
+        if (!uploadError) {
+           fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
+        } else {
+           console.error("Storage Error:", uploadError);
+        }
+
+        onProgress(95, "Sincronizando com o banco GED...");
+        const docRecord = {
+           client_id: selectedClient || null,
+           name: file.name,
+           file_type: file.type,
+           file_url: fileUrl,
+           extracted_text: extracted.text,
+           confidence: extracted.confidence,
+           chars_count: extracted.text.length,
+           words_count: extracted.text.split(/\s+/).filter(Boolean).length
+        };
+
+        const { data: dbData, error: dbError } = await supabase.from('documents').insert([docRecord]).select();
+        if (dbData && dbData[0]) {
+           finalId = dbData[0].id;
+        } else {
+           console.error("DB Error:", dbError);
+        }
+      }
+
       onProgress(100, "Concluído!");
 
       const item = {
-        id: Date.now().toString(),
+        id: finalId,
         name: file.name,
         type: file.type,
-        preview: file.type.startsWith("image/") ? preview : null,
+        preview: fileUrl || (file.type.startsWith("image/") ? preview : null),
+        fileUrl: fileUrl,
         text: extracted.text,
         confidence: extracted.confidence,
         chars: extracted.text.length,
@@ -872,8 +944,9 @@ export default function ScannerJuridico() {
         clientId: selectedClient || "unassigned"
       };
 
-      addToHistory(item);
-      setHistory(getHistory());
+      if (!supabase) addToHistory(item);
+      setHistory(prev => [item, ...prev]);
+
       setResult(item);
       showToast("✓ Texto extraído com sucesso!");
     } catch (err) {
@@ -968,29 +1041,56 @@ export default function ScannerJuridico() {
     showToast("Documento carregado do histórico");
   };
 
-  const deleteFromHistory = (id) => {
-    removeFromHistory(id);
-    setHistory(getHistory());
-    showToast("Removido do histórico");
-  };
-
-  const deleteClientHandler = (id, name) => {
-    if(confirm(`Excluir a pasta do cliente "${name}" e todos os seus arquivos?`)) {
-      removeClient(id);
-      setClients(getClients());
+  const deleteFromHistory = async (id) => {
+    if (supabase) {
+      await supabase.from('documents').delete().eq('id', id);
+      setHistory(history.filter(h => h.id !== id));
+      showToast("Removido do Supabase");
+    } else {
+      removeFromHistory(id);
       setHistory(getHistory());
-      showToast("Pasta do cliente excluída");
+      showToast("Removido do histórico");
     }
   };
 
-  const handleCreateClient = () => {
+  const deleteClientHandler = async (id, name) => {
+    if(confirm(`Excluir a pasta do cliente "${name}" e todos os seus arquivos?`)) {
+      if (supabase) {
+        showToast("Excluindo...");
+        await supabase.from('clients').delete().eq('id', id);
+        setClients(clients.filter(c => c.id !== id));
+        setHistory(history.filter(h => h.clientId !== id));
+        showToast("Pasta do cliente excluída do Supabase");
+      } else {
+        removeClient(id);
+        setClients(getClients());
+        setHistory(getHistory());
+        showToast("Pasta do cliente excluída");
+      }
+    }
+  };
+
+  const handleCreateClient = async () => {
     if(!newClientName.trim()) return;
-    const nc = addClient(newClientName.trim());
-    setClients(getClients());
-    setSelectedClient(nc.id);
-    setIsCreatingClient(false);
+    const name = newClientName.trim();
+     setIsCreatingClient(false);
     setNewClientName("");
-    showToast("Pasta de cliente criada!");
+    
+    if (supabase) {
+      showToast("Criando pasta...");
+      const { data, error } = await supabase.from('clients').insert([{ name }]).select();
+      if (!error && data) {
+        const nc = { id: data[0].id, name: data[0].name, ts: data[0].created_at };
+        setClients(prev => [nc, ...prev]);
+        setSelectedClient(nc.id);
+        showToast("Pasta criada no Supabase!");
+      }
+    } else {
+      const nc = addClient(name);
+      setClients(getClients());
+      setSelectedClient(nc.id);
+      showToast("Pasta criada (Local)!");
+    }
   };
 
   return (
@@ -1328,7 +1428,10 @@ export default function ScannerJuridico() {
                             <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
                           </div>
                           <div className="hist-actions">
-                            <button className="icon-btn" title="Abrir" onClick={() => loadFromHistory(item)}>↗</button>
+                            {item.fileUrl && (
+                               <a href={item.fileUrl} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>🌐</a>
+                            )}
+                            <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
                             <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
                             <button className="icon-btn danger" title="Remover" onClick={() => deleteFromHistory(item.id)}>🗑</button>
                           </div>
