@@ -1,0 +1,6 @@
+{
+  "name": "LexScan",
+  "description": "Scanner Jurídico: extração de texto OCR e PDF nativo para advogados.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
