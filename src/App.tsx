@@ -1079,7 +1079,10 @@ export default function ScannerJuridico() {
     if (supabase) {
       showToast("Criando pasta...");
       const { data, error } = await supabase.from('lexscan_clients').insert([{ name }]).select();
-      if (!error && data) {
+      if (error) {
+        console.error("Supabase Error:", error);
+        showToast("Erro DB: " + error.message, "error");
+      } else if (data && data.length > 0) {
         const nc = { id: data[0].id, name: data[0].name, ts: data[0].created_at };
         setClients(prev => [nc, ...prev]);
         setSelectedClient(nc.id);
