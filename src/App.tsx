@@ -701,7 +701,7 @@ Regras INEGOCIÁVEIS:
     onProgress(60, "Interpretando caligrafia e metadados...");
     
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: { 
         parts: [
           { text: prompt },
