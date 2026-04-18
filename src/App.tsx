@@ -648,15 +648,26 @@ async function extractFromPDF(file, onProgress) {
       fullText += pageText + "\n\n";
       confidence += 98;
     } else {
-      // Fallback OCR
-      const viewport = page.getViewport({ scale: 2.5 });
+      // Fallback OCR de alta fidelidade
+      const viewport = page.getViewport({ scale: 3.5 }); // Aumentado para 3.5 para capturar detalhes finos
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width; canvas.height = viewport.height;
       const ctx = canvas.getContext("2d");
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      const blob = await new Promise(r => canvas.toBlob(r, "image/png"));
+      
+      // Renderização intermediária para aplicar filtros de realce
+      const tempCanvas = document.createElement("canvas");
+      tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+      const tempCtx = tempCanvas.getContext("2d");
+      await page.render({ canvasContext: tempCtx, viewport }).promise;
+
+      // Pré-processamento: Escala de cinza + Aumento de Contraste + Ajuste de Brilho
+      // Isso ajuda o Tesseract a separar o texto do fundo em scans "sujos" ou lavados
+      ctx.filter = 'grayscale(100%) contrast(160%) brightness(110%)';
+      ctx.drawImage(tempCanvas, 0, 0);
+      
+      const blob = await new Promise(r => canvas.toBlob(r, "image/png", 1.0));
       const result = await runOCR(blob, (p) =>
-        onProgress(60 + Math.round(p * 0.35), `OCR página ${i}...`)
+        onProgress(60 + Math.round(p * 0.35), `Fine-OCR página ${i}...`)
       );
       fullText += result.text + "\n\n";
       confidence += result.confidence;
@@ -721,8 +732,29 @@ Regras INEGOCIÁVEIS:
 
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
 async function runOCR(imageBlob, onProgress) {
+  // Pré-processamento para imagens enviadas diretamente
+  const enhancedBlob = await (async () => {
+    try {
+      const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = URL.createObjectURL(imageBlob);
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.filter = 'grayscale(100%) contrast(150%) brightness(110%)';
+      ctx.drawImage(img, 0, 0);
+      return new Promise(r => canvas.toBlob(r, "image/png", 1.0));
+    } catch (e) {
+      console.warn("Falha no pré-processamento, usando original", e);
+      return imageBlob;
+    }
+  })();
+
   const Tesseract = await loadTesseract();
-  const result = await Tesseract.recognize(imageBlob, "por+eng", {
+  const result = await Tesseract.recognize(enhancedBlob, "por+eng", {
     logger: ({ status, progress }) => {
       if (status === "recognizing text") onProgress(progress);
     }
