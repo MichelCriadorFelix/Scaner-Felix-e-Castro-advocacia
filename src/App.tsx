@@ -684,25 +684,23 @@ async function extractWithGemini(file, onProgress) {
 Sua tarefa é analisar a imagem/PDF deste documento e extrair as informações de forma limpa, estruturada e absurdamente precisa.
 
 Regras INEGOCIÁVEIS:
-1. Identifique o tipo de documento logo no início em caixa alta (ex: "DOCUMENTO: CARTEIRA NACIONAL DE HABILITAÇÃO (CNH)").
+1. Identifique o tipo de documento logo no início em caixa alta (ex: "DOCUMENTO: CARTEIRA NACIONAL DE HABILITAÇÃO (CNH)", "DOCUMENTO: RECEITUÁRIO MÉDICO", "DOCUMENTO: ATESTADO/LAUDO").
 2. Estruture as informações extraídas no formato de Chave/Valor.
      Exemplo para CNH:
      Nome: [NOME DO TITULAR]
      Identidade / Órgão Emissor: [RG] / [ORGÃO]
      CPF: [CPF]
-     Data de Nascimento: [DATA]
-     Nome dos Pais: [PAI/MÃE]
      Data de Emissão: [DATA]
-     Categoria: [CATEGORIA]
-3. IGNORE completamente ruídos visuais, carimbos pela metade e símbolos soltos gerados por falhas de scan ou marcas d'água da república.
-4. Corrija o texto com inteligência contextual (se estiver escrito algo com erro de OCR mas o contexto for claro, corrija pra ficar perfeito).
-5. Se for uma petição genérica, documento sem formato de tabela ou RG/CNH/Passaporte, etc... transcreva o texto e resuma o tipo de petição.
-6. Apenas devolva o texto final, NENHUMA saudação ou conversinha como "Aqui está o texto" ou "Entendido".`;
+3. IGNORE completamente ruídos visuais, carimbos pela metade e símbolos soltos gerados por falhas de scan ou marcas d'água.
+4. TEXTO MANUSCRITO OU LETRA DE MÉDICO: Quando identificar atestados, receituários ou laudos escritos à mão, use seu raciocínio lógico avançado para deduzir palavras ilegíveis a partir do contexto clínico/jurídico. Descreva com extrema precisão sintomas, CIDs, datas de afastamento e medicações.
+5. Corrija o texto com inteligência contextual (se estiver escrito algo com erro de OCR mas o contexto for claro, corrija pra ficar literariamente e tecnicamente perfeito).
+6. Se for uma petição genérica ou texto fluido, transcreva o texto preservando parágrafos e resuma o tipo de petição no topo.
+7. Apenas devolva o texto final extraído, NENHUMA saudação como "Aqui está".`;
 
-    onProgress(60, "Estruturando Metadados e Limpando OCR...");
+    onProgress(60, "Interpretando caligrafia e metadados...");
     
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: { 
         parts: [
           { text: prompt },
