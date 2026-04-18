@@ -667,49 +667,56 @@ async function extractFromPDF(file, onProgress) {
 
 // ── Extração Inteligente via Gemini AI ───────────────────────────────────────
 async function extractWithGemini(file, onProgress) {
-  const { GoogleGenAI } = await import("@google/genai");
-  // O AI Studio injeta a chave na compilação do Vite
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  
-  const base64 = await new Promise((r) => {
-    const reader = new FileReader();
-    reader.onload = () => r(reader.result.split(',')[1]);
-    reader.readAsDataURL(file);
-  });
+  try {
+    const { GoogleGenAI } = await import("@google/genai");
+    // O AI Studio injeta a chave na compilação do Vite
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    
+    const base64 = await new Promise((r) => {
+      const reader = new FileReader();
+      reader.onload = () => r(reader.result.split(',')[1]);
+      reader.readAsDataURL(file);
+    });
 
-  onProgress(30, "Enviando documento para a Nuvem de IA...");
-  
-  const prompt = `Você é um Auditor Especialista em Extração de Dados Jurídicos para o seu software.
+    onProgress(30, "Enviando documento para a Nuvem de IA...");
+    
+    const prompt = `Você é um Auditor Especialista em Extração de Dados Jurídicos para o seu software.
 Sua tarefa é analisar a imagem/PDF deste documento e extrair as informações de forma limpa, estruturada e absurdamente precisa.
 
 Regras INEGOCIÁVEIS:
 1. Identifique o tipo de documento logo no início em caixa alta (ex: "DOCUMENTO: CARTEIRA NACIONAL DE HABILITAÇÃO (CNH)").
 2. Estruture as informações extraídas no formato de Chave/Valor.
-   Exemplo para CNH:
-   Nome: [NOME DO TITULAR]
-   Identidade / Órgão Emissor: [RG] / [ORGÃO]
-   CPF: [CPF]
-   Data de Nascimento: [DATA]
-   Nome dos Pais: [PAI/MÃE]
-   Data de Emissão: [DATA]
-   Categoria: [CATEGORIA]
+     Exemplo para CNH:
+     Nome: [NOME DO TITULAR]
+     Identidade / Órgão Emissor: [RG] / [ORGÃO]
+     CPF: [CPF]
+     Data de Nascimento: [DATA]
+     Nome dos Pais: [PAI/MÃE]
+     Data de Emissão: [DATA]
+     Categoria: [CATEGORIA]
 3. IGNORE completamente ruídos visuais, carimbos pela metade e símbolos soltos gerados por falhas de scan ou marcas d'água da república.
 4. Corrija o texto com inteligência contextual (se estiver escrito algo com erro de OCR mas o contexto for claro, corrija pra ficar perfeito).
 5. Se for uma petição genérica, documento sem formato de tabela ou RG/CNH/Passaporte, etc... transcreva o texto e resuma o tipo de petição.
 6. Apenas devolva o texto final, NENHUMA saudação ou conversinha como "Aqui está o texto" ou "Entendido".`;
 
-  onProgress(60, "Estruturando Metadados e Limpando OCR...");
-  
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [
-      prompt,
-      { inlineData: { data: base64, mimeType: file.type } }
-    ]
-  });
-  
-  onProgress(90, "Formatando apresentação final...");
-  return { text: response.text.trim(), confidence: 99 };
+    onProgress(60, "Estruturando Metadados e Limpando OCR...");
+    
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: { 
+        parts: [
+          { text: prompt },
+          { inlineData: { data: base64, mimeType: file.type } }
+        ] 
+      }
+    });
+    
+    onProgress(90, "Formatando apresentação final...");
+    return { text: response.text.trim(), confidence: 99 };
+  } catch (err) {
+    console.error("Erro na IA:", err);
+    throw new Error("Erro ao acessar a API do Gemini. Tente enviar como texto bruto.");
+  }
 }
 
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
@@ -840,7 +847,7 @@ export default function ScannerJuridico() {
       showToast("✓ Texto extraído com sucesso!");
     } catch (err) {
       console.error(err);
-      showToast("Erro ao processar arquivo", "error");
+      showToast(err.message || "Erro ao processar arquivo", "error");
     } finally {
       setProcessing(false);
     }
