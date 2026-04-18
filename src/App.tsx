@@ -816,10 +816,10 @@ export default function ScannerJuridico() {
     async function loadData() {
       if (supabase) {
         try {
-          const { data: cData } = await supabase.from('clients').select('*').order('created_at', { ascending: false });
+          const { data: cData } = await supabase.from('lexscan_clients').select('*').order('created_at', { ascending: false });
           if (cData) setClients(cData.map(c => ({ id: c.id, name: c.name, ts: c.created_at })));
           
-          const { data: dData } = await supabase.from('documents').select('*').order('created_at', { ascending: false });
+          const { data: dData } = await supabase.from('lexscan_documents').select('*').order('created_at', { ascending: false });
           if (dData) {
             setHistory(dData.map(d => ({
               id: d.id,
@@ -901,9 +901,9 @@ export default function ScannerJuridico() {
         const rawName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const fileName = `${Date.now()}_${rawName}.${ext}`;
         
-        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file);
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('lexscan-files').upload(fileName, file);
         if (!uploadError) {
-           fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
+           fileUrl = supabase.storage.from('lexscan-files').getPublicUrl(fileName).data.publicUrl;
         } else {
            console.error("Storage Error:", uploadError);
         }
@@ -920,7 +920,7 @@ export default function ScannerJuridico() {
            words_count: extracted.text.split(/\s+/).filter(Boolean).length
         };
 
-        const { data: dbData, error: dbError } = await supabase.from('documents').insert([docRecord]).select();
+        const { data: dbData, error: dbError } = await supabase.from('lexscan_documents').insert([docRecord]).select();
         if (dbData && dbData[0]) {
            finalId = dbData[0].id;
         } else {
@@ -1043,7 +1043,7 @@ export default function ScannerJuridico() {
 
   const deleteFromHistory = async (id) => {
     if (supabase) {
-      await supabase.from('documents').delete().eq('id', id);
+      await supabase.from('lexscan_documents').delete().eq('id', id);
       setHistory(history.filter(h => h.id !== id));
       showToast("Removido do Supabase");
     } else {
@@ -1057,7 +1057,7 @@ export default function ScannerJuridico() {
     if(confirm(`Excluir a pasta do cliente "${name}" e todos os seus arquivos?`)) {
       if (supabase) {
         showToast("Excluindo...");
-        await supabase.from('clients').delete().eq('id', id);
+        await supabase.from('lexscan_clients').delete().eq('id', id);
         setClients(clients.filter(c => c.id !== id));
         setHistory(history.filter(h => h.clientId !== id));
         showToast("Pasta do cliente excluída do Supabase");
@@ -1078,7 +1078,7 @@ export default function ScannerJuridico() {
     
     if (supabase) {
       showToast("Criando pasta...");
-      const { data, error } = await supabase.from('clients').insert([{ name }]).select();
+      const { data, error } = await supabase.from('lexscan_clients').insert([{ name }]).select();
       if (!error && data) {
         const nc = { id: data[0].id, name: data[0].name, ts: data[0].created_at };
         setClients(prev => [nc, ...prev]);
