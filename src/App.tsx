@@ -569,7 +569,8 @@ function formatDate(ts) {
 }
 
 function downloadTXT(text, name) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  // Adicionando BOM (\uFEFF) para forçar o reconhecimento do UTF-8 no Bloco de Notas do Windows
+  const blob = new Blob(["\uFEFF" + text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = name + ".txt"; a.click();
