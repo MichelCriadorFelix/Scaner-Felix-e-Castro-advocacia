@@ -665,6 +665,53 @@ async function extractFromPDF(file, onProgress) {
   return { text: fullText.trim(), confidence: Math.round(confidence / confidenceCount) };
 }
 
+// ── Extração Inteligente via Gemini AI ───────────────────────────────────────
+async function extractWithGemini(file, onProgress) {
+  const { GoogleGenAI } = await import("@google/genai");
+  // O AI Studio injeta a chave na compilação do Vite
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  
+  const base64 = await new Promise((r) => {
+    const reader = new FileReader();
+    reader.onload = () => r(reader.result.split(',')[1]);
+    reader.readAsDataURL(file);
+  });
+
+  onProgress(30, "Enviando documento para a Nuvem de IA...");
+  
+  const prompt = `Você é um Auditor Especialista em Extração de Dados Jurídicos para o seu software.
+Sua tarefa é analisar a imagem/PDF deste documento e extrair as informações de forma limpa, estruturada e absurdamente precisa.
+
+Regras INEGOCIÁVEIS:
+1. Identifique o tipo de documento logo no início em caixa alta (ex: "DOCUMENTO: CARTEIRA NACIONAL DE HABILITAÇÃO (CNH)").
+2. Estruture as informações extraídas no formato de Chave/Valor.
+   Exemplo para CNH:
+   Nome: [NOME DO TITULAR]
+   Identidade / Órgão Emissor: [RG] / [ORGÃO]
+   CPF: [CPF]
+   Data de Nascimento: [DATA]
+   Nome dos Pais: [PAI/MÃE]
+   Data de Emissão: [DATA]
+   Categoria: [CATEGORIA]
+3. IGNORE completamente ruídos visuais, carimbos pela metade e símbolos soltos gerados por falhas de scan ou marcas d'água da república.
+4. Corrija o texto com inteligência contextual (se estiver escrito algo com erro de OCR mas o contexto for claro, corrija pra ficar perfeito).
+5. Se for uma petição genérica, documento sem formato de tabela ou RG/CNH/Passaporte, etc... transcreva o texto e resuma o tipo de petição.
+6. Apenas devolva o texto final, NENHUMA saudação ou conversinha como "Aqui está o texto" ou "Entendido".`;
+
+  onProgress(60, "Estruturando Metadados e Limpando OCR...");
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      prompt,
+      { inlineData: { data: base64, mimeType: file.type } }
+    ]
+  });
+  
+  onProgress(90, "Formatando apresentação final...");
+  return { text: response.text.trim(), confidence: 99 };
+}
+
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
 async function runOCR(imageBlob, onProgress) {
   const Tesseract = await loadTesseract();
@@ -713,6 +760,8 @@ export default function ScannerJuridico() {
   const [camera, setCamera] = useState(false);
   const [stream, setStream] = useState(null);
 
+  const [aiMode, setAiMode] = useState(true);
+
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
   const [completedCrop, setCompletedCrop] = useState(null);
@@ -756,14 +805,19 @@ export default function ScannerJuridico() {
       let extracted;
       const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
 
-      if (file.type === "application/pdf") {
-        onProgress(5, "Carregando PDF...");
-        extracted = await extractFromPDF(file, onProgress);
+      if (aiMode) {
+        onProgress(10, "Iniciando IA Jurídica...");
+        extracted = await extractWithGemini(file, onProgress);
       } else {
-        onProgress(10, "Carregando OCR...");
-        extracted = await runOCR(file, (p) =>
-          onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
-        );
+        if (file.type === "application/pdf") {
+          onProgress(5, "Carregando PDF...");
+          extracted = await extractFromPDF(file, onProgress);
+        } else {
+          onProgress(10, "Carregando OCR...");
+          extracted = await runOCR(file, (p) =>
+            onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
+          );
+        }
       }
 
       onProgress(100, "Concluído!");
@@ -1037,9 +1091,22 @@ export default function ScannerJuridico() {
 
               {/* Process button */}
               {file && !result && !processing && (
-                <button className="process-btn" onClick={process}>
-                  🔍 Extrair Texto
-                </button>
+                <>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px',
+                    background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}`
+                  }}>
+                    <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
+                      style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
+                    <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
+                      <span style={{ fontWeight: 600, color: G.accent }}>Tratamento com IA e Estruturação</span>
+                      <span style={{ fontSize: '11px', color: G.muted }}>Organiza Nome, CPF, RG limpos. Remove ruídos e corrige o OCR.</span>
+                    </label>
+                  </div>
+                  <button className="process-btn" onClick={process}>
+                    {aiMode ? "🧠 Extrair Inteligente" : "🔍 Extrair Texto (Bruto)"}
+                  </button>
+                </>
               )}
 
               {/* Result */}
