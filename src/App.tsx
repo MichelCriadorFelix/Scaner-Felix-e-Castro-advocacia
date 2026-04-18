@@ -735,6 +735,8 @@ async function runOCR(imageBlob, onProgress) {
 
 // ── LocalStorage (simula Supabase para demo) ──────────────────────────────────
 const DB_KEY = "juridico_scanner_history";
+const CLIENTS_KEY = "juridico_scanner_clients";
+
 function getHistory() {
   try { return JSON.parse(localStorage.getItem(DB_KEY) || "[]"); }
   catch { return []; }
@@ -752,6 +754,27 @@ function removeFromHistory(id) {
   saveHistory(getHistory().filter(i => i.id !== id));
 }
 
+function getClients() {
+  try { return JSON.parse(localStorage.getItem(CLIENTS_KEY) || "[]"); }
+  catch { return []; }
+}
+function saveClients(items) {
+  localStorage.setItem(CLIENTS_KEY, JSON.stringify(items));
+}
+function addClient(name) {
+  const clients = getClients();
+  const newClient = { id: Date.now().toString(), name, ts: Date.now() };
+  clients.unshift(newClient);
+  saveClients(clients);
+  return newClient;
+}
+function removeClient(id) {
+  saveClients(getClients().filter(c => c.id !== id));
+  // Remover os docs do cliente também
+  const hist = getHistory().filter(h => h.clientId !== id);
+  saveHistory(hist);
+}
+
 // ── Componente principal ──────────────────────────────────────────────────────
 export default function ScannerJuridico() {
   const [tab, setTab] = useState("scanner");
@@ -763,6 +786,12 @@ export default function ScannerJuridico() {
   const [progressMsg, setProgressMsg] = useState("");
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [selectedClient, setSelectedClient] = useState("");
+  const [viewingClient, setViewingClient] = useState(null); // null = tela geral de clientes, "unassigned" = sem pasta, "ID" = pasta esp
+  const [isCreatingClient, setIsCreatingClient] = useState(false);
+  const [newClientName, setNewClientName] = useState("");
+  
   const [toast, setToast] = useState(null);
   const [camera, setCamera] = useState(false);
   const [stream, setStream] = useState(null);
@@ -779,7 +808,10 @@ export default function ScannerJuridico() {
   const canvasRef = useRef();
   const croppedImgRef = useRef();
 
-  useEffect(() => { setHistory(getHistory()); }, []);
+  useEffect(() => { 
+    setHistory(getHistory()); 
+    setClients(getClients());
+  }, []);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
@@ -838,7 +870,8 @@ export default function ScannerJuridico() {
         confidence: extracted.confidence,
         chars: extracted.text.length,
         words: extracted.text.split(/\s+/).filter(Boolean).length,
-        ts: Date.now()
+        ts: Date.now(),
+        clientId: selectedClient || "unassigned"
       };
 
       addToHistory(item);
@@ -943,7 +976,24 @@ export default function ScannerJuridico() {
     showToast("Removido do histórico");
   };
 
-  const confColor = (c) => c >= 80 ? G.success : c >= 60 ? G.accent : G.error;
+  const deleteClientHandler = (id, name) => {
+    if(confirm(`Excluir a pasta do cliente "${name}" e todos os seus arquivos?`)) {
+      removeClient(id);
+      setClients(getClients());
+      setHistory(getHistory());
+      showToast("Pasta do cliente excluída");
+    }
+  };
+
+  const handleCreateClient = () => {
+    if(!newClientName.trim()) return;
+    const nc = addClient(newClientName.trim());
+    setClients(getClients());
+    setSelectedClient(nc.id);
+    setIsCreatingClient(false);
+    setNewClientName("");
+    showToast("Pasta de cliente criada!");
+  };
 
   return (
     <>
@@ -1096,6 +1146,26 @@ export default function ScannerJuridico() {
                 </div>
               )}
 
+              {/* Select Folder area if not processing and not result */}
+              {file && !result && !processing && (
+                <div style={{ marginBottom: '14px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Salvar na Pasta:</label>
+                  <select 
+                    value={selectedClient} 
+                    onChange={e => setSelectedClient(e.target.value)}
+                    style={{
+                      width: '100%', padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`,
+                      background: G.surface, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '14px'
+                    }}
+                  >
+                    <option value="">Geral (Sem Pasta Específica)</option>
+                    {clients.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {/* Process button */}
               {file && !result && !processing && (
                 <>
@@ -1157,33 +1227,119 @@ export default function ScannerJuridico() {
           {/* ── HISTORY TAB ── */}
           {tab === "history" && (
             <div className="history-panel">
-              {history.length === 0 ? (
-                <div className="history-empty">
-                  <div className="history-empty-icon">🗂️</div>
-                  <p>Nenhum documento escaneado ainda.<br />Vá até a aba Scanner para começar.</p>
-                </div>
-              ) : (
-                history.map(item => (
-                  <div key={item.id} className="hist-card">
-                    <div className="hist-header">
-                      {item.preview
-                        ? <img src={item.preview} alt="" className="hist-thumb" />
-                        : <div className="hist-thumb-placeholder">📄</div>
-                      }
-                      <div className="hist-info">
-                        <div className="hist-name">{item.name}</div>
-                        <div className="hist-date">{formatDate(item.ts)}</div>
-                        <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
-                      </div>
-                      <div className="hist-actions">
-                        <button className="icon-btn" title="Abrir" onClick={() => loadFromHistory(item)}>↗</button>
-                        <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
-                        <button className="icon-btn danger" title="Remover" onClick={() => deleteFromHistory(item.id)}>🗑</button>
+              {viewingClient === null ? (
+                // View: Lista de Pastas
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Pastas de Clientes</h3>
+                    <button 
+                      onClick={() => setIsCreatingClient(true)}
+                      style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
+                    >
+                      + Nova Pasta
+                    </button>
+                  </div>
+
+                  {isCreatingClient && (
+                    <div style={{ background: G.card, padding: '16px', borderRadius: '12px', marginBottom: '16px', border: `1px solid ${G.border}` }}>
+                      <input 
+                        type="text" 
+                        autoFocus
+                        placeholder="Nome do Cliente..."
+                        value={newClientName}
+                        onChange={e => setNewClientName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleCreateClient()}
+                        style={{ width: '100%', padding: '10px', borderRadius: '8px', border: `1px solid ${G.border}`, background: G.bg, color: G.text, outline: 'none', marginBottom: '10px' }}
+                      />
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => setIsCreatingClient(false)} style={{ flex: 1, padding: '8px', borderRadius: '8px', background: 'transparent', color: G.muted, border: 'none', cursor: 'pointer' }}>Cancelar</button>
+                        <button onClick={handleCreateClient} style={{ flex: 1, padding: '8px', borderRadius: '8px', background: G.success, color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Salvar</button>
                       </div>
                     </div>
-                    <div className="hist-preview">{item.text.slice(0, 120)}...</div>
+                  )}
+
+                  <div className="folders-grid" style={{ display: 'grid', gap: '12px' }}>
+                    <div 
+                      className="folder-card"
+                      onClick={() => setViewingClient('unassigned')}
+                      style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
+                    >
+                      <div style={{ fontSize: '24px' }}>📁</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 500, color: G.text }}>Geral (Sem pasta)</div>
+                        <div style={{ fontSize: '12px', color: G.muted }}>{history.filter(h => h.clientId === 'unassigned' || !h.clientId).length} documentos</div>
+                      </div>
+                      <div style={{ color: G.muted }}>→</div>
+                    </div>
+
+                    {clients.map(c => {
+                      const docsCount = history.filter(h => h.clientId === c.id).length;
+                      return (
+                        <div 
+                          key={c.id}
+                          className="folder-card"
+                          onClick={() => setViewingClient(c.id)}
+                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.accentDim}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
+                        >
+                          <div style={{ fontSize: '24px' }}>📂</div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 500, color: G.text }}>{c.name}</div>
+                            <div style={{ fontSize: '12px', color: G.muted }}>{docsCount} documentos</div>
+                          </div>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); deleteClientHandler(c.id, c.name); }}
+                            style={{ background: 'none', border: 'none', color: G.error, cursor: 'pointer', padding: '4px', fontSize: '16px' }}
+                          >🗑</button>
+                          <div style={{ color: G.muted }}>→</div>
+                        </div>
+                      )
+                    })}
                   </div>
-                ))
+                </>
+              ) : (
+                // View: Arquivos dentro da Pasta
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                    <button 
+                      onClick={() => setViewingClient(null)}
+                      style={{ background: 'none', border: 'none', color: G.muted, cursor: 'pointer', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      <span>←</span> Voltar
+                    </button>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent }}>
+                      {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
+                    </h3>
+                  </div>
+
+                  {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length === 0 ? (
+                    <div className="history-empty">
+                      <div className="history-empty-icon">📭</div>
+                      <p>Pasta vazia.</p>
+                    </div>
+                  ) : (
+                    history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).map(item => (
+                      <div key={item.id} className="hist-card">
+                        <div className="hist-header">
+                          {item.preview
+                            ? <img src={item.preview} alt="" className="hist-thumb" />
+                            : <div className="hist-thumb-placeholder">📄</div>
+                          }
+                          <div className="hist-info">
+                            <div className="hist-name">{item.name}</div>
+                            <div className="hist-date">{formatDate(item.ts)}</div>
+                            <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
+                          </div>
+                          <div className="hist-actions">
+                            <button className="icon-btn" title="Abrir" onClick={() => loadFromHistory(item)}>↗</button>
+                            <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
+                            <button className="icon-btn danger" title="Remover" onClick={() => deleteFromHistory(item.id)}>🗑</button>
+                          </div>
+                        </div>
+                        <div className="hist-preview">{item.text.slice(0, 120)}...</div>
+                      </div>
+                    ))
+                  )}
+                </>
               )}
             </div>
           )}
