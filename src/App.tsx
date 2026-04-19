@@ -1636,13 +1636,32 @@ export default function ScannerJuridico() {
                 </div>
               )}
 
+              {/* MODO DE EXTRAÇÃO (Comum para Único ou Lote) */}
+              {(file || queue.length > 0) && !result && !processing && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px',
+                  background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}`
+                }}>
+                  <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
+                    style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
+                  <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
+                    <span style={{ fontWeight: 600, color: G.accent }}>Tratamento com IA e Estruturação</span>
+                    <span style={{ fontSize: '11px', color: G.muted }}>Organiza Nome, CPF, RG limpos. Remove ruídos e corrige o OCR.</span>
+                  </label>
+                </div>
+              )}
+
               {queue.length > 0 && !result && !processing && (
                  <div style={{ textAlign: 'center', background: G.card, padding: '20px', borderRadius: '16px', border: `1px solid ${G.border}`, marginBottom: '14px' }}>
                     <div style={{ fontSize: '32px', marginBottom: '8px' }}>📚</div>
                     <div style={{ fontWeight: 500, marginBottom: '4px' }}>Lote de {queue.length} arquivos</div>
                     <div style={{ fontSize: '12px', color: G.muted, marginBottom: '16px' }}>Os arquivos abaixo serão processados sequencialmente</div>
                     
-                    <div style={{ maxHeight: '100px', overflowY: 'auto', background: G.bg, padding: '10px', borderRadius: '10px', marginBottom: '16px', textAlign: 'left' }}>
+                    <button className="process-btn" onClick={processBatch} style={{ background: G.accent, color: '#000' }}>
+                      {aiMode ? "🧠 Iniciar Lote com IA Jurídica" : "🔍 Iniciar Lote (Texto Bruto)"}
+                    </button>
+
+                    <div style={{ maxHeight: '100px', overflowY: 'auto', background: G.bg, padding: '10px', borderRadius: '10px', marginTop: '16px', textAlign: 'left', border: `1px solid ${G.border}` }}>
                       {queue.map((q, i) => (
                         <div key={i} style={{ fontSize: '11px', color: G.text, padding: '4px 0', borderBottom: i < queue.length - 1 ? `1px solid ${G.border}` : 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {i + 1}. {q.name}
@@ -1650,9 +1669,6 @@ export default function ScannerJuridico() {
                       ))}
                     </div>
 
-                    <button className="process-btn" onClick={processBatch} style={{ background: G.accent, color: '#000' }}>
-                      🚀 Iniciar Processamento em Massa
-                    </button>
                     <button onClick={() => setQueue([])} style={{ marginTop: '12px', background: 'none', border: 'none', color: G.error, fontSize: '12px', cursor: 'pointer' }}>
                       Cancelar Lote
                     </button>
@@ -1662,17 +1678,6 @@ export default function ScannerJuridico() {
               {/* Process button */}
               {file && !result && !processing && (
                 <>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px',
-                    background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}`
-                  }}>
-                    <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
-                      style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
-                    <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
-                      <span style={{ fontWeight: 600, color: G.accent }}>Tratamento com IA e Estruturação</span>
-                      <span style={{ fontSize: '11px', color: G.muted }}>Organiza Nome, CPF, RG limpos. Remove ruídos e corrige o OCR.</span>
-                    </label>
-                  </div>
                   <button className="process-btn" onClick={process}>
                     {aiMode ? "🧠 Extrair Inteligente" : "🔍 Extrair Texto (Bruto)"}
                   </button>
