@@ -1476,8 +1476,11 @@ export default function ScannerJuridico() {
 
   const compileFolderTXT = () => {
     const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
-    // Clona e ordena do mais antigo pro mais novo para uma leitura cronológica natural
-    const sortedDocs = [...docs].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+    
+    // Clona e ordena usando Ordem Alfanumérica Natural (Natural Sort)
+    // Isso garante que "Doc. 1", "Doc. 2", "Doc. 10", "Doc. 13" fiquem na ordem matemática e lógica,
+    // independentemente de que horas foram escaneados ou inseridos.
+    const sortedDocs = [...docs].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     
     const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
     
