@@ -1240,7 +1240,8 @@ export default function ScannerJuridico() {
         confidence: extracted.confidence,
         words: extracted.text.split(/\s+/).length,
         fileUrl,
-        preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null
+        preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
+        localBlobUrl: URL.createObjectURL(f)
       };
 
       setHistory(prev => [item, ...prev]);
@@ -1320,6 +1321,7 @@ export default function ScannerJuridico() {
         name: file.name,
         type: file.type,
         preview: fileUrl || (file.type.startsWith("image/") ? preview : null),
+        localBlobUrl: URL.createObjectURL(file),
         fileUrl: fileUrl,
         text: extracted.text,
         confidence: extracted.confidence,
@@ -2006,8 +2008,19 @@ export default function ScannerJuridico() {
                         📝 .TXT
                       </button>
                       <button className="dl-btn primary" onClick={() => downloadPDF(result.text, result.name.replace(/\.[^.]+$/, ""))}>
-                        📄 PDF
+                        📄 Exportar OCR (PDF)
                       </button>
+                      {(result.fileUrl || result.localBlobUrl) && (
+                         <a 
+                           href={result.fileUrl || result.localBlobUrl} 
+                           download={result.name}
+                           target="_blank" rel="noopener noreferrer"
+                           className="dl-btn" 
+                           style={{ background: G.success, color: '#fff', border: 'none', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                         >
+                           ⬇️ Baixar Original 
+                         </a>
+                      )}
                       <button className="dl-btn" onClick={() => setMovingItem(result)} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
                         📂 Mover Pasta
                       </button>
@@ -2183,8 +2196,8 @@ export default function ScannerJuridico() {
                                <button className="icon-btn" title="Comprimir (Média)" onClick={(e) => { e.stopPropagation(); handleCompressAndDownload(item, 'Média'); }}>📉</button>
                             )}
                             <button className="icon-btn" title="Mover Pasta" onClick={(e) => { e.stopPropagation(); setMovingItem(item); }}>📂</button>
-                            {item.fileUrl && (
-                               <a href={item.fileUrl} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>🌐</a>
+                            {(item.fileUrl || item.localBlobUrl) && (
+                               <a href={item.fileUrl || item.localBlobUrl} download={item.name} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>⬇️</a>
                             )}
                             <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
                             <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
