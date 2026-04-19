@@ -720,6 +720,11 @@ Sua missão:
           model: modelName,
           contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
         });
+
+        // Registrar sucesso no uso da chave para o dashboard
+        const keyHash = apiKey.slice(-6); // Usamos os últimos 6 dígitos como ID para privacidade
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+
         return response.text.trim();
         
       } catch (e) {
@@ -943,6 +948,12 @@ export default function ScannerJuridico() {
   const [stream, setStream] = useState(null);
 
   const [aiMode, setAiMode] = useState(true);
+  const [keyUsage, setKeyUsage] = useState({}); // Tracking: { "KEY_HEX": count }
+
+  // Flow State para Escaneamento em Lote (Multi-Páginas)
+  const [cameraPages, setCameraPages] = useState([]);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+  const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
 
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
@@ -953,6 +964,16 @@ export default function ScannerJuridico() {
   const videoRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
+
+  // Expor função de tracking para o motor externo de IA
+  useEffect(() => {
+    window.updateKeyUsage = (hash) => {
+      setKeyUsage(prev => ({
+        ...prev,
+        [hash]: (prev[hash] || 0) + 1
+      }));
+    };
+  }, []);
 
   useEffect(() => { 
     async function loadData() {
@@ -1360,11 +1381,35 @@ export default function ScannerJuridico() {
       canvas.toBlob(blob => {
         if (!blob) return;
         const newFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_corte.jpg", { type: "image/jpeg" });
-        setFile(newFile);
-        setPreview(URL.createObjectURL(blob));
+        // Instead of setting file directly and pushing to handleFile natively:
         setIsCropping(false);
-      }, "image/jpeg", 0.95);
+        setCameraPages(prev => [...prev, blob]);
+        setIsBatchModalOpen(true);
+      }, "image/jpeg", 0.85);
     }
+  };
+
+  const rotateImage90 = () => {
+    if (!croppedImgRef.current) return;
+    const img = croppedImgRef.current;
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalHeight;
+    canvas.height = img.naturalWidth;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((90 * Math.PI) / 180);
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const newFile = new File([blob], file.name, { type: file.type });
+      setFile(newFile);
+      setPreview(URL.createObjectURL(blob));
+      setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+      setCompletedCrop(null);
+    }, file.type, 1.0);
   };
 
   // Camera
@@ -1382,21 +1427,99 @@ export default function ScannerJuridico() {
   const capture = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    // Resolução Nativa da Câmera
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
+    const ctx = canvas.getContext("2d");
+    
+    // 2. OTIMIZAÇÃO PARA OCR (Filtros Digitais de Escaneamento)
+    ctx.filter = 'grayscale(100%) contrast(1.4) brightness(1.1)';
+    ctx.drawImage(video, 0, 0); // Desenha do video diretamente já com o filtro
+    ctx.filter = 'none';
+
+    // Converte para JPEG com compressão equilibrada (Alta Qualidade de OCR, baixo disco)
     canvas.toBlob(blob => {
       if(!blob) return;
-      const f = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
-      handleFile(f);
+      // Salva arquivo temporário e pula pro corte
+      const tempF = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
+      setFile(tempF);
+      setPreview(URL.createObjectURL(blob));
       closeCamera();
+      // Sugere o corte
       setTimeout(() => setIsCropping(true), 150);
-    }, "image/jpeg", 0.95);
+    }, "image/jpeg", 0.85); // 0.85 é o "ponto doce" entre nitidez e tamanho de arquivo
   };
 
   const closeCamera = () => {
     if (stream) stream.getTracks().forEach(t => t.stop());
     setStream(null); setCamera(false);
+  };
+
+  const skipCropAndAddPage = () => {
+    setIsCropping(false);
+    fetch(preview).then(r => r.blob()).then(blob => {
+      setCameraPages(prev => [...prev, blob]);
+      setIsBatchModalOpen(true);
+    });
+  };
+
+  const compileCameraBatch = async () => {
+    if (cameraPages.length === 0) return;
+    
+    showToast("Gerando PDF com Múltiplas Páginas...");
+    
+    // Injeção Local de Jspdf para alta consistência
+    if (!window.jspdf) {
+      await new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+    
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    
+    for (let i = 0; i < cameraPages.length; i++) {
+      if (i > 0) doc.addPage();
+      const pageBlob = cameraPages[i];
+      const pageUrl = URL.createObjectURL(pageBlob);
+      
+      const img = await new Promise((res) => {
+        const image = new Image();
+        image.onload = () => res(image);
+        image.src = pageUrl;
+      });
+      
+      const pdfW = 210;
+      const pdfH = 297;
+      let imgW = pdfW;
+      let imgH = (img.height * pdfW) / img.width;
+      
+      if (imgH > pdfH) {
+         imgH = pdfH;
+         imgW = (img.width * pdfH) / img.height;
+      }
+      
+      const x = (pdfW - imgW) / 2;
+      const y = (pdfH - imgH) / 2;
+      
+      doc.addImage(img, 'JPEG', x, y, imgW, imgH);
+    }
+    
+    const pdfBlob = doc.output('blob');
+    const finalName = batchDocName.trim() ? batchDocName.trim() : "Documento_Escaneado";
+    const finalFile = new File([pdfBlob], `${finalName}.pdf`, { type: "application/pdf" });
+    
+    setCameraPages([]);
+    setIsBatchModalOpen(false);
+    setBatchDocName("Documento_Escaneado"); // reset config
+    
+    handleFiles([finalFile]);
+    showToast("PDF gerado com sucesso! Pronto para IA e Nuvem.");
   };
 
   const loadFromHistory = (item) => {
@@ -1532,16 +1655,66 @@ export default function ScannerJuridico() {
         <div className="modal-overlay" style={{zIndex: 110}}>
           <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '100%', maxWidth: '440px'}}>
             <h3 style={{marginBottom: 16, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center'}}>
-               ✂️ Cortar Documento
+               ✂️ Cortar e Editar
             </h3>
+            <div style={{display: 'flex', justifyContent: 'center', marginBottom: '12px'}}>
+              <button 
+                onClick={rotateImage90}
+                style={{ background: G.border, color: G.text, border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                🔄 Girar 90°
+              </button>
+            </div>
             <div style={{maxHeight: '55vh', overflow: 'auto', textAlign: 'center', background: '#000', borderRadius: '8px'}}>
               <ReactCrop crop={crop} onChange={c => setCrop(c)} onComplete={c => setCompletedCrop(c)}>
                 <img ref={croppedImgRef} src={preview} alt="Crop" style={{maxHeight: '55vh', width: 'auto'}} />
               </ReactCrop>
             </div>
             <div className="modal-actions" style={{marginTop: 20}}>
-              <button className="modal-btn cancel" style={{flex: 1}} onClick={() => setIsCropping(false)}>Pular</button>
-              <button className="modal-btn capture" style={{flex: 1}} onClick={applyCrop}>Salvar</button>
+              <button className="modal-btn cancel" style={{flex: 1}} onClick={skipCropAndAddPage}>Utilizar Imagem (Pular Corte)</button>
+              <button className="modal-btn capture" style={{flex: 1}} onClick={applyCrop}>Salvar Edição na Página</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Compile Modal */}
+      {isBatchModalOpen && (
+        <div className="modal-overlay" style={{zIndex: 115}}>
+          <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '100%', maxWidth: '440px'}}>
+            <h3 style={{marginBottom: 16, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center'}}>
+               📑 Documento: {cameraPages.length} página(s)
+            </h3>
+            
+            <div style={{display: 'flex', gap: '8px', overflowX: 'auto', marginBottom: '20px', paddingBottom: '8px'}}>
+               {cameraPages.map((p, i) => (
+                  <div key={i} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`}}>
+                    <img src={URL.createObjectURL(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+                    <div style={{position: 'absolute', bottom: 2, right: 4, fontSize: '10px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 4px', borderRadius: '4px'}}>{i+1}</div>
+                  </div>
+               ))}
+            </div>
+
+            <div style={{marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '8px'}}>
+               <label style={{fontSize: '12px', color: G.muted}}>Renomear Arquivo PDF:</label>
+               <input 
+                 type="text" 
+                 value={batchDocName}
+                 onChange={e => setBatchDocName(e.target.value)}
+                 style={{background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '12px', color: G.text, borderRadius: '8px', width: '100%', fontSize: '14px'}}
+               />
+               <small style={{fontSize: '10px', color: G.muted}}>Todas as fotos serão acopladas em um único PDF na nuvem.</small>
+            </div>
+
+            <div className="modal-actions" style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
+              <button 
+                className="modal-btn" 
+                style={{background: G.surface, color: G.text, border: `1px solid ${G.border}`}} 
+                onClick={() => { setIsBatchModalOpen(false); openCamera(); }}
+              >
+                📸 Adicionar Outra Página (+1)
+              </button>
+              <button className="modal-btn capture" onClick={compileCameraBatch}>✅ Finalizar e Salvar para a Pasta</button>
             </div>
           </div>
         </div>
@@ -1613,6 +1786,38 @@ export default function ScannerJuridico() {
                 </span>
               )}
             </button>
+          </div>
+        </div>
+
+        {/* API STATUS DASHBOARD (DEMONSTRADOR) */}
+        <div style={{ padding: '12px 20px', background: G.bg, borderBottom: `1px solid ${G.border}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontSize: '11px', color: G.muted, fontWeight: 600, letterSpacing: '0.05em' }}>STATUS DA INFRAESTRUTURA IA</span>
+            <span style={{ fontSize: '10px', color: G.success, background: 'rgba(34, 197, 94, 0.1)', padding: '2px 8px', borderRadius: '10px' }}>Ativo</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+            {getAvailableGeminiKeys().map((key, idx) => {
+              const hash = key.slice(-6);
+              const usageCount = keyUsage[hash] || 0;
+              const totalUsage = Object.values(keyUsage).reduce((a, b) => a + b, 0) || 1;
+              const percent = Math.round((usageCount / totalUsage) * 100);
+              
+              return (
+                <div key={hash} style={{ 
+                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${G.border}`,
+                  display: 'flex', flexDirection: 'column', gap: '4px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '10px', color: G.text, fontWeight: 500 }}>API #{idx + 1} (..{hash})</span>
+                    <span style={{ fontSize: '10px', color: G.accent }}>{usageCount} reqs</span>
+                  </div>
+                  <div style={{ height: '4px', background: G.bg, borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${percent}%`, background: G.accent, transition: 'width 0.5s ease-out' }}></div>
+                  </div>
+                  <div style={{ fontSize: '9px', color: G.muted, textAlign: 'right' }}>Taxa de uso: {percent}%</div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
