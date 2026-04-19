@@ -876,8 +876,8 @@ async function runOCR(imageBlob, onProgress) {
 }
 
 // ── Integração Bancos de Dados ────────────────────────────────────────────────
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
+const supabaseUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_URL) || (typeof process !== 'undefined' && process.env.SUPABASE_URL) || '';
+const supabaseKey = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) || (typeof process !== 'undefined' && process.env.SUPABASE_ANON_KEY) || '';
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 // ── LocalStorage (Fallback para quando o Supabase não estiver disponível) ─────
@@ -941,6 +941,8 @@ export default function ScannerJuridico() {
   const [isCreatingClient, setIsCreatingClient] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [movingItem, setMovingItem] = useState(null);
+  const [renamingItem, setRenamingItem] = useState(null);
+  const [newDocumentName, setNewDocumentName] = useState("");
   const [sortOrder, setSortOrder] = useState("date-desc"); // "date-desc", "date-asc", "name-asc", "name-desc"
   
   const [toast, setToast] = useState(null);
@@ -1211,9 +1213,9 @@ export default function ScannerJuridico() {
         const rawName = f.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const fileName = `${Date.now()}_${rawName}.${ext}`;
         
-        const { data: uploadData } = await supabase.storage.from('lexscan-files').upload(fileName, f);
+        const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, f);
         if (uploadData) {
-          const { data: publicUrl } = supabase.storage.from('lexscan-files').getPublicUrl(fileName);
+          const { data: publicUrl } = supabase.storage.from('ged-auditoria').getPublicUrl(fileName);
           fileUrl = publicUrl.publicUrl;
         }
 
@@ -1288,9 +1290,9 @@ export default function ScannerJuridico() {
         const rawName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const fileName = `${Date.now()}_${rawName}.${ext}`;
         
-        const { data: uploadData, error: uploadError } = await supabase.storage.from('lexscan-files').upload(fileName, file);
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file);
         if (!uploadError) {
-           fileUrl = supabase.storage.from('lexscan-files').getPublicUrl(fileName).data.publicUrl;
+           fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
         } else {
            console.error("Storage Error:", uploadError);
         }
@@ -1544,9 +1546,9 @@ export default function ScannerJuridico() {
 
     if (supabase) {
       const fileName = `${Date.now()}_${finalName}.pdf`;
-      const { data: uploadData, error: uploadError } = await supabase.storage.from('lexscan-files').upload(fileName, finalFile);
+      const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFile);
       if (!uploadError) {
-         fileUrl = supabase.storage.from('lexscan-files').getPublicUrl(fileName).data.publicUrl;
+         fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
       }
       
       const docRecord = {
@@ -1664,6 +1666,37 @@ export default function ScannerJuridico() {
       removeFromHistory(id);
       setHistory(getHistory());
       showToast("Removido do histórico");
+    }
+  };
+
+  const handleRenameDocument = async () => {
+    if (!renamingItem || !newDocumentName.trim()) {
+      setRenamingItem(null);
+      return;
+    }
+    
+    // Maintain extension if not typed
+    let finalExt = renamingItem.name.split('.').pop() || 'pdf';
+    let rawInput = newDocumentName.trim();
+    if (!rawInput.includes('.')) {
+       rawInput = `${rawInput}.${finalExt}`;
+    }
+
+    try {
+      showToast("Renomeando...");
+      if (supabase) {
+        await supabase.from('lexscan_documents').update({ name: rawInput }).eq('id', renamingItem.id);
+      } else {
+        let localH = getHistory().map(h => h.id === renamingItem.id ? { ...h, name: rawInput } : h);
+        localStorage.setItem("lexscan_history", JSON.stringify(localH));
+      }
+      setHistory(prev => prev.map(h => h.id === renamingItem.id ? { ...h, name: rawInput } : h));
+      showToast("Renomeado com sucesso!");
+    } catch(e) {
+      showToast("Erro ao renomear", "error");
+    } finally {
+      setRenamingItem(null);
+      setNewDocumentName("");
     }
   };
 
@@ -2323,7 +2356,31 @@ export default function ScannerJuridico() {
                             : <div className="hist-thumb-placeholder">📄</div>
                           }
                           <div className="hist-info">
-                            <div className="hist-name">{item.name}</div>
+                            {renamingItem?.id === item.id ? (
+                              <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+                                <input 
+                                  autoFocus
+                                  type="text" 
+                                  value={newDocumentName}
+                                  onChange={e => setNewDocumentName(e.target.value)}
+                                  onKeyDown={e => e.key === 'Enter' && handleRenameDocument()}
+                                  style={{ background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '4px 8px', borderRadius: '4px', color: G.text, width: '100%', fontSize: '12px' }}
+                                />
+                                <button onClick={handleRenameDocument} style={{ background: G.success, border: 'none', borderRadius: '4px', padding: '4px 8px', color: '#fff', cursor: 'pointer', fontSize: '10px' }}>Salvar</button>
+                                <button onClick={() => setRenamingItem(null)} style={{ background: 'transparent', border: `1px solid ${G.border}`, borderRadius: '4px', padding: '4px 8px', color: G.text, cursor: 'pointer', fontSize: '10px' }}>Cancelar</button>
+                              </div>
+                            ) : (
+                              <div className="hist-name">
+                                 {item.name}
+                                 <button 
+                                   onClick={(e) => { e.stopPropagation(); setRenamingItem(item); setNewDocumentName(item.name.replace(/\.[^/.]+$/, "")); }}
+                                   style={{ marginLeft: '8px', background: 'transparent', border: 'none', color: G.muted, cursor: 'pointer', fontSize: '12px' }}
+                                   title="Renomear"
+                                 >
+                                   ✏️
+                                 </button>
+                              </div>
+                            )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
                             <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
                           </div>
