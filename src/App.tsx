@@ -764,7 +764,8 @@ async function extractPDFHybrid(file, onProgress, useAi) {
                 fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
                 confidenceTotal += 99;
             } catch (e) {
-                fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA)]\n` + ocrRes.text + "\n\n";
+                let errMsg = e.message || "Erro desconhecido";
+                fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
                 confidenceTotal += ocrRes.confidence;
             }
         }
@@ -792,7 +793,8 @@ async function extractImageHybrid(file, onProgress, useAi) {
           const aiText = await extractPageWithGemini(file);
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
-          return ocrRes; // Fallback
+          let errMsg = e.message || "Erro desconhecido";
+          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: ocrRes.confidence };
       }
   }
   
