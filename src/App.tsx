@@ -641,37 +641,33 @@ async function loadPDFJS() {
   return window.pdfjsLib;
 }
 
-// ── Gerenciador de Rotação de API Keys (Load Balancer) ────────────────────────
-let currentKeyIndex = 0;
-function getNextGeminiKey() {
+// ── Banco de API Keys & Auto-Failover ────────────────────────
+function getAvailableGeminiKeys() {
   const keys = [];
   // Adiciona a chave primária
   if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
   
-  // Adiciona a chave secundária (Vite local fallback / Vercel Env)
+  // Verifica chaves secundárias (Vite local fallback / Vercel Env)
   try {
-    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_2) {
-      keys.push(import.meta.env.VITE_GEMINI_API_KEY_2);
-    }
+    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_2) keys.push(import.meta.env.VITE_GEMINI_API_KEY_2);
+    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_3) keys.push(import.meta.env.VITE_GEMINI_API_KEY_3);
+    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_4) keys.push(import.meta.env.VITE_GEMINI_API_KEY_4);
   } catch (e) {}
 
-  if (keys.length === 0) return process.env.GEMINI_API_KEY; // Fallback padrão
-
-  const selectedKey = keys[currentKeyIndex % keys.length];
-  currentKeyIndex++;
-  console.log(`[Load Balancer] Usando API Key ${currentKeyIndex % keys.length === 0 ? keys.length : currentKeyIndex % keys.length} de ${keys.length}`);
-  return selectedKey;
+  return keys.length > 0 ? keys : [process.env.GEMINI_API_KEY]; // Fallback
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob) {
-  const { GoogleGenAI } = await import("@google/genai");
-  const ai = new GoogleGenAI({ apiKey: getNextGeminiKey() });
+  const keys = getAvailableGeminiKeys();
+  let lastError = null;
+
   const base64 = await new Promise((r) => {
     const reader = new FileReader();
     reader.onload = () => r(reader.result.split(',')[1]);
     reader.readAsDataURL(blob);
   });
+  
   const prompt = `Você é um especialista em transcrição jurídica de alta precisão. 
 Este documento ou página falhou no OCR tradicional por ser manuscrito, letra de médico ou ter baixa qualidade visual.
 Sua missão:
@@ -679,12 +675,28 @@ Sua missão:
 2. Se for um laudo ou atestado médico, descreva com precisão CIDs, sintomas e recomendações.
 3. Não adicione comentários, introduções ou saudações, devolva apenas o conteúdo transcrito.
 4. Estruture as informações de forma limpa, mantendo o contexto.`;
-  
-  const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
-    contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
-  });
-  return response.text.trim();
+
+  // Auto-Failover: Testa a chave 1. Se der limite (Quota Exceeded / 429), tenta a 2, depois a 3...
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      console.log(`[Auto-Failover] Roteando para API Key ${i + 1} de ${keys.length}`);
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey: keys[i] });
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-1.5-flash",
+        contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
+      });
+      return response.text.trim();
+    } catch (e) {
+      console.warn(`[Auto-Failover] Falha na API Key ${i + 1}:`, e.message || e);
+      lastError = e;
+      // Se falhou, o loop natural continua e testa a próxima chave
+    }
+  }
+
+  // Se esgotar todas as chaves
+  throw new Error("❌ Todas as de " + keys.length + " chaves de API estão esgotadas ou falharam.");
 }
 
 async function extractPDFHybrid(file, onProgress, useAi) {
@@ -1673,8 +1685,13 @@ export default function ScannerJuridico() {
                   <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
                     style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
                   <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
-                    <span style={{ fontWeight: 600, color: G.accent }}>Motor Híbrido Inteligente (Recomendado)</span>
-                    <span style={{ fontSize: '11px', color: G.muted }}>Extrai as partes perfeitas nativamente e usa a IA APENAS para manuscritos ilegíveis e páginas com muito ruído (economia e precisão de 100%).</span>
+                    <span style={{ fontWeight: 600, color: G.accent }}>
+                      Motor Híbrido Inteligente (Recomendado)
+                      <span style={{ background: '#2d3340', color: G.success, padding: '2px 8px', borderRadius: '12px', fontSize: '10px', marginLeft: '8px', border: `1px solid ${G.success}40` }}>
+                         🟢 {getAvailableGeminiKeys().length} {getAvailableGeminiKeys().length === 1 ? 'API Disponível' : 'APIs Disponíveis'}
+                      </span>
+                    </span>
+                    <span style={{ fontSize: '11px', color: G.muted }}>Faz Roteamento Inteligente com Auto-Failover: Extrai texto perfeito e aciona as APIs ativas sequencialmente em manuscritos.</span>
                   </label>
                 </div>
               )}
