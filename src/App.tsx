@@ -1786,7 +1786,7 @@ export default function ScannerJuridico() {
                           key={c.id}
                           className="folder-card"
                           onClick={() => setViewingClient(c.id)}
-                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.accentDim}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
+                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
                         >
                           <div style={{ fontSize: '24px' }}>📂</div>
                           <div style={{ flex: 1 }}>
@@ -1805,36 +1805,41 @@ export default function ScannerJuridico() {
                 </>
               ) : (
                 // View: Arquivos dentro da Pasta
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                    <button 
-                      onClick={() => setViewingClient(null)}
-                      style={{ background: 'none', border: 'none', color: G.muted, cursor: 'pointer', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <span>←</span> Voltar
-                    </button>
-                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent, flex: 1 }}>
-                      {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
-                    </h3>
-                    
-                    <div style={{ display: 'flex', gap: '8px', width: '100%', marginTop: '8px' }}>
-                      <select 
-                        value={sortOrder}
-                        onChange={(e) => setSortOrder(e.target.value)}
-                        style={{ flex: 1, background: G.surface, color: G.text, border: `1px solid ${G.border}`, padding: '6px', borderRadius: '6px', fontSize: '12px', outline: 'none' }}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ background: G.surface, padding: '16px', borderRadius: '16px', border: `1px solid ${G.border}`, marginBottom: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                      <button 
+                        onClick={() => setViewingClient(null)}
+                        style={{ background: G.card, border: `1px solid ${G.border}`, color: G.muted, cursor: 'pointer', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
                       >
-                        <option value="date-desc">🕒 Mais Recentes</option>
-                        <option value="date-asc">🕒 Mais Antigos</option>
-                        <option value="name-asc">🔤 Nome (A-Z)</option>
-                        <option value="name-desc">🔤 Nome (Z-A)</option>
-                      </select>
+                        <span>←</span> Voltar
+                      </button>
+                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent, flex: 1 }}>
+                        {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
+                      </h3>
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ display: 'block', fontSize: '10px', color: G.muted, marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Organizar por:</label>
+                        <select 
+                          value={sortOrder}
+                          onChange={(e) => setSortOrder(e.target.value)}
+                          style={{ width: '100%', background: G.bg, color: G.text, border: `1px solid ${G.border}`, padding: '8px', borderRadius: '8px', fontSize: '13px', outline: 'none', cursor: 'pointer' }}
+                        >
+                          <option value="date-desc">🕒 Mais Recentes</option>
+                          <option value="date-asc">🕒 Mais Antigos</option>
+                          <option value="name-asc">🔤 Nome (1, 2, 10...)</option>
+                          <option value="name-desc">🔤 Nome (Z-A)</option>
+                        </select>
+                      </div>
 
                       {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
                         <button 
                           onClick={compileFolderTXT}
-                          style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                          style={{ alignSelf: 'flex-end', background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
                         >
-                          <span>📑</span> Compilar TXT
+                          <span>📑</span> Compilar
                         </button>
                       )}
                     </div>
@@ -1851,8 +1856,8 @@ export default function ScannerJuridico() {
                       .sort((a, b) => {
                         if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
                         if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
-                        if (sortOrder === "name-asc") return a.name.localeCompare(b.name);
-                        if (sortOrder === "name-desc") return b.name.localeCompare(a.name);
+                        if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                        if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
                         return 0;
                       })
                       .map(item => (
@@ -1884,7 +1889,7 @@ export default function ScannerJuridico() {
                       </div>
                     ))
                   )}
-                </>
+                </div>
               )}
             </div>
           )}
