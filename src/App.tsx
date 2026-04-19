@@ -691,26 +691,46 @@ Sua missão:
 3. Não adicione comentários, introduções ou saudações, devolva apenas o conteúdo transcrito.
 4. Estruture as informações de forma limpa, mantendo o contexto.`;
 
-  // Auto-Failover: Testa a chave 1. Se falhar, tenta a 2...
+  // Lista de modelos do Google para driblar a sobrecarga (503 High Demand)
+  // Tentamos a mais rápida/atual 3.0/2.5 e caímos até para a Pro se os servidores da Flash caírem.
+  const modelsToTry = ["gemini-3.0-flash", "gemini-2.5-flash", "gemini-1.5-pro"];
+
+  // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < keys.length; i++) {
-    try {
-      console.log(`[Auto-Failover] Roteando para API Key ${i + 1} de ${keys.length}`);
-      const { GoogleGenAI } = await import("@google/genai");
-      const ai = new GoogleGenAI({ apiKey: keys[i] });
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
-      });
-      return response.text.trim();
-    } catch (e) {
-      console.warn(`[Auto-Failover] Falha na API Key ${i + 1}:`, e.message || e);
-      lastError = e;
+    const apiKey = keys[i];
+    
+    for (let m = 0; m < modelsToTry.length; m++) {
+      const modelName = modelsToTry[m];
+      try {
+        console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${keys.length} | Tentando modelo: ${modelName}`);
+        const { GoogleGenAI } = await import("@google/genai");
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
+        });
+        return response.text.trim();
+        
+      } catch (e) {
+        console.warn(`[Matriz Falha] Chave ${i + 1} - Modelo ${modelName}:`, e.message || e);
+        lastError = e;
+        
+        const errorStr = (e.message || "").toLowerCase();
+        // Se a chave na Vercel estiver com Limite Esgotado (429) ou Bloqueada, a gente aborta ELA
+        // e pula direto pro próximo "i" (Próxima Chave) poupando tempo
+        if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("api key not valid") || errorStr.includes("key")) {
+          console.warn(`👉 [Auto-Failover] Chave ${i + 1} indisponível. Alternando para a próxima chave Vercel!`);
+          break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave)
+        }
+        // Se for erro 503 (High Demand/Unavailable), ele SIMPLESMENTE não dá o break,
+        // o código continua e tenta a MESMA chave no próximo modelo mais forte.
+      }
     }
   }
 
-  // Se esgotar todas as chaves
-  throw new Error("❌ Falha na IA. Motivo: " + (lastError?.message || "Erro desconhecido nas APIs"));
+  // Se esgotar tudo (Todos Modelos x Todas Chaves)
+  throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
 async function extractPDFHybrid(file, onProgress, useAi) {
