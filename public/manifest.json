@@ -1,0 +1,17 @@
+{
+  "name": "Scaner Felix e Castro",
+  "short_name": "Scanner F&C",
+  "description": "Scanner Jurídico Felix e Castro Advocacia",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0f14",
+  "theme_color": "#c9a84c",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3022/3022224.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -29,6 +29,8 @@ const css = `
     color: ${G.text};
     font-family: 'DM Sans', sans-serif;
     min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
   }
 
   .app {
@@ -38,6 +40,18 @@ const css = `
     display: flex;
     flex-direction: column;
     position: relative;
+    box-shadow: 0 0 40px rgba(0,0,0,0.5);
+  }
+
+  /* Optimize for mobile devices without hover */
+  @media (max-width: 480px) {
+    .app { box-shadow: none; }
+    .header { padding: 16px 16px 12px; }
+  }
+
+  button {
+    user-select: none;
+    touch-action: manipulation;
   }
 
   /* Header */
@@ -828,6 +842,7 @@ export default function ScannerJuridico() {
   const [viewingClient, setViewingClient] = useState(null); // null = tela geral de clientes, "unassigned" = sem pasta, "ID" = pasta esp
   const [isCreatingClient, setIsCreatingClient] = useState(false);
   const [newClientName, setNewClientName] = useState("");
+  const [movingItem, setMovingItem] = useState(null);
   
   const [toast, setToast] = useState(null);
   const [camera, setCamera] = useState(false);
@@ -1134,6 +1149,30 @@ export default function ScannerJuridico() {
     }
   };
 
+  const moveDocumentHandler = async (documentId, newClientId) => {
+    if (!supabase) {
+      showToast("Supabase não configurado", "error");
+      return;
+    }
+
+    try {
+      showToast("Movendo documento...");
+      const { error } = await supabase
+        .from('lexscan_documents')
+        .update({ client_id: newClientId === 'unassigned' ? null : newClientId })
+        .eq('id', documentId);
+
+      if (error) throw error;
+
+      setHistory(prev => prev.map(h => h.id === documentId ? { ...h, clientId: newClientId } : h));
+      setMovingItem(null);
+      showToast("✓ Documento movido com sucesso!");
+    } catch (e) {
+      console.error(e);
+      showToast("Erro ao mover documento", "error");
+    }
+  };
+
   const deleteClientHandler = async (id, name) => {
     if(confirm(`Excluir a pasta do cliente "${name}" e todos os seus arquivos?`)) {
       if (supabase) {
@@ -1239,6 +1278,44 @@ export default function ScannerJuridico() {
 
       {/* Toast */}
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
+
+      {/* Move Document Modal */}
+      {movingItem && (
+        <div className="modal-overlay" style={{zIndex: 120}}>
+          <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '90%', maxWidth: '380px'}}>
+            <h3 style={{marginBottom: 12, fontSize: '16px', fontWeight: 600, color: G.accent, textAlign: 'center'}}>Mover Documento</h3>
+            <p style={{fontSize: '12px', color: G.muted, marginBottom: '16px', textAlign: 'center'}}>
+              Selecione o novo destino para: <br/> <strong>{movingItem.name}</strong>
+            </p>
+            
+            <div style={{maxHeight: '40vh', overflowY: 'auto', display: 'grid', gap: '8px', marginBottom: '20px'}}>
+              <button 
+                onClick={() => moveDocumentHandler(movingItem.id, 'unassigned')}
+                style={{
+                  padding: '12px', borderRadius: '10px', background: movingItem.clientId === 'unassigned' ? G.accent : G.surface, 
+                  color: movingItem.clientId === 'unassigned' ? '#000' : G.text, border: `1px solid ${G.border}`, cursor: 'pointer', textAlign: 'left', fontSize: '13px'
+                }}
+              >
+                📁 Geral (Sem pasta)
+              </button>
+              {clients.map(c => (
+                <button 
+                  key={c.id}
+                  onClick={() => moveDocumentHandler(movingItem.id, c.id)}
+                  style={{
+                    padding: '12px', borderRadius: '10px', background: movingItem.clientId === c.id ? G.accent : G.surface, 
+                    color: movingItem.clientId === c.id ? '#000' : G.text, border: `1px solid ${G.border}`, cursor: 'pointer', textAlign: 'left', fontSize: '13px'
+                  }}
+                >
+                  📂 {c.name}
+                </button>
+              ))}
+            </div>
+
+            <button className="modal-btn cancel" style={{width: '100%'}} onClick={() => setMovingItem(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
 
       <div className="app">
         {/* Header */}
@@ -1415,6 +1492,9 @@ export default function ScannerJuridico() {
                       <button className="dl-btn primary" onClick={() => downloadPDF(result.text, result.name.replace(/\.[^.]+$/, ""))}>
                         📄 PDF
                       </button>
+                      <button className="dl-btn" onClick={() => setMovingItem(result)} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
+                        📂 Mover Pasta
+                      </button>
                     </div>
 
                     {file && file.type.startsWith('image/') && (
@@ -1558,6 +1638,7 @@ export default function ScannerJuridico() {
                             {item.type && item.type.startsWith('image/') && (
                                <button className="icon-btn" title="Comprimir (Média)" onClick={(e) => { e.stopPropagation(); handleCompressAndDownload(item, 'Média'); }}>📉</button>
                             )}
+                            <button className="icon-btn" title="Mover Pasta" onClick={(e) => { e.stopPropagation(); setMovingItem(item); }}>📂</button>
                             {item.fileUrl && (
                                <a href={item.fileUrl} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>🌐</a>
                             )}
