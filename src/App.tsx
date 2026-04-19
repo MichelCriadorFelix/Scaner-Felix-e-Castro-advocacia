@@ -648,8 +648,10 @@ function getAvailableGeminiKeys() {
   // No Vercel, apenas variáveis iniciadas com VITE_ vão para o navegador. 
   // (No AI Studio local, o process.env.GEMINI_API_KEY funciona via polyfill)
   try {
-    if (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) {
-      keys.push(process.env.GEMINI_API_KEY.trim());
+    if (typeof process !== 'undefined') {
+      if (process.env?.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY.trim());
+      if (process.env?.VITE_GEMINI_API_KEY_2) keys.push(process.env.VITE_GEMINI_API_KEY_2.trim());
+      if (process.env?.VITE_GEMINI_API_KEY_3) keys.push(process.env.VITE_GEMINI_API_KEY_3.trim());
     }
   } catch(e) {}
 
@@ -697,7 +699,7 @@ Sua missão:
       const ai = new GoogleGenAI({ apiKey: keys[i] });
       
       const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
       });
       return response.text.trim();
