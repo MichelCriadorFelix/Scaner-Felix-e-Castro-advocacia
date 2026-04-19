@@ -644,23 +644,36 @@ async function loadPDFJS() {
 // ── Banco de API Keys & Auto-Failover ────────────────────────
 function getAvailableGeminiKeys() {
   const keys = [];
-  // Adiciona a chave primária
-  if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
   
-  // Verifica chaves secundárias (Vite local fallback / Vercel Env)
+  // No Vercel, apenas variáveis iniciadas com VITE_ vão para o navegador. 
+  // (No AI Studio local, o process.env.GEMINI_API_KEY funciona via polyfill)
   try {
-    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_2) keys.push(import.meta.env.VITE_GEMINI_API_KEY_2);
-    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_3) keys.push(import.meta.env.VITE_GEMINI_API_KEY_3);
-    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_4) keys.push(import.meta.env.VITE_GEMINI_API_KEY_4);
+    if (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) {
+      keys.push(process.env.GEMINI_API_KEY.trim());
+    }
+  } catch(e) {}
+
+  try {
+    if (import.meta.env) {
+      if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY.trim());
+      if (import.meta.env.VITE_GEMINI_API_KEY_1) keys.push(import.meta.env.VITE_GEMINI_API_KEY_1.trim());
+      if (import.meta.env.VITE_GEMINI_API_KEY_2) keys.push(import.meta.env.VITE_GEMINI_API_KEY_2.trim());
+      if (import.meta.env.VITE_GEMINI_API_KEY_3) keys.push(import.meta.env.VITE_GEMINI_API_KEY_3.trim());
+    }
   } catch (e) {}
 
-  return keys.length > 0 ? keys : [process.env.GEMINI_API_KEY]; // Fallback
+  // Remove duplicatas
+  return [...new Set(keys)].filter(Boolean);
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob) {
   const keys = getAvailableGeminiKeys();
   let lastError = null;
+
+  if (keys.length === 0) {
+    throw new Error("❌ Nenhuma Chave GEMINI configurada. Renomeie para VITE_GEMINI_API_KEY no Vercel.");
+  }
 
   const base64 = await new Promise((r) => {
     const reader = new FileReader();
@@ -676,7 +689,7 @@ Sua missão:
 3. Não adicione comentários, introduções ou saudações, devolva apenas o conteúdo transcrito.
 4. Estruture as informações de forma limpa, mantendo o contexto.`;
 
-  // Auto-Failover: Testa a chave 1. Se der limite (Quota Exceeded / 429), tenta a 2, depois a 3...
+  // Auto-Failover: Testa a chave 1. Se falhar, tenta a 2...
   for (let i = 0; i < keys.length; i++) {
     try {
       console.log(`[Auto-Failover] Roteando para API Key ${i + 1} de ${keys.length}`);
@@ -691,12 +704,11 @@ Sua missão:
     } catch (e) {
       console.warn(`[Auto-Failover] Falha na API Key ${i + 1}:`, e.message || e);
       lastError = e;
-      // Se falhou, o loop natural continua e testa a próxima chave
     }
   }
 
   // Se esgotar todas as chaves
-  throw new Error("❌ Todas as de " + keys.length + " chaves de API estão esgotadas ou falharam.");
+  throw new Error("❌ Falha na IA. Motivo: " + (lastError?.message || "Erro desconhecido nas APIs"));
 }
 
 async function extractPDFHybrid(file, onProgress, useAi) {
