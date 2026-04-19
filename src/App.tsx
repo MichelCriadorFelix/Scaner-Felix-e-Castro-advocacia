@@ -883,6 +883,48 @@ export default function ScannerJuridico() {
     return G.error;
   };
 
+  const compressFile = async (blob, level = 0.6) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob((b) => resolve(b), "image/jpeg", level);
+      };
+      img.src = URL.createObjectURL(blob);
+    });
+  };
+
+  const handleCompressAndDownload = async (item, levelName) => {
+    const levelMap = { 'Pouca': 0.9, 'Média': 0.6, 'Máxima': 0.3 };
+    const level = levelMap[levelName];
+    
+    showToast(`Comprimindo (${levelName})...`);
+    
+    try {
+      // Se for imagem, conseguimos comprimir via canvas
+      if (item.type.startsWith('image/')) {
+        const response = await fetch(item.fileUrl || item.preview);
+        const blob = await response.blob();
+        const compressedBlob = await compressFile(blob, level);
+        const url = URL.createObjectURL(compressedBlob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `[COMPRIMIDO_${levelName}]_${item.name.replace(/\.[^.]+$/, "")}.jpg`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("✓ Download concluído!");
+      } else {
+        showToast("Compressão avançada disponível para imagens/scans", "info");
+      }
+    } catch (e) {
+      showToast("Erro ao comprimir", "error");
+    }
+  };
+
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2800);
@@ -1203,8 +1245,8 @@ export default function ScannerJuridico() {
         <div className="header">
           <div className="header-top">
             <div className="logo">
-              LexScan
-              <span>SCANNER JURÍDICO v1.0</span>
+              Scaner Felix e Castro
+              <span>ADVOCACIA ESPECIALIZADA v1.0</span>
             </div>
             <div style={{ display: "flex", gap: "6px" }}>
               <span className="badge accent">OCR PT</span>
@@ -1374,6 +1416,17 @@ export default function ScannerJuridico() {
                         📄 PDF
                       </button>
                     </div>
+
+                    {file && file.type.startsWith('image/') && (
+                      <div style={{ marginTop: '12px', padding: '12px', background: G.bg, borderRadius: '12px', border: `1px solid ${G.border}` }}>
+                         <div style={{ fontSize: '11px', color: G.muted, marginBottom: '8px', textAlign: 'center' }}>⚙️ OPÇÕES DE COMPRESSÃO (ECONOMIA DE ESPAÇO)</div>
+                         <div style={{ display: 'flex', gap: '6px' }}>
+                            <button onClick={() => handleCompressAndDownload(result, 'Pouca')} style={{ flex: 1, fontSize: '10px', padding: '6px', borderRadius: '6px', background: G.card, color: G.text, border: `1px solid ${G.border}`, cursor: 'pointer' }}>Leve</button>
+                            <button onClick={() => handleCompressAndDownload(result, 'Média')} style={{ flex: 1, fontSize: '10px', padding: '6px', borderRadius: '6px', background: G.card, color: G.text, border: `1px solid ${G.border}`, cursor: 'pointer' }}>Média</button>
+                            <button onClick={() => handleCompressAndDownload(result, 'Máxima')} style={{ flex: 1, fontSize: '10px', padding: '6px', borderRadius: '6px', background: G.card, color: G.text, border: `1px solid ${G.border}`, cursor: 'pointer' }}>Máxima</button>
+                         </div>
+                      </div>
+                    )}
                   </div>
                   <button className="cam-btn" onClick={() => { setFile(null); setPreview(null); setResult(null); }}>
                     ＋ Novo documento
@@ -1502,6 +1555,9 @@ export default function ScannerJuridico() {
                             <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
                           </div>
                           <div className="hist-actions">
+                            {item.type && item.type.startsWith('image/') && (
+                               <button className="icon-btn" title="Comprimir (Média)" onClick={(e) => { e.stopPropagation(); handleCompressAndDownload(item, 'Média'); }}>📉</button>
+                            )}
                             {item.fileUrl && (
                                <a href={item.fileUrl} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>🌐</a>
                             )}
