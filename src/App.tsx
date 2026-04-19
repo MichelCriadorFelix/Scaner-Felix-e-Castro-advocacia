@@ -582,6 +582,34 @@ function formatDate(ts) {
   });
 }
 
+async function forceDownload(url, filename) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Erro na requisição HTTP");
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+  } catch (e) {
+    console.error("Erro ao forçar download via Blob, usando fallback:", e);
+    // Fallback: usar parâmetro download do Supabase ou abrir nova aba
+    const fallbackUrl = new URL(url);
+    fallbackUrl.searchParams.append('download', filename);
+    const a = document.createElement("a");
+    a.href = fallbackUrl.toString();
+    a.download = filename;
+    a.target = "_blank";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+}
+
 function downloadTXT(text, name) {
   // Adicionando BOM (\uFEFF) para forçar o reconhecimento do UTF-8 no Bloco de Notas do Windows
   const blob = new Blob(["\uFEFF" + text], { type: "text/plain;charset=utf-8" });
@@ -2130,15 +2158,13 @@ export default function ScannerJuridico() {
                         📄 Exportar OCR (PDF)
                       </button>
                       {(result.fileUrl || result.localBlobUrl) && (
-                         <a 
-                           href={result.fileUrl || result.localBlobUrl} 
-                           download={result.name}
-                           target="_blank" rel="noopener noreferrer"
+                         <button 
+                           onClick={(e) => { e.preventDefault(); forceDownload(result.fileUrl || result.localBlobUrl, result.name); }}
                            className="dl-btn" 
-                           style={{ background: G.success, color: '#fff', border: 'none', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                           style={{ background: G.success, color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                          >
                            ⬇️ Baixar Original 
-                         </a>
+                         </button>
                       )}
                       <button className="dl-btn" onClick={() => setMovingItem(result)} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
                         📂 Mover Pasta
@@ -2340,7 +2366,7 @@ export default function ScannerJuridico() {
                             )}
                             <button className="icon-btn" title="Mover Pasta" onClick={(e) => { e.stopPropagation(); setMovingItem(item); }}>📂</button>
                             {(item.fileUrl || item.localBlobUrl) && (
-                               <a href={item.fileUrl || item.localBlobUrl} download={item.name} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>⬇️</a>
+                               <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
                             )}
                             {(!item.text) ? (
                                <button className="icon-btn" style={{background: G.accent, color: '#000', fontWeight: 'bold'}} title="Processar OCR agora" onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}>🔍 OCR</button>
