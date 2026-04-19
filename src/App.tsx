@@ -845,6 +845,7 @@ export default function ScannerJuridico() {
   const [isCreatingClient, setIsCreatingClient] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [movingItem, setMovingItem] = useState(null);
+  const [sortOrder, setSortOrder] = useState("date-desc"); // "date-desc", "date-asc", "name-asc", "name-desc"
   
   const [toast, setToast] = useState(null);
   const [camera, setCamera] = useState(false);
@@ -898,6 +899,59 @@ export default function ScannerJuridico() {
     if (c >= 90) return G.success;
     if (c >= 70) return G.warning;
     return G.error;
+  };
+
+  /**
+   * Otimiza o texto bruto do OCR sem usar IA (Lógica heurística)
+   * Tenta reconstruir parágrafos, remover ruídos de leitura e normalizar espaços.
+   */
+  const optimizeRawText = (text) => {
+    if (!text) return "";
+    
+    // 1. Limpeza de ruído de borda e caracteres isolados estranhos
+    let cleaned = text.split('\n')
+      .map(line => {
+        // Remove caracteres que costumam ser "sujeira" de scanner (bordas de página)
+        // Mantém letras, números, acentos e pontuação básica
+        let l = line.replace(/[^a-zA-Z0-9\sáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ.,:;()\-/$%]/g, ' ');
+        // Reduce multiple spaces
+        return l.trim().replace(/\s+/g, ' ');
+      })
+      .filter(line => line.length > 1) // Remove linhas que ficaram com 1 char (ruído)
+      .join('\n');
+
+    // 2. Reconstrução de Parágrafos e Destaque de Cabeçalhos
+    // O OCR quebra linhas no meio de frases. Tentamos juntar e destacar títulos.
+    const lines = cleaned.split('\n');
+    let reconstructed = "";
+    for (let i = 0; i < lines.length; i++) {
+      let current = lines[i].trim();
+      let next = lines[i+1] ? lines[i+1].trim() : "";
+
+      // Se a linha parece um cabeçalho (CURTA e em CAIXA ALTA), negritamos
+      const looksLikeHeader = current.length < 50 && current === current.toUpperCase() && /[A-Z]/.test(current);
+      if (looksLikeHeader) {
+        current = `**${current}**`;
+      }
+
+      reconstructed += current;
+
+      // Se a linha ATUAL não termina com pontuação forte (. : ? ! ;) 
+      // e o cabeçalho não foi o foco atual (cabeçalhos costumam quebrar linha)
+      const endsWithSentencePunctuation = /[.:?!;]$/.test(current);
+      
+      if (!endsWithSentencePunctuation && !looksLikeHeader && next) {
+        reconstructed += " ";
+      } else {
+        reconstructed += "\n\n";
+      }
+    }
+
+    // 3. Normalização final de espaços e limpezas
+    return reconstructed
+      .replace(/\n{3,}/g, '\n\n') // No max 2 newlines
+      .replace(/ {2,}/g, ' ')     // No double spaces
+      .trim();
   };
 
   const compressFile = async (blob, level = 0.6) => {
@@ -1025,6 +1079,10 @@ export default function ScannerJuridico() {
             onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
           );
         }
+        // Otimização Heurística para Texto Bruto
+        if (extracted && extracted.text) {
+          extracted.text = optimizeRawText(extracted.text);
+        }
       }
 
       onProgress(85, "Salvando na nuvem...");
@@ -1103,6 +1161,10 @@ export default function ScannerJuridico() {
           extracted = await runOCR(file, (p) =>
             onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
           );
+        }
+        // Otimização Heurística para Texto Bruto
+        if (extracted && extracted.text) {
+          extracted.text = optimizeRawText(extracted.text);
         }
       }
 
@@ -1754,14 +1816,28 @@ export default function ScannerJuridico() {
                     <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent, flex: 1 }}>
                       {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
                     </h3>
-                    {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
-                      <button 
-                        onClick={compileFolderTXT}
-                        style={{ background: G.accent, color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                    
+                    <div style={{ display: 'flex', gap: '8px', width: '100%', marginTop: '8px' }}>
+                      <select 
+                        value={sortOrder}
+                        onChange={(e) => setSortOrder(e.target.value)}
+                        style={{ flex: 1, background: G.surface, color: G.text, border: `1px solid ${G.border}`, padding: '6px', borderRadius: '6px', fontSize: '12px', outline: 'none' }}
                       >
-                        <span>📑</span> Compilar em TXT Único
-                      </button>
-                    )}
+                        <option value="date-desc">🕒 Mais Recentes</option>
+                        <option value="date-asc">🕒 Mais Antigos</option>
+                        <option value="name-asc">🔤 Nome (A-Z)</option>
+                        <option value="name-desc">🔤 Nome (Z-A)</option>
+                      </select>
+
+                      {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
+                        <button 
+                          onClick={compileFolderTXT}
+                          style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                        >
+                          <span>📑</span> Compilar TXT
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length === 0 ? (
@@ -1770,7 +1846,16 @@ export default function ScannerJuridico() {
                       <p>Pasta vazia.</p>
                     </div>
                   ) : (
-                    history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).map(item => (
+                    history
+                      .filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient))
+                      .sort((a, b) => {
+                        if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
+                        if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
+                        if (sortOrder === "name-asc") return a.name.localeCompare(b.name);
+                        if (sortOrder === "name-desc") return b.name.localeCompare(a.name);
+                        return 0;
+                      })
+                      .map(item => (
                       <div key={item.id} className="hist-card">
                         <div className="hist-header">
                           {item.preview
