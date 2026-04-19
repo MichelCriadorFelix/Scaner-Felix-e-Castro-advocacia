@@ -1434,8 +1434,10 @@ export default function ScannerJuridico() {
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     
-    // 2. OTIMIZAÇÃO PARA OCR (Filtros Digitais de Escaneamento)
-    ctx.filter = 'grayscale(100%) contrast(1.4) brightness(1.1)';
+    // 2. OTIMIZAÇÃO PARA OCR MANTENDO CORES (Color Scanner Filter)
+    // Aumentamos o contraste e o brilho para clarear fundos e destacar letras,
+    // mas removemos o preto e branco para manter selos, carimbos e logos coloridos.
+    ctx.filter = 'contrast(1.3) brightness(1.1) saturate(1.2)';
     ctx.drawImage(video, 0, 0); // Desenha do video diretamente já com o filtro
     ctx.filter = 'none';
 
