@@ -954,6 +954,7 @@ export default function ScannerJuridico() {
   const [cameraPages, setCameraPages] = useState([]);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
+  const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
 
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
@@ -1498,32 +1499,154 @@ export default function ScannerJuridico() {
         image.src = pageUrl;
       });
       
+      // Aplicando compressão no nível do PDF para economizar MBs
+      let maxW; 
+      let q;
+      if(pdfQuality === 'leve') { maxW = 800; q = 0.6; }
+      else if(pdfQuality === 'media') { maxW = 1200; q = 0.75; }
+      else { maxW = 1920; q = 0.9; } // Alta
+
+      let scaleCanvas = 1;
+      if (img.width > maxW) scaleCanvas = maxW / img.width;
+
+      const compCanvas = document.createElement("canvas");
+      compCanvas.width = img.width * scaleCanvas;
+      compCanvas.height = img.height * scaleCanvas;
+      const compCtx = compCanvas.getContext("2d");
+      compCtx.drawImage(img, 0, 0, compCanvas.width, compCanvas.height);
+      const compressedDataUrl = compCanvas.toDataURL("image/jpeg", q);
+
       const pdfW = 210;
       const pdfH = 297;
       let imgW = pdfW;
-      let imgH = (img.height * pdfW) / img.width;
+      let imgH = (compCanvas.height * pdfW) / compCanvas.width;
       
       if (imgH > pdfH) {
          imgH = pdfH;
-         imgW = (img.width * pdfH) / img.height;
+         imgW = (compCanvas.width * pdfH) / compCanvas.height;
       }
       
       const x = (pdfW - imgW) / 2;
       const y = (pdfH - imgH) / 2;
       
-      doc.addImage(img, 'JPEG', x, y, imgW, imgH);
+      doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, pdfQuality === 'alta' ? 'SLOW' : 'FAST');
     }
     
     const pdfBlob = doc.output('blob');
     const finalName = batchDocName.trim() ? batchDocName.trim() : "Documento_Escaneado";
     const finalFile = new File([pdfBlob], `${finalName}.pdf`, { type: "application/pdf" });
     
+    // Upload direto pro Supabase (Sem OCR) para acelerar a mesa
+    showToast("PDF Otimizado e Gerado! Salvando na nuvem...");
+    
+    let fileUrl = null;
+    let finalId = Date.now().toString();
+
+    if (supabase) {
+      const fileName = `${Date.now()}_${finalName}.pdf`;
+      const { data: uploadData, error: uploadError } = await supabase.storage.from('lexscan-files').upload(fileName, finalFile);
+      if (!uploadError) {
+         fileUrl = supabase.storage.from('lexscan-files').getPublicUrl(fileName).data.publicUrl;
+      }
+      
+      const docRecord = {
+         client_id: selectedClient === 'unassigned' || !selectedClient ? null : selectedClient,
+         name: finalFile.name,
+         file_type: finalFile.type,
+         file_url: fileUrl,
+         extracted_text: '',
+         confidence: 0,
+         chars_count: 0,
+         words_count: 0
+      };
+
+      const { data: dbData } = await supabase.from('lexscan_documents').insert([docRecord]).select();
+      if (dbData && dbData[0]) finalId = dbData[0].id;
+    }
+
+    const newItem = {
+      id: finalId,
+      clientId: selectedClient || 'unassigned',
+      name: finalFile.name,
+      type: finalFile.type,
+      ts: Date.now(),
+      text: '',
+      confidence: 0,
+      words: 0,
+      chars: 0,
+      fileUrl: fileUrl,
+      preview: null,
+      localBlobUrl: URL.createObjectURL(pdfBlob)
+    };
+
+    setHistory(prev => [newItem, ...prev]);
+    if (!supabase) addToHistory(newItem);
+
     setCameraPages([]);
     setIsBatchModalOpen(false);
     setBatchDocName("Documento_Escaneado"); // reset config
+    setTab("history"); // Joga pra aba histórica
     
-    handleFiles([finalFile]);
-    showToast("PDF gerado com sucesso! Pronto para IA e Nuvem.");
+    showToast("✓ Salvo na sua pasta. Pronto para gerar OCR depois!");
+  };
+
+  const processHistoryItem = async (item) => {
+    setProcessing(true);
+    setTab("scanner");
+    setProgress(0);
+    setProgressMsg("Baixando arquivo do GED...");
+    
+    try {
+      const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
+      const res = await fetch(urlToFetch);
+      const blob = await res.blob();
+      const fileToProcess = new File([blob], item.name, { type: item.type });
+
+      let extracted;
+      const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
+
+      if (fileToProcess.type === "application/pdf") {
+        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode);
+      } else {
+        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode);
+      }
+
+      if (extracted && extracted.text) {
+        extracted.text = optimizeRawText(extracted.text);
+      }
+      
+      onProgress(90, "Atualizando banco de dados...");
+      
+      if (supabase) {
+        await supabase.from("lexscan_documents").update({
+          extracted_text: extracted.text,
+          confidence: extracted.confidence,
+          words_count: extracted.text.split(/\s+/).filter(Boolean).length,
+          chars_count: extracted.text.length
+        }).eq("id", item.id);
+      }
+
+      const updatedItem = {
+        ...item,
+        text: extracted.text,
+        confidence: extracted.confidence,
+        words: extracted.text.split(/\s+/).filter(Boolean).length,
+        chars: extracted.text.length
+      };
+
+      setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
+      if(!supabase) {
+         let localH = getHistory().map(h => h.id === item.id ? updatedItem : h);
+         localStorage.setItem("lexscan_history", JSON.stringify(localH));
+      }
+      setResult(updatedItem);
+      showToast("OCR processado com sucesso!");
+    } catch(err) {
+      console.error(err);
+      showToast("Erro ao processar OCR do item arquivado.", "error");
+    } finally {
+      setProcessing(false);
+    }
   };
 
   const loadFromHistory = (item) => {
@@ -1707,7 +1830,20 @@ export default function ScannerJuridico() {
                  onChange={e => setBatchDocName(e.target.value)}
                  style={{background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '12px', color: G.text, borderRadius: '8px', width: '100%', fontSize: '14px'}}
                />
-               <small style={{fontSize: '10px', color: G.muted}}>Todas as fotos serão acopladas em um único PDF na nuvem.</small>
+               <small style={{fontSize: '10px', color: G.muted}}>Todas as fotos serão acopladas em um único PDF na nuvem sem OCR automático.</small>
+            </div>
+
+            <div style={{marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '8px'}}>
+               <label style={{fontSize: '12px', color: G.muted}}>Qualidade do PDF (Compressão):</label>
+               <select 
+                 value={pdfQuality} 
+                 onChange={e => setPdfQuality(e.target.value)}
+                 style={{background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '12px', color: G.text, borderRadius: '8px', width: '100%', fontSize: '14px', cursor: 'pointer'}}
+               >
+                 <option value="leve">Leve (Maior economia. Bom para CNHs - 800px)</option>
+                 <option value="media">Média (Equilibrado. Ideal p/ Documentos e Textos - 1200px)</option>
+                 <option value="alta">Alta (Maior qualidade, arquivos mais pesados - 1920px)</option>
+               </select>
             </div>
 
             <div className="modal-actions" style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
@@ -2199,8 +2335,14 @@ export default function ScannerJuridico() {
                             {(item.fileUrl || item.localBlobUrl) && (
                                <a href={item.fileUrl || item.localBlobUrl} download={item.name} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Baixar Original" style={{textDecoration: 'none'}}>⬇️</a>
                             )}
-                            <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
-                            <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
+                            {(!item.text) ? (
+                               <button className="icon-btn" style={{background: G.accent, color: '#000', fontWeight: 'bold'}} title="Processar OCR agora" onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}>🔍 OCR</button>
+                            ) : (
+                               <>
+                                 <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
+                                 <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
+                               </>
+                            )}
                             <button className="icon-btn danger" title="Remover" onClick={() => deleteFromHistory(item.id)}>🗑</button>
                           </div>
                         </div>
