@@ -641,10 +641,32 @@ async function loadPDFJS() {
   return window.pdfjsLib;
 }
 
+// ── Gerenciador de Rotação de API Keys (Load Balancer) ────────────────────────
+let currentKeyIndex = 0;
+function getNextGeminiKey() {
+  const keys = [];
+  // Adiciona a chave primária
+  if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
+  
+  // Adiciona a chave secundária (Vite local fallback / Vercel Env)
+  try {
+    if (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY_2) {
+      keys.push(import.meta.env.VITE_GEMINI_API_KEY_2);
+    }
+  } catch (e) {}
+
+  if (keys.length === 0) return process.env.GEMINI_API_KEY; // Fallback padrão
+
+  const selectedKey = keys[currentKeyIndex % keys.length];
+  currentKeyIndex++;
+  console.log(`[Load Balancer] Usando API Key ${currentKeyIndex % keys.length === 0 ? keys.length : currentKeyIndex % keys.length} de ${keys.length}`);
+  return selectedKey;
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob) {
   const { GoogleGenAI } = await import("@google/genai");
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const ai = new GoogleGenAI({ apiKey: getNextGeminiKey() });
   const base64 = await new Promise((r) => {
     const reader = new FileReader();
     reader.onload = () => r(reader.result.split(',')[1]);
