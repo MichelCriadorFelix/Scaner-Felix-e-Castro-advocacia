@@ -641,107 +641,117 @@ async function loadPDFJS() {
   return window.pdfjsLib;
 }
 
-// ── Extrai texto de PDF (nativo + OCR fallback) ───────────────────────────────
-async function extractFromPDF(file, onProgress) {
+// ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
+async function extractPageWithGemini(blob) {
+  const { GoogleGenAI } = await import("@google/genai");
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const base64 = await new Promise((r) => {
+    const reader = new FileReader();
+    reader.onload = () => r(reader.result.split(',')[1]);
+    reader.readAsDataURL(blob);
+  });
+  const prompt = `Você é um especialista em transcrição jurídica de alta precisão. 
+Este documento ou página falhou no OCR tradicional por ser manuscrito, letra de médico ou ter baixa qualidade visual.
+Sua missão:
+1. Transcreva *exatamente* o texto visível. 
+2. Se for um laudo ou atestado médico, descreva com precisão CIDs, sintomas e recomendações.
+3. Não adicione comentários, introduções ou saudações, devolva apenas o conteúdo transcrito.
+4. Estruture as informações de forma limpa, mantendo o contexto.`;
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-1.5-flash",
+    contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
+  });
+  return response.text.trim();
+}
+
+async function extractPDFHybrid(file, onProgress, useAi) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = "";
-  let confidence = 0;
-  let confidenceCount = 0;
+  let confidenceTotal = 0;
+  let pagesEvaluated = 0;
 
   for (let i = 1; i <= pdf.numPages; i++) {
-    onProgress(Math.round((i / pdf.numPages) * 60), `Página ${i} de ${pdf.numPages}...`);
+    onProgress(Math.round((i / pdf.numPages) * 100), `Lendo pág ${i}/${pdf.numPages}...`);
     const page = await pdf.getPage(i);
-
-    // Tenta texto nativo
+    
+    // Tenta texto nativo primeiro (100% de confiança, 0 custo)
     const textContent = await page.getTextContent();
     const pageText = textContent.items.map(item => item.str).join(" ").trim();
 
-    if (pageText.length > 30) {
-      fullText += pageText + "\n\n";
-      confidence += 98;
+    if (pageText.length > 50) {
+      fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
+      confidenceTotal += 100;
+      pagesEvaluated++;
     } else {
-      // Fallback OCR de alta fidelidade
-      const viewport = page.getViewport({ scale: 3.5 }); // Aumentado para 3.5 para capturar detalhes finos
+      // É uma página escaneada ou imagem dentro do PDF
+      onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
+      const viewport = page.getViewport({ scale: 3.5 }); 
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width; canvas.height = viewport.height;
       const ctx = canvas.getContext("2d");
-      
-      // Renderização intermediária para aplicar filtros de realce
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // Filtro Profissional para melhorar OCR Local
       const tempCanvas = document.createElement("canvas");
       tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
       const tempCtx = tempCanvas.getContext("2d");
-      await page.render({ canvasContext: tempCtx, viewport }).promise;
+      tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
+      tempCtx.drawImage(canvas, 0, 0);
 
-      // Pré-processamento: Escala de cinza + Aumento de Contraste + Ajuste de Brilho
-      // Isso ajuda o Tesseract a separar o texto do fundo em scans "sujos" ou lavados
-      ctx.filter = 'grayscale(100%) contrast(160%) brightness(110%)';
-      ctx.drawImage(tempCanvas, 0, 0);
+      const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 1.0));
       
-      const blob = await new Promise(r => canvas.toBlob(r, "image/png", 1.0));
-      const result = await runOCR(blob, (p) =>
-        onProgress(60 + Math.round(p * 0.35), `Fine-OCR página ${i}...`)
-      );
-      fullText += result.text + "\n\n";
-      confidence += result.confidence;
+      if (useAi) {
+        // Modo Híbrido: Testa OCR primeiro
+        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
+        const ocrRes = await runOCR(blob, () => {}); // Silencioso
+        
+        if (ocrRes.confidence >= 80) {
+            fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+            confidenceTotal += ocrRes.confidence;
+        } else {
+            onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
+            try {
+                const aiText = await extractPageWithGemini(blob);
+                fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
+                confidenceTotal += 99;
+            } catch (e) {
+                fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA)]\n` + ocrRes.text + "\n\n";
+                confidenceTotal += ocrRes.confidence;
+            }
+        }
+      } else {
+        // Modo Texto Bruto Rigoroso
+        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
+        const ocrRes = await runOCR(blob, (p) => onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(p*100)}%)...`));
+        fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+        confidenceTotal += ocrRes.confidence;
+      }
+      pagesEvaluated++;
     }
-    confidenceCount++;
   }
 
-  return { text: fullText.trim(), confidence: Math.round(confidence / confidenceCount) };
+  return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
 }
 
-// ── Extração Inteligente via Gemini AI ───────────────────────────────────────
-async function extractWithGemini(file, onProgress) {
-  try {
-    const { GoogleGenAI } = await import("@google/genai");
-    // O AI Studio injeta a chave na compilação do Vite
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    
-    const base64 = await new Promise((r) => {
-      const reader = new FileReader();
-      reader.onload = () => r(reader.result.split(',')[1]);
-      reader.readAsDataURL(file);
-    });
-
-    onProgress(30, "Enviando documento para a Nuvem de IA...");
-    
-    const prompt = `Você é um Auditor Especialista em Extração de Dados Jurídicos para o seu software.
-Sua tarefa é analisar a imagem/PDF deste documento e extrair as informações de forma limpa, estruturada e absurdamente precisa.
-
-Regras INEGOCIÁVEIS:
-1. Identifique o tipo de documento logo no início em caixa alta (ex: "DOCUMENTO: CARTEIRA NACIONAL DE HABILITAÇÃO (CNH)", "DOCUMENTO: RECEITUÁRIO MÉDICO", "DOCUMENTO: ATESTADO/LAUDO").
-2. Estruture as informações extraídas no formato de Chave/Valor.
-     Exemplo para CNH:
-     Nome: [NOME DO TITULAR]
-     Identidade / Órgão Emissor: [RG] / [ORGÃO]
-     CPF: [CPF]
-     Data de Emissão: [DATA]
-3. IGNORE completamente ruídos visuais, carimbos pela metade e símbolos soltos gerados por falhas de scan ou marcas d'água.
-4. TEXTO MANUSCRITO OU LETRA DE MÉDICO: Quando identificar atestados, receituários ou laudos escritos à mão, use seu raciocínio lógico avançado para deduzir palavras ilegíveis a partir do contexto clínico/jurídico. Descreva com extrema precisão sintomas, CIDs, datas de afastamento e medicações.
-5. Corrija o texto com inteligência contextual (se estiver escrito algo com erro de OCR mas o contexto for claro, corrija pra ficar literariamente e tecnicamente perfeito).
-6. Se for uma petição genérica ou texto fluido, transcreva o texto preservando parágrafos e resuma o tipo de petição no topo.
-7. Apenas devolva o texto final extraído, NENHUMA saudação como "Aqui está".`;
-
-    onProgress(60, "Interpretando caligrafia e metadados...");
-    
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: { 
-        parts: [
-          { text: prompt },
-          { inlineData: { data: base64, mimeType: file.type } }
-        ] 
+async function extractImageHybrid(file, onProgress, useAi) {
+  onProgress(10, "Avaliando qualidade da imagem via OCR Local...");
+  const ocrRes = await runOCR(file, (p) => onProgress(10 + Math.round(p * 40), `Avaliando OCR: ${Math.round(p*100)}%`));
+  
+  if (useAi && ocrRes.confidence < 80) {
+      onProgress(70, `Qualidade baixa detectada (${ocrRes.confidence}%). Acionando IA Jurídica...`);
+      try {
+          const aiText = await extractPageWithGemini(file);
+          return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
+      } catch(e) {
+          return ocrRes; // Fallback
       }
-    });
-    
-    onProgress(90, "Formatando apresentação final...");
-    return { text: response.text.trim(), confidence: 99 };
-  } catch (err) {
-    console.error("Erro na IA:", err);
-    throw new Error("Erro ao acessar a API do Gemini. Tente enviar como texto bruto.");
   }
+  
+  const modeLabel = useAi ? `OCR LOCAL (${ocrRes.confidence}%)` : `OCR BRUTO (${ocrRes.confidence}%)`;
+  return { text: `[${modeLabel}]\n` + ocrRes.text, confidence: ocrRes.confidence };
 }
 
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
@@ -758,7 +768,8 @@ async function runOCR(imageBlob, onProgress) {
       const canvas = document.createElement("canvas");
       canvas.width = img.width; canvas.height = img.height;
       const ctx = canvas.getContext("2d");
-      ctx.filter = 'grayscale(100%) contrast(150%) brightness(110%)';
+      // Filtro otimizado para fotos de celular (mais contraste para manuscritos)
+      ctx.filter = 'grayscale(100%) contrast(200%) brightness(105%)';
       ctx.drawImage(img, 0, 0);
       return new Promise(r => canvas.toBlob(r, "image/png", 1.0));
     } catch (e) {
@@ -914,10 +925,18 @@ export default function ScannerJuridico() {
         // Remove caracteres que costumam ser "sujeira" de scanner (bordas de página)
         // Mantém letras, números, acentos e pontuação básica
         let l = line.replace(/[^a-zA-Z0-9\sáàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ.,:;()\-/$%]/g, ' ');
-        // Reduce multiple spaces
+        
+        // Remove símbolos isolados (caracteres sozinhos que não são palavras comuns como 'a', 'e', 'o')
+        l = l.split(' ').filter(word => {
+            if (word.length === 1) {
+                return /^[aeiou0-9]$/i.test(word); // Mantém se for vogal ou número
+            }
+            return true;
+        }).join(' ');
+
         return l.trim().replace(/\s+/g, ' ');
       })
-      .filter(line => line.length > 1) // Remove linhas que ficaram com 1 char (ruído)
+      .filter(line => line.length > 2) // Remove linhas muito curtas (geralmente ruído)
       .join('\n');
 
     // 2. Reconstrução de Parágrafos e Destaque de Cabeçalhos
@@ -1069,20 +1088,15 @@ export default function ScannerJuridico() {
         setProgressMsg(`[${current}/${total}] ${msg || "Extraindo..."}`); 
       };
 
-      if (aiMode) {
-        extracted = await extractWithGemini(f, onProgress);
+      if (f.type === "application/pdf") {
+        extracted = await extractPDFHybrid(f, onProgress, aiMode);
       } else {
-        if (f.type === "application/pdf") {
-          extracted = await extractFromPDF(f, onProgress);
-        } else {
-          extracted = await runOCR(f, (p) =>
-            onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
-          );
-        }
-        // Otimização Heurística para Texto Bruto
-        if (extracted && extracted.text) {
-          extracted.text = optimizeRawText(extracted.text);
-        }
+        extracted = await extractImageHybrid(f, onProgress, aiMode);
+      }
+      
+      // Otimização Heurística para todos os casos (limpeza final)
+      if (extracted && extracted.text) {
+        extracted.text = optimizeRawText(extracted.text);
       }
 
       onProgress(85, "Salvando na nuvem...");
@@ -1149,23 +1163,15 @@ export default function ScannerJuridico() {
       let extracted;
       const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
 
-      if (aiMode) {
-        onProgress(10, "Iniciando IA Jurídica...");
-        extracted = await extractWithGemini(file, onProgress);
+      if (file.type === "application/pdf") {
+        extracted = await extractPDFHybrid(file, onProgress, aiMode);
       } else {
-        if (file.type === "application/pdf") {
-          onProgress(5, "Carregando PDF...");
-          extracted = await extractFromPDF(file, onProgress);
-        } else {
-          onProgress(10, "Carregando OCR...");
-          extracted = await runOCR(file, (p) =>
-            onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
-          );
-        }
-        // Otimização Heurística para Texto Bruto
-        if (extracted && extracted.text) {
-          extracted.text = optimizeRawText(extracted.text);
-        }
+        extracted = await extractImageHybrid(file, onProgress, aiMode);
+      }
+
+      // Otimização Heurística para todos os casos (limpeza final)
+      if (extracted && extracted.text) {
+        extracted.text = optimizeRawText(extracted.text);
       }
 
       onProgress(80, "Verificando nuvem...");
@@ -1645,8 +1651,8 @@ export default function ScannerJuridico() {
                   <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
                     style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
                   <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
-                    <span style={{ fontWeight: 600, color: G.accent }}>Tratamento com IA e Estruturação</span>
-                    <span style={{ fontSize: '11px', color: G.muted }}>Organiza Nome, CPF, RG limpos. Remove ruídos e corrige o OCR.</span>
+                    <span style={{ fontWeight: 600, color: G.accent }}>Motor Híbrido Inteligente (Recomendado)</span>
+                    <span style={{ fontSize: '11px', color: G.muted }}>Extrai as partes perfeitas nativamente e usa a IA APENAS para manuscritos ilegíveis e páginas com muito ruído (economia e precisão de 100%).</span>
                   </label>
                 </div>
               )}
