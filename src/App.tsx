@@ -645,27 +645,37 @@ async function loadPDFJS() {
 function getAvailableGeminiKeys() {
   const keys = [];
   
-  // No Vercel, apenas variáveis iniciadas com VITE_ vão para o navegador. 
-  // (No AI Studio local, o process.env.GEMINI_API_KEY funciona via polyfill)
+  // 1. Busca por injeção direta (polyfill ou vite.config define)
   try {
     if (typeof process !== 'undefined') {
       if (process.env?.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY.trim());
-      if (process.env?.VITE_GEMINI_API_KEY_2) keys.push(process.env.VITE_GEMINI_API_KEY_2.trim());
-      if (process.env?.VITE_GEMINI_API_KEY_3) keys.push(process.env.VITE_GEMINI_API_KEY_3.trim());
+      
+      // Procura qualquer coisa no process.env que tenha GEMINI 
+      Object.keys(process.env).forEach(k => {
+        if (k.includes('GEMINI_API_KEY') && typeof process.env[k] === 'string') {
+          keys.push(process.env[k].trim());
+        }
+      });
     }
   } catch(e) {}
 
+  // 2. Busca dinâmica VITE nativa (import.meta.env tem todas as variáveis VITE_*)
   try {
-    if (import.meta.env) {
+    if (import.meta && import.meta.env) {
+      // Pega explicito
       if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY.trim());
-      if (import.meta.env.VITE_GEMINI_API_KEY_1) keys.push(import.meta.env.VITE_GEMINI_API_KEY_1.trim());
-      if (import.meta.env.VITE_GEMINI_API_KEY_2) keys.push(import.meta.env.VITE_GEMINI_API_KEY_2.trim());
-      if (import.meta.env.VITE_GEMINI_API_KEY_3) keys.push(import.meta.env.VITE_GEMINI_API_KEY_3.trim());
+      
+      // Itera dinamicamente para pegar VITE_GEMINI_API_KEY_2, _3, _QualquerCousa
+      Object.keys(import.meta.env).forEach(k => {
+        if (k.includes('GEMINI') && typeof import.meta.env[k] === 'string' && import.meta.env[k].length > 10) {
+          keys.push(import.meta.env[k].trim());
+        }
+      });
     }
   } catch (e) {}
 
-  // Remove duplicatas
-  return [...new Set(keys)].filter(Boolean);
+  // Remove duplicatas exatas, vazias, e strings que não parecem keys reais
+  return [...new Set(keys)].filter(k => k && k.length > 20);
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
