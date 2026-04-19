@@ -880,48 +880,6 @@ const supabaseUrl = (typeof import.meta !== 'undefined' && import.meta.env && im
 const supabaseKey = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) || (typeof process !== 'undefined' && process.env.SUPABASE_ANON_KEY) || '';
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
-// ── LocalStorage (Fallback para quando o Supabase não estiver disponível) ─────
-const DB_KEY = "juridico_scanner_history";
-const CLIENTS_KEY = "juridico_scanner_clients";
-
-function getHistory() {
-  try { return JSON.parse(localStorage.getItem(DB_KEY) || "[]"); }
-  catch { return []; }
-}
-function saveHistory(items) {
-  localStorage.setItem(DB_KEY, JSON.stringify(items));
-}
-function addToHistory(item) {
-  const items = getHistory();
-  items.unshift(item);
-  if (items.length > 50) items.splice(50);
-  saveHistory(items);
-}
-function removeFromHistory(id) {
-  saveHistory(getHistory().filter(i => i.id !== id));
-}
-
-function getClients() {
-  try { return JSON.parse(localStorage.getItem(CLIENTS_KEY) || "[]"); }
-  catch { return []; }
-}
-function saveClients(items) {
-  localStorage.setItem(CLIENTS_KEY, JSON.stringify(items));
-}
-function addClient(name) {
-  const clients = getClients();
-  const newClient = { id: Date.now().toString(), name, ts: Date.now() };
-  clients.unshift(newClient);
-  saveClients(clients);
-  return newClient;
-}
-function removeClient(id) {
-  saveClients(getClients().filter(c => c.id !== id));
-  // Remover os docs do cliente também
-  const hist = getHistory().filter(h => h.clientId !== id);
-  saveHistory(hist);
-}
-
 // ── Componente principal ──────────────────────────────────────────────────────
 export default function ScannerJuridico() {
   const [tab, setTab] = useState("scanner");
@@ -1003,8 +961,7 @@ export default function ScannerJuridico() {
           }
         } catch(e) { console.error('Erro Supabase:', e); }
       } else {
-        setHistory(getHistory()); 
-        setClients(getClients());
+        console.warn("Supabase não está configurado. A persistência de dados está desativada.");
       }
     }
     loadData();
@@ -1334,7 +1291,9 @@ export default function ScannerJuridico() {
         clientId: selectedClient || "unassigned"
       };
 
-      if (!supabase) addToHistory(item);
+      if (!supabase) {
+        showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
+      }
       setHistory(prev => [item, ...prev]);
 
       setResult(item);
@@ -1663,9 +1622,7 @@ export default function ScannerJuridico() {
       setHistory(history.filter(h => h.id !== id));
       showToast("Removido do Supabase");
     } else {
-      removeFromHistory(id);
-      setHistory(getHistory());
-      showToast("Removido do histórico");
+      showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
     }
   };
 
@@ -1687,8 +1644,7 @@ export default function ScannerJuridico() {
       if (supabase) {
         await supabase.from('lexscan_documents').update({ name: rawInput }).eq('id', renamingItem.id);
       } else {
-        let localH = getHistory().map(h => h.id === renamingItem.id ? { ...h, name: rawInput } : h);
-        localStorage.setItem("lexscan_history", JSON.stringify(localH));
+        throw new Error("Supabase não disponível");
       }
       setHistory(prev => prev.map(h => h.id === renamingItem.id ? { ...h, name: rawInput } : h));
       showToast("Renomeado com sucesso!");
@@ -1731,12 +1687,9 @@ export default function ScannerJuridico() {
         await supabase.from('lexscan_clients').delete().eq('id', id);
         setClients(clients.filter(c => c.id !== id));
         setHistory(history.filter(h => h.clientId !== id));
-        showToast("Pasta do cliente excluída do Supabase");
+        showToast("Pasta do cliente excluída do banco");
       } else {
-        removeClient(id);
-        setClients(getClients());
-        setHistory(getHistory());
-        showToast("Pasta do cliente excluída");
+        showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
       }
     }
   };
@@ -1757,13 +1710,10 @@ export default function ScannerJuridico() {
         const nc = { id: data[0].id, name: data[0].name, ts: data[0].created_at };
         setClients(prev => [nc, ...prev]);
         setSelectedClient(nc.id);
-        showToast("Pasta criada no Supabase!");
+        showToast("Pasta criada no banco!");
       }
     } else {
-      const nc = addClient(name);
-      setClients(getClients());
-      setSelectedClient(nc.id);
-      showToast("Pasta criada (Local)!");
+      showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
     }
   };
 
