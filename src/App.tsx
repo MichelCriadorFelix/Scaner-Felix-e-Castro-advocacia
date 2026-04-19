@@ -830,6 +830,8 @@ function removeClient(id) {
 export default function ScannerJuridico() {
   const [tab, setTab] = useState("scanner");
   const [file, setFile] = useState(null);
+  const [queue, setQueue] = useState([]); // Fila de arquivos para processamento em massa
+  const [currentQueueIndex, setCurrentQueueIndex] = useState(-1);
   const [preview, setPreview] = useState(null);
   const [drag, setDrag] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -945,23 +947,141 @@ export default function ScannerJuridico() {
     setTimeout(() => setToast(null), 2800);
   };
 
-  const handleFile = (f) => {
-    if (!f) return;
+  const handleFiles = (files) => {
+    if (!files || files.length === 0) return;
+    
     const allowed = ["image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"];
-    if (!allowed.includes(f.type)) { showToast("Formato não suportado", "error"); return; }
-    setFile(f);
-    setResult(null);
-    const reader = new FileReader();
-    reader.onload = (e) => setPreview(e.target.result);
-    reader.readAsDataURL(f);
+    const validFiles = Array.from(files).filter(f => allowed.includes(f.type));
+    
+    if (validFiles.length === 0) {
+      showToast("Nenhum formato suportado selecionado", "error");
+      return;
+    }
+
+    if (validFiles.length > 10) {
+      showToast("Limite de 10 arquivos por vez para segurança", "info");
+      validFiles.splice(10);
+    }
+
+    if (validFiles.length === 1) {
+      const f = validFiles[0];
+      setFile(f);
+      setQueue([]);
+      setResult(null);
+      const reader = new FileReader();
+      reader.onload = (e) => setPreview(e.target.result);
+      reader.readAsDataURL(f);
+    } else {
+      setQueue(validFiles);
+      setFile(null);
+      setPreview(null);
+      setResult(null);
+      showToast(`${validFiles.length} arquivos prontos na fila`, "info");
+    }
   };
 
   const handleDrop = (e) => {
     e.preventDefault(); setDrag(false);
-    handleFile(e.dataTransfer.files[0]);
+    handleFiles(e.dataTransfer.files);
+  };
+
+  const processBatch = async () => {
+    if (queue.length === 0) return;
+    
+    setProcessing(true);
+    setCurrentQueueIndex(0);
+    
+    for (let i = 0; i < queue.length; i++) {
+      setCurrentQueueIndex(i);
+      const currentFile = queue[i];
+      await performSingleProcess(currentFile, i + 1, queue.length);
+    }
+    
+    setProcessing(false);
+    setCurrentQueueIndex(-1);
+    setQueue([]);
+    showToast(`✓ Lote de ${queue.length} concluído!`, "success");
+    setTab("history");
+  };
+
+  const performSingleProcess = async (f, current, total) => {
+    setProgress(0);
+    setProgressMsg(`[${current}/${total}] Processando: ${f.name}`);
+
+    try {
+      let extracted;
+      const onProgress = (p, msg) => { 
+        setProgress(p); 
+        setProgressMsg(`[${current}/${total}] ${msg || "Extraindo..."}`); 
+      };
+
+      if (aiMode) {
+        extracted = await extractWithGemini(f, onProgress);
+      } else {
+        if (f.type === "application/pdf") {
+          extracted = await extractFromPDF(f, onProgress);
+        } else {
+          extracted = await runOCR(f, (p) =>
+            onProgress(10 + Math.round(p * 88), "Reconhecendo texto...")
+          );
+        }
+      }
+
+      onProgress(85, "Salvando na nuvem...");
+
+      let fileUrl = null;
+      let finalId = Date.now().toString() + "_" + current;
+
+      if (supabase) {
+        const ext = f.name.split('.').pop() || 'jpg';
+        const rawName = f.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const fileName = `${Date.now()}_${rawName}.${ext}`;
+        
+        const { data: uploadData } = await supabase.storage.from('lexscan-files').upload(fileName, f);
+        if (uploadData) {
+          const { data: publicUrl } = supabase.storage.from('lexscan-files').getPublicUrl(fileName);
+          fileUrl = publicUrl.publicUrl;
+        }
+
+        const { data: inserted } = await supabase.from('lexscan_documents').insert({
+          client_id: selectedClient === 'unassigned' || !selectedClient ? null : selectedClient,
+          name: f.name,
+          extracted_text: extracted.text,
+          confidence: extracted.confidence,
+          file_url: fileUrl,
+          file_type: f.type,
+          chars_count: extracted.text.length,
+          words_count: extracted.text.split(/\s+/).length
+        }).select().single();
+        
+        if (inserted) finalId = inserted.id;
+      }
+
+      const item = {
+        id: finalId,
+        clientId: selectedClient || 'unassigned',
+        name: f.name,
+        type: f.type,
+        ts: Date.now(),
+        text: extracted.text,
+        confidence: extracted.confidence,
+        words: extracted.text.split(/\s+/).length,
+        fileUrl,
+        preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null
+      };
+
+      setHistory(prev => [item, ...prev]);
+    } catch (e) {
+      console.error(e);
+      showToast(`Erro no arquivo ${current}`, "error");
+    }
   };
 
   const process = async () => {
+    if (queue.length > 0) {
+      processBatch();
+      return;
+    }
     if (!file) return;
     setProcessing(true);
     setProgress(0);
@@ -1419,18 +1539,23 @@ export default function ScannerJuridico() {
               {processing && (
                 <div className="progress-wrap">
                   <div className="progress-label">
-                    <span>Processando</span>
+                    <span>{currentQueueIndex !== -1 ? `Processando Lote` : `Processando`}</span>
                     <span>{progress}%</span>
                   </div>
                   <div className="progress-bar-bg">
                     <div className="progress-bar" style={{ width: progress + "%" }} />
                   </div>
                   <div className="progress-status">{progressMsg}</div>
+                  {currentQueueIndex !== -1 && (
+                    <div style={{ marginTop: 8, fontSize: '11px', color: G.muted, textAlign: 'center' }}>
+                      Arquivo {currentQueueIndex + 1} de {queue.length}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Select Folder area if not processing and not result */}
-              {file && !result && !processing && (
+              {(file || queue.length > 0) && !result && !processing && (
                 <div style={{ marginBottom: '14px' }}>
                   <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Salvar na Pasta:</label>
                   <select 
@@ -1447,6 +1572,29 @@ export default function ScannerJuridico() {
                     ))}
                   </select>
                 </div>
+              )}
+
+              {queue.length > 0 && !result && !processing && (
+                 <div style={{ textAlign: 'center', background: G.card, padding: '20px', borderRadius: '16px', border: `1px solid ${G.border}`, marginBottom: '14px' }}>
+                    <div style={{ fontSize: '32px', marginBottom: '8px' }}>📚</div>
+                    <div style={{ fontWeight: 500, marginBottom: '4px' }}>Lote de {queue.length} arquivos</div>
+                    <div style={{ fontSize: '12px', color: G.muted, marginBottom: '16px' }}>Os arquivos abaixo serão processados sequencialmente</div>
+                    
+                    <div style={{ maxHeight: '100px', overflowY: 'auto', background: G.bg, padding: '10px', borderRadius: '10px', marginBottom: '16px', textAlign: 'left' }}>
+                      {queue.map((q, i) => (
+                        <div key={i} style={{ fontSize: '11px', color: G.text, padding: '4px 0', borderBottom: i < queue.length - 1 ? `1px solid ${G.border}` : 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {i + 1}. {q.name}
+                        </div>
+                      ))}
+                    </div>
+
+                    <button className="process-btn" onClick={processBatch} style={{ background: G.accent, color: '#000' }}>
+                      🚀 Iniciar Processamento em Massa
+                    </button>
+                    <button onClick={() => setQueue([])} style={{ marginTop: '12px', background: 'none', border: 'none', color: G.error, fontSize: '12px', cursor: 'pointer' }}>
+                      Cancelar Lote
+                    </button>
+                 </div>
               )}
 
               {/* Process button */}
@@ -1514,10 +1662,10 @@ export default function ScannerJuridico() {
                 </>
               )}
 
-              <input ref={fileRefImg} type="file" accept="image/*" style={{ display: "none" }}
-                onChange={e => handleFile(e.target.files[0])} />
-              <input ref={fileRefPdf} type="file" accept="application/pdf" style={{ display: "none" }}
-                onChange={e => handleFile(e.target.files[0])} />
+              <input ref={fileRefImg} type="file" accept="image/*" multiple style={{ display: "none" }}
+                onChange={e => handleFiles(e.target.files)} />
+              <input ref={fileRefPdf} type="file" accept="application/pdf" multiple style={{ display: "none" }}
+                onChange={e => handleFiles(e.target.files)} />
             </div>
           )}
 
