@@ -419,15 +419,15 @@ const css = `
     font-size: 20px;
     flex-shrink: 0;
   }
-  .hist-info { flex: 1; min-width: 0; }
+  .hist-info { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
   .hist-name {
     font-size: 13px;
     font-weight: 500;
     color: ${G.text};
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    width: 100%;
   }
   .hist-date { font-size: 11px; color: ${G.muted}; font-family: 'DM Mono', monospace; }
   .hist-chars { font-size: 11px; color: ${G.accent}; font-family: 'DM Mono', monospace; margin-top: 2px; }
@@ -2531,7 +2531,7 @@ export default function ScannerJuridico() {
                           }
                           <div className="hist-info">
                             {renamingItem?.id === item.id ? (
-                              <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+                              <div style={{ display: 'flex', gap: '8px', marginBottom: '4px', width: '100%' }}>
                                 <input 
                                   autoFocus
                                   type="text" 
@@ -2545,10 +2545,10 @@ export default function ScannerJuridico() {
                               </div>
                             ) : (
                               <div className="hist-name">
-                                 {item.name}
+                                 <span style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1}}>{item.name}</span>
                                  <button 
                                    onClick={(e) => { e.stopPropagation(); setRenamingItem(item); setNewDocumentName(item.name.replace(/\.[^/.]+$/, "")); }}
-                                   style={{ marginLeft: '8px', background: 'transparent', border: 'none', color: G.muted, cursor: 'pointer', fontSize: '12px' }}
+                                   style={{ padding: '4px', marginLeft: '4px', background: 'transparent', border: 'none', color: G.muted, cursor: 'pointer', fontSize: '12px', flexShrink: 0 }}
                                    title="Renomear"
                                  >
                                    ✏️
