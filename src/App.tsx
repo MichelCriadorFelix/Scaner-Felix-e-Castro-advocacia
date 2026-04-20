@@ -1564,7 +1564,7 @@ export default function ScannerJuridico() {
       words: 0,
       chars: 0,
       fileUrl: fileUrl,
-      preview: null,
+      preview: fileUrl,
       localBlobUrl: URL.createObjectURL(pdfBlob)
     };
 
