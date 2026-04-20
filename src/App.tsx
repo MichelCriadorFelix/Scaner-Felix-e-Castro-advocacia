@@ -671,17 +671,24 @@ async function loadPDFJS() {
 
 // ── Banco de API Keys & Auto-Failover ────────────────────────
 function getAvailableGeminiKeys() {
-  const keys = [];
+  const rawKeys = [];
   
+  const addKey = (val) => {
+    if (!val || typeof val !== 'string') return;
+    // Se o usuário usou vírgulas para separar as chaves, nós dividimos aqui!
+    const parts = val.split(',').map(k => k.trim()).filter(Boolean);
+    rawKeys.push(...parts);
+  };
+
   // 1. Busca por injeção direta (polyfill ou vite.config define)
   try {
     if (typeof process !== 'undefined') {
-      if (process.env?.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY.trim());
+      if (process.env?.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
       
       // Procura qualquer coisa no process.env que tenha GEMINI 
       Object.keys(process.env).forEach(k => {
-        if (k.includes('GEMINI_API_KEY') && typeof process.env[k] === 'string') {
-          keys.push(process.env[k].trim());
+        if (k.includes('GEMINI') && typeof process.env[k] === 'string') {
+          addKey(process.env[k]);
         }
       });
     }
@@ -690,20 +697,18 @@ function getAvailableGeminiKeys() {
   // 2. Busca dinâmica VITE nativa (import.meta.env tem todas as variáveis VITE_*)
   try {
     if (import.meta && import.meta.env) {
-      // Pega explicito
-      if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY.trim());
+      if (import.meta.env.VITE_GEMINI_API_KEY) addKey(import.meta.env.VITE_GEMINI_API_KEY);
       
-      // Itera dinamicamente para pegar VITE_GEMINI_API_KEY_2, _3, _QualquerCousa
       Object.keys(import.meta.env).forEach(k => {
-        if (k.includes('GEMINI') && typeof import.meta.env[k] === 'string' && import.meta.env[k].length > 10) {
-          keys.push(import.meta.env[k].trim());
+        if (k.includes('GEMINI') && typeof import.meta.env[k] === 'string') {
+          addKey(import.meta.env[k]);
         }
       });
     }
   } catch (e) {}
 
   // Remove duplicatas exatas, vazias, e strings que não parecem keys reais
-  return [...new Set(keys)].filter(k => k && k.length > 20);
+  return [...new Set(rawKeys)].filter(k => k && k.length > 20);
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
