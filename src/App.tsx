@@ -1413,7 +1413,9 @@ export default function ScannerJuridico() {
       });
       setStream(s);
       setCamera(true);
-      setTimeout(() => { if (videoRef.current) videoRef.current.srcObject = s; }, 100);
+      setTimeout(() => { 
+        if (videoRef.current) videoRef.current.srcObject = s; 
+      }, 100);
     } catch { showToast("Câmera não disponível", "error"); }
   };
 
