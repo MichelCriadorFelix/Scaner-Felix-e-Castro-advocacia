@@ -949,6 +949,7 @@ export default function ScannerJuridico() {
 
   const fileRefImg = useRef();
   const fileRefPdf = useRef();
+  const fileRefDirectPdf = useRef();
   const videoRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
@@ -1596,6 +1597,83 @@ export default function ScannerJuridico() {
     setTab("scanner"); 
     
     showToast("✓ Salvo! Scanner liberado para seu próximo documento.");
+  };
+
+  const handleDirectUploadPDFToFolder = async (files) => {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    if (file.type !== "application/pdf") {
+      showToast("Por favor, selecione um arquivo PDF.", "error");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(0);
+    setProgressMsg("Fazendo upload direto do PDF...");
+
+    try {
+      let fileUrl = null;
+      let finalId = Date.now().toString();
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+
+      if (supabase) {
+        const fileName = `${Date.now()}_${sanitizedName}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file, {
+          contentType: 'application/pdf'
+        });
+        
+        if (!uploadError) {
+           fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
+        } else {
+           console.error("Storage Error:", uploadError);
+           showToast("Erro ao fazer upload para a nuvem.", "error");
+           setProcessing(false);
+           return;
+        }
+        
+        const docRecord = {
+           client_id: viewingClient === 'unassigned' ? null : viewingClient,
+           name: file.name,
+           file_type: file.type,
+           file_url: fileUrl,
+           extracted_text: '',
+           confidence: 0,
+           chars_count: 0,
+           words_count: 0
+        };
+
+        const { data: dbData } = await supabase.from('lexscan_documents').insert([docRecord]).select();
+        if (dbData && dbData[0]) finalId = dbData[0].id;
+      }
+
+      const newItem = {
+        id: finalId,
+        clientId: viewingClient || 'unassigned',
+        name: file.name,
+        type: file.type,
+        ts: Date.now(),
+        text: '',
+        confidence: 0,
+        words: 0,
+        chars: 0,
+        fileUrl: fileUrl,
+        preview: fileUrl,
+        localBlobUrl: URL.createObjectURL(file)
+      };
+
+      setHistory(prev => [newItem, ...prev]);
+      if (!supabase) addToHistory(newItem);
+
+      showToast("PDF salvo na pasta com sucesso!");
+    } catch (e) {
+      console.error(e);
+      showToast("Erro ao salvar PDF", "error");
+    } finally {
+      setProcessing(false);
+      if (fileRefDirectPdf.current) {
+        fileRefDirectPdf.current.value = "";
+      }
+    }
   };
 
   const processHistoryItem = async (item) => {
@@ -2304,6 +2382,8 @@ export default function ScannerJuridico() {
                 onChange={e => handleFiles(e.target.files)} />
               <input ref={fileRefPdf} type="file" accept="application/pdf" multiple style={{ display: "none" }}
                 onChange={e => handleFiles(e.target.files)} />
+              <input ref={fileRefDirectPdf} type="file" accept="application/pdf" multiple={false} style={{ display: "none" }}
+                onChange={e => handleDirectUploadPDFToFolder(e.target.files)} />
             </div>
           )}
 
@@ -2411,6 +2491,14 @@ export default function ScannerJuridico() {
                       </div>
 
                       <div style={{ display: 'flex', gap: '8px', alignSelf: 'flex-end' }}>
+                        <button 
+                          onClick={() => fileRefDirectPdf.current.click()}
+                          style={{ background: G.card, color: G.text, border: `1px solid ${G.border}`, padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                          title="Fazer upload de um PDF diretamente para esta pasta (Sem OCR imediato)"
+                        >
+                          <span>📤</span> Subir PDF
+                        </button>
+                        
                         {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
                           <button 
                             onClick={processFolderOCR}
