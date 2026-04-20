@@ -675,28 +675,22 @@ function getAvailableGeminiKeys() {
   
   const addKey = (val) => {
     if (!val || typeof val !== 'string') return;
-    // Se o usuário usou vírgulas para separar as chaves, nós dividimos aqui!
     const parts = val.split(',').map(k => k.trim()).filter(Boolean);
     rawKeys.push(...parts);
   };
 
-  // 1. Busca por injeção direta (polyfill ou vite.config define)
+  // 1. Busca por injeção estática (Substituição literal do Vite)
+  // IMPORTANTE: Vite troca 'process.env.GEMINI_API_KEY' diretamente por uma string no build.
+  // Por isso, NÃO podemos usar process.env dynamicamente. Tem que ser chamada exata.
   try {
-    if (typeof process !== 'undefined') {
-      if (process.env?.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
-      
-      // Procura qualquer coisa no process.env que tenha GEMINI 
-      Object.keys(process.env).forEach(k => {
-        if (k.includes('GEMINI') && typeof process.env[k] === 'string') {
-          addKey(process.env[k]);
-        }
-      });
-    }
+    const keyFromProcess = process.env.GEMINI_API_KEY;
+    if (keyFromProcess) addKey(keyFromProcess);
   } catch(e) {}
 
-  // 2. Busca dinâmica VITE nativa (import.meta.env tem todas as variáveis VITE_*)
+  // 2. Busca nativa VITE (import.meta.env)
   try {
     if (import.meta && import.meta.env) {
+      if (import.meta.env.GEMINI_API_KEY) addKey(import.meta.env.GEMINI_API_KEY);
       if (import.meta.env.VITE_GEMINI_API_KEY) addKey(import.meta.env.VITE_GEMINI_API_KEY);
       
       Object.keys(import.meta.env).forEach(k => {
