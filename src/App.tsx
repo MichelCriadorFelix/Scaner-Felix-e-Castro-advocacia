@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import ReactCrop from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import { createClient } from '@supabase/supabase-js';
+import JSZip from 'jszip';
 
 // ── Paleta e estilos globais ──────────────────────────────────────────────────
 const G = {
@@ -1942,6 +1943,72 @@ export default function ScannerJuridico() {
     downloadTXT(compiledText, `COMPILADO_${folderName.replace(/\s+/g, '_')}`);
   };
 
+  const downloadFolderPDFsZip = async () => {
+    const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
+    if (docs.length === 0) {
+      showToast("Nenhum documento nesta pasta.", "info");
+      return;
+    }
+
+    const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
+    showToast("Preparando download de todos os arquivos...");
+    
+    setTab("scanner");
+    setProcessing(true);
+    setProgress(0);
+    setProgressMsg("Iniciando compactação...");
+
+    try {
+      const zip = new JSZip();
+
+      for (let i = 0; i < docs.length; i++) {
+        const doc = docs[i];
+        setProgress(Math.round(((i) / docs.length) * 100));
+        setProgressMsg(`[${i + 1}/${docs.length}] Buscando: ${doc.name}`);
+
+        try {
+          const urlToFetch = doc.fileUrl || doc.localBlobUrl || doc.preview;
+          if (!urlToFetch) continue;
+
+          const response = await fetch(urlToFetch);
+          if (!response.ok) throw new Error("Falha no fetch");
+          const blob = await response.blob();
+          
+          let entryName = doc.name;
+          // Garantir extensão básica baseada no tipo se o nome não tiver
+          if (!entryName.includes('.')) {
+            if (blob.type === 'application/pdf') entryName += '.pdf';
+            else if (blob.type === 'image/jpeg') entryName += '.jpg';
+          }
+          
+          zip.file(entryName, blob);
+        } catch (err) {
+          console.error("Erro no ZIP item:", doc.name, err);
+        }
+      }
+
+      setProgress(95);
+      setProgressMsg("Gerando arquivo ZIP final...");
+      const content = await zip.generateAsync({ type: "blob" });
+      
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(content);
+      link.download = `DOCS_${folderName.replace(/\s+/g, '_')}_SCANNED.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      showToast("Download ZIP concluído!", "success");
+    } catch (err) {
+      console.error(err);
+      showToast("Erro ao gerar o download em massa.", "error");
+    } finally {
+      setProcessing(false);
+      setProgress(0);
+      setProgressMsg("");
+    }
+  };
+
   return (
     <>
       <style>{css}</style>
@@ -2501,6 +2568,15 @@ export default function ScannerJuridico() {
                             title="Baixar Texto Compilado de toda a pasta"
                           >
                             <span>📑</span> Compilar
+                          </button>
+                        )}
+                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
+                          <button 
+                            onClick={downloadFolderPDFsZip}
+                            style={{ background: G.success, color: '#fff', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                            title="Baixar todos os arquivos originais em um ZIP"
+                          >
+                            <span>📦</span> Download Todos
                           </button>
                         )}
                       </div>
