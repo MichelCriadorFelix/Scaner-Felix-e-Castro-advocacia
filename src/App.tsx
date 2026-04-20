@@ -730,8 +730,9 @@ Sua missão:
 4. Estruture as informações de forma limpa, mantendo o contexto.`;
 
   // Lista de modelos do Google para driblar a sobrecarga (503 High Demand)
-  // Tentamos a mais rápida/atual 3.0/2.5 e caímos até para a Pro se os servidores da Flash caírem.
-  const modelsToTry = ["gemini-3.0-flash", "gemini-2.5-flash", "gemini-1.5-pro"];
+  // Tentamos estritamente o Gemini 3 ("gemini-3.1-flash") por ter taxa imensa. Se falhar, vamos para "gemini-3.0-flash".
+  // Removemos o gemini-1.5-pro de vez.
+  const modelsToTry = ["gemini-3.1-flash", "gemini-3.0-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < keys.length; i++) {
@@ -1659,11 +1660,11 @@ export default function ScannerJuridico() {
   const processFolderOCR = async () => {
     const docs = history.filter(h => 
        (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)
-       && (!h.text || h.text.trim() === '')
+       && (!h.text || h.text.trim() === '' || h.confidence <= 98)
     );
     
     if (docs.length === 0) {
-       showToast("Todos os documentos desta pasta já possuem OCR extraído.", "info");
+       showToast("Todos os documentos já possuem OCR extraído ou confiança >= 99%.", "info");
        return;
     }
 
@@ -2410,11 +2411,11 @@ export default function ScannerJuridico() {
                       </div>
 
                       <div style={{ display: 'flex', gap: '8px', alignSelf: 'flex-end' }}>
-                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient) && (!h.text || h.text.trim() === '')).length > 0 && (
+                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
                           <button 
                             onClick={processFolderOCR}
                             style={{ background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-                            title="Gerar OCR para todos os documentos sem texto"
+                            title="Gerar OCR para documentos sem texto ou falhos"
                           >
                             <span>🧠</span> Lote de OCR
                           </button>
