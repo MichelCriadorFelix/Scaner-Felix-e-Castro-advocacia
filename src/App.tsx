@@ -1584,9 +1584,17 @@ export default function ScannerJuridico() {
     setCameraPages([]);
     setIsBatchModalOpen(false);
     setBatchDocName("Documento_Escaneado"); // reset config
-    setTab("history"); // Joga pra aba histórica
+
+    // Limpar o state da foto anterior e da crop session
+    setFile(null);
+    setPreview(null);
+    setResult(null);
+    setCroppedImage(null);
+
+    // Joga pra aba scanner novamente para recomeçar o fluxo direto
+    setTab("scanner"); 
     
-    showToast("✓ Salvo na sua pasta. Pronto para gerar OCR depois!");
+    showToast("✓ Salvo! Scanner liberado para seu próximo documento.");
   };
 
   const processHistoryItem = async (item) => {
