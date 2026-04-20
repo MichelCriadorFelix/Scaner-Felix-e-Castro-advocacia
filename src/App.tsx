@@ -1280,6 +1280,8 @@ export default function ScannerJuridico() {
            fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
         } else {
            console.error("Storage Error:", uploadError);
+           showToast("Erro ao armazenar arquivo na nuvem", "error");
+           return;
         }
 
         onProgress(95, "Sincronizando com o banco GED...");
@@ -1523,8 +1525,9 @@ export default function ScannerJuridico() {
     
     const pdfBlob = doc.output('blob');
     const finalName = batchDocName.trim() ? batchDocName.trim() : "Documento_Escaneado";
+    const sanitizedName = finalName.replace(/[^a-zA-Z0-9_-]/g, '_');
     const finalFile = new File([pdfBlob], `${finalName}.pdf`, { type: "application/pdf" });
-    
+
     // Upload direto pro Supabase (Sem OCR) para acelerar a mesa
     showToast("PDF Otimizado e Gerado! Salvando na nuvem...");
     
@@ -1532,10 +1535,17 @@ export default function ScannerJuridico() {
     let finalId = Date.now().toString();
 
     if (supabase) {
-      const fileName = `${Date.now()}_${finalName}.pdf`;
-      const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFile);
+      const fileName = `${Date.now()}_${sanitizedName}.pdf`;
+      const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFile, {
+        contentType: 'application/pdf'
+      });
+      
       if (!uploadError) {
          fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
+      } else {
+         console.error("Storage Error:", uploadError);
+         showToast("Erro ao fazer upload para a nuvem. O arquivo não foi salvo no DB.", "error");
+         return; // Aborta para evitar registros ocos
       }
       
       const docRecord = {
