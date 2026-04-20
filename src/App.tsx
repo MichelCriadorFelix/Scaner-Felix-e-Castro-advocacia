@@ -1875,6 +1875,18 @@ export default function ScannerJuridico() {
                </select>
             </div>
 
+            <div style={{marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '8px'}}>
+               <label style={{fontSize: '12px', color: G.muted}}>Salvar na Pasta do Cliente:</label>
+               <select 
+                 value={selectedClient} 
+                 onChange={e => setSelectedClient(e.target.value)}
+                 style={{background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '12px', color: G.text, borderRadius: '8px', width: '100%', fontSize: '14px', cursor: 'pointer'}}
+               >
+                 <option value="unassigned">Geral (Sem Pasta Específica)</option>
+                 {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+               </select>
+            </div>
+
             <div className="modal-actions" style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
               <button 
                 className="modal-btn" 
