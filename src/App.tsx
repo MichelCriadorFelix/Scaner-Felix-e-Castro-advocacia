@@ -1656,6 +1656,87 @@ export default function ScannerJuridico() {
     }
   };
 
+  const processFolderOCR = async () => {
+    const docs = history.filter(h => 
+       (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)
+       && (!h.text || h.text.trim() === '')
+    );
+    
+    if (docs.length === 0) {
+       showToast("Todos os documentos desta pasta já possuem OCR extraído.", "info");
+       return;
+    }
+
+    setTab("scanner");
+    setProcessing(true);
+    
+    let processedCount = 0;
+
+    for (let i = 0; i < docs.length; i++) {
+        const item = docs[i];
+        setProgress(0);
+        setProgressMsg(`[${i + 1}/${docs.length}] Processando: ${item.name}...`);
+        
+        try {
+          const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
+          const res = await fetch(urlToFetch);
+          const blob = await res.blob();
+          const fileToProcess = new File([blob], item.name, { type: item.type });
+    
+          let extracted;
+          const onProgress = (p, msg) => { 
+             setProgress(p); 
+             setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
+          };
+    
+          if (fileToProcess.type === "application/pdf") {
+            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode);
+          } else {
+            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode);
+          }
+    
+          if (extracted && extracted.text) {
+            extracted.text = optimizeRawText(extracted.text);
+          }
+          
+          onProgress(90, "Atualizando banco de dados...");
+          
+          if (supabase) {
+            await supabase.from("lexscan_documents").update({
+              extracted_text: extracted.text,
+              confidence: extracted.confidence,
+              words_count: extracted.text.split(/\s+/).filter(Boolean).length,
+              chars_count: extracted.text.length
+            }).eq("id", item.id);
+          }
+    
+          const updatedItem = {
+            ...item,
+            text: extracted.text,
+            confidence: extracted.confidence,
+            words: extracted.text.split(/\s+/).filter(Boolean).length,
+            chars: extracted.text.length
+          };
+    
+          setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
+          if(!supabase) {
+             let localH = getHistory().map(h => h.id === item.id ? updatedItem : h);
+             localStorage.setItem("lexscan_history", JSON.stringify(localH));
+          }
+          processedCount++;
+        } catch (e) {
+          console.error(`Error on file ${item.name}`, e);
+          showToast(`Erro ao processar: ${item.name}`, "error");
+        }
+    }
+    
+    setProcessing(false);
+    setProgress(0);
+    setProgressMsg("");
+    setTab("history"); // Retorna para o histórico após processar todos
+    showToast(`✓ Lote de OCR concluído! ${processedCount} documentos processados.`, "success");
+  };
+
   const loadFromHistory = (item) => {
     setResult(item);
     setTab("scanner");
@@ -2328,14 +2409,26 @@ export default function ScannerJuridico() {
                         </select>
                       </div>
 
-                      {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
-                        <button 
-                          onClick={compileFolderTXT}
-                          style={{ alignSelf: 'flex-end', background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-                        >
-                          <span>📑</span> Compilar
-                        </button>
-                      )}
+                      <div style={{ display: 'flex', gap: '8px', alignSelf: 'flex-end' }}>
+                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient) && (!h.text || h.text.trim() === '')).length > 0 && (
+                          <button 
+                            onClick={processFolderOCR}
+                            style={{ background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                            title="Gerar OCR para todos os documentos sem texto"
+                          >
+                            <span>🧠</span> Lote de OCR
+                          </button>
+                        )}
+                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
+                          <button 
+                            onClick={compileFolderTXT}
+                            style={{ background: G.surface, color: G.text, border: `1px solid ${G.border}`, padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                            title="Baixar Texto Compilado de toda a pasta"
+                          >
+                            <span>📑</span> Compilar
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
