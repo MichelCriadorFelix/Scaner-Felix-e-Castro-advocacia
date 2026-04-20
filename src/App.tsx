@@ -1419,32 +1419,36 @@ export default function ScannerJuridico() {
 
   const capture = () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    if (!video) return;
 
-    // Resolução Nativa da Câmera
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
+    // Criamos um canvas temporário em alta resolução para aplicar o filtro sem perder dados
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
+    const ctx = tempCanvas.getContext("2d");
     
-    // 2. OTIMIZAÇÃO PARA OCR MANTENDO CORES (Color Scanner Filter)
-    // Aumentamos o contraste e o brilho para clarear fundos e destacar letras,
-    // mas removemos o preto e branco para manter selos, carimbos e logos coloridos.
-    ctx.filter = 'contrast(1.3) brightness(1.1) saturate(1.2)';
-    ctx.drawImage(video, 0, 0); // Desenha do video diretamente já com o filtro
+    // OTIMIZAÇÃO AVANÇADA PARA OCR (Modo Documento de Alta Definição)
+    // 1. Escala de Cinza parcial: Reduz ruído de cor do papel pardo ou sombra, mantendo tintas fortes (carimbos)
+    // 2. Contraste Extremo: Força o texto para preto intenso e fundo para branco
+    // 3. Brilho: Clareia a foto evitando manchas cinzas no papel
+    ctx.filter = 'grayscale(60%) contrast(1.8) brightness(1.15) saturate(1.4)';
+    
+    ctx.drawImage(video, 0, 0);
     ctx.filter = 'none';
 
-    // Converte para JPEG com compressão equilibrada (Alta Qualidade de OCR, baixo disco)
-    canvas.toBlob(blob => {
+    // Sharpening (Filtro de nitidez) via unsharp mask manual simplificado no canvas:
+    // (Opcional, mas realça muito os fios da caneta esferográfica)
+    // Nós pularemos convolução pesada para não travar o celular, e usaremos SVG filter se fosse web puro, 
+    // mas o contraste de 1.8 já faz 90% do trabalho de separação do texto no Gemini.
+
+    tempCanvas.toBlob(blob => {
       if(!blob) return;
-      // Salva arquivo temporário e pula pro corte
       const tempF = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
       setFile(tempF);
       setPreview(URL.createObjectURL(blob));
       closeCamera();
-      // Sugere o corte
       setTimeout(() => setIsCropping(true), 150);
-    }, "image/jpeg", 0.85); // 0.85 é o "ponto doce" entre nitidez e tamanho de arquivo
+    }, "image/jpeg", 0.95); // Aumentado para 0.95 (Super Alta Qualidade) para não ter artefato perto de letras
   };
 
   const closeCamera = () => {
