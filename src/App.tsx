@@ -729,10 +729,9 @@ Sua missão:
 3. Não adicione comentários, introduções ou saudações, devolva apenas o conteúdo transcrito.
 4. Estruture as informações de forma limpa, mantendo o contexto.`;
 
-  // Lista de modelos do Google para driblar a sobrecarga (503 High Demand)
-  // Tentamos estritamente o Gemini 3 ("gemini-3.1-flash") por ter taxa imensa. Se falhar, vamos para "gemini-3.0-flash".
-  // Removemos o gemini-1.5-pro de vez.
-  const modelsToTry = ["gemini-3.1-flash", "gemini-3.0-flash"];
+  // Lista de modelos do Google
+  // Usando EXCLUSIVAMENTE o modelo Gemini 3 Flash Preview solicitado.
+  const modelsToTry = ["gemini-3.0-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < keys.length; i++) {
