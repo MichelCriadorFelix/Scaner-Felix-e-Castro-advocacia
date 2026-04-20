@@ -942,7 +942,6 @@ export default function ScannerJuridico() {
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
-  const [isPremiumPdf, setIsPremiumPdf] = useState(true); // OCR simultâneo
 
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
@@ -1410,15 +1409,7 @@ export default function ScannerJuridico() {
   const openCamera = async () => {
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: "environment", 
-          // Solicitamos a resolução 4K (ou o máximo que a lente suportar nativamente)
-          // Sem forçar ratio 16:9, assim ele não "corta" as bordas de cima e de baixo (field of view completo)
-          width: { ideal: 4096 }, 
-          height: { ideal: 2160 },
-          // Pede para o hardware focar continuamente no documento
-          advanced: [{ focusMode: "continuous" }] 
-        }
+        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
       });
       setStream(s);
       setCamera(true);
@@ -1428,34 +1419,28 @@ export default function ScannerJuridico() {
 
   const capture = () => {
     const video = videoRef.current;
-    if (!video) return;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
 
-    // Criamos um canvas temporário em alta resolução para aplicar o filtro sem perder dados
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = video.videoWidth;
-    tempCanvas.height = video.videoHeight;
-    const ctx = tempCanvas.getContext("2d");
-    
-    // OTIMIZAÇÃO EQUILIBRADA PARA OCR
-    // O contraste extremo (1.8x) que estava antes "apagava" as letras finas que possuíam tinta clara (lápis, caneta fina).
-    // Agora o contraste (1.2) e o brilho (1.05) vão clarear o papel amarelado suavemente sem estourar as letras claras periféricas.
-    // Preservamos cores (para assinaturas e carimbos).
-    ctx.filter = 'grayscale(15%) contrast(1.2) brightness(1.05) saturate(1.2)';
+    // Resolução Nativa da Câmera
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
     
     ctx.drawImage(video, 0, 0);
-    ctx.filter = 'none';
 
-    tempCanvas.toBlob(blob => {
+    // Converte para JPEG com compressão equilibrada (Alta Qualidade de OCR, baixo disco)
+    canvas.toBlob(blob => {
       if(!blob) return;
+      // Salva arquivo temporário e pula pro corte
       const tempF = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
       setFile(tempF);
       setPreview(URL.createObjectURL(blob));
       closeCamera();
-      
-      // Abre o corte sugerindo selecionar a foto inteira, sem forçar zoom excessivo no centro (margin 2%)
-      setCrop({ unit: '%', width: 96, height: 96, x: 2, y: 2 });
+      // Sugere o corte
+      setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
       setTimeout(() => setIsCropping(true), 150);
-    }, "image/jpeg", 0.95); // Alta Qualidade preservada
+    }, "image/jpeg", 0.85); // 0.85 é o "ponto doce" entre nitidez e tamanho de arquivo
   };
 
   const closeCamera = () => {
@@ -1474,7 +1459,7 @@ export default function ScannerJuridico() {
   const compileCameraBatch = async () => {
     if (cameraPages.length === 0) return;
     
-    showToast(isPremiumPdf ? "Gerando PDF Premium Pesquisável com IA..." : "Gerando PDF de Imagens...");
+    showToast("Gerando PDF com Múltiplas Páginas...");
     setProcessing(true);
     setProgress(0);
     setProgressMsg("Iniciando conversão...");
@@ -1492,10 +1477,6 @@ export default function ScannerJuridico() {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "mm", format: "a4" });
     
-    let fullExtractedText = "";
-    let confidenceSum = 0;
-    let docsEvaluated = 0;
-
     for (let i = 0; i < cameraPages.length; i++) {
       if (i > 0) doc.addPage();
       const pageBlob = cameraPages[i];
@@ -1537,63 +1518,9 @@ export default function ScannerJuridico() {
       const x = (pdfW - imgW) / 2;
       const y = (pdfH - imgH) / 2;
 
-      // ---- EXTRAÇÃO OCR PREMIUM (PDF PESQUISÁVEL) ----
-      let extractedText = "";
-      if (isPremiumPdf) {
-         setProgressMsg(`Lendo IA (Pág ${i+1}/${cameraPages.length})...`);
-         try {
-           const processedFile = new File([pageBlob], `scan_p${i+1}.jpg`, { type: 'image/jpeg' });
-           // Reutiliza o loop de progresso local
-           const ocrRes = await extractImageHybrid(processedFile, (pct, txt) => {
-               setProgress(Math.round(((i / cameraPages.length) * 100) + (pct / cameraPages.length)));
-               if (txt) setProgressMsg(txt);
-           }, aiMode);
-           
-           extractedText = ocrRes.text;
-           fullExtractedText += `[PÁGINA ${i+1}]\n${extractedText}\n\n`;
-           confidenceSum += ocrRes.confidence;
-           docsEvaluated++;
-
-           // Tática PDF Pesquisável: Inserir bloco de texto com rendering="invisible" (Modo 3) antes da imagem
-           // Para habilitar o Ctrl+F e seleções:
-           doc.setFontSize(2);
-           doc.setTextColor(255, 255, 255);
-           // Sanitização de acentos jsPDF (jsPDF basic text function supports ASCII/Latin1 well, anything else can break)
-           const safeText = extractedText.replace(/[^\x20-\x7E\xA0-\xFF]/g, ' '); 
-           const lines = doc.splitTextToSize(safeText, pdfW - 20);
-           doc.text(lines, 10, 10, { renderingMode: 3 }); // Text is invisible and selectable
-         } catch(e) { console.warn("Erro no OCR em lote pág", i, e); }
-      }
-      // --------------------------------------------------
-      
       doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, pdfQuality === 'alta' ? 'SLOW' : 'FAST');
     }
     
-    if (fullExtractedText) {
-        fullExtractedText = optimizeRawText(fullExtractedText);
-    }
-    let finalConfidence = docsEvaluated > 0 ? Math.round(confidenceSum / docsEvaluated) : 0;
-    
-    // Anexa uma página de transcrição CLARA E OFICIAL ao final do PDF
-    if (isPremiumPdf && fullExtractedText) {
-        doc.addPage();
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(16);
-        doc.setTextColor(0, 0, 0);
-        doc.text("TRANSCRIÇÃO DIGITAL - LEXSCAN OCR PREMIUM", 15, 20);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(11);
-        doc.setTextColor(50, 50, 50);
-        
-        const lines = doc.splitTextToSize(fullExtractedText, 180);
-        let currentY = 32;
-        lines.forEach(line => {
-             if (currentY > 275) { doc.addPage(); currentY = 20; }
-             doc.text(line, 15, currentY);
-             currentY += 6;
-        });
-    }
-
     setProgressMsg("Salvando PDF gerado...");
     const pdfBlob = doc.output('blob');
     const finalName = batchDocName.trim() ? batchDocName.trim() : "Documento_Escaneado";
@@ -1625,10 +1552,10 @@ export default function ScannerJuridico() {
          name: finalFile.name,
          file_type: finalFile.type,
          file_url: fileUrl,
-         extracted_text: fullExtractedText,
-         confidence: finalConfidence,
-         chars_count: fullExtractedText.length,
-         words_count: fullExtractedText.split(/\s+/).filter(Boolean).length
+         extracted_text: '',
+         confidence: 0,
+         chars_count: 0,
+         words_count: 0
       };
 
       const { data: dbData } = await supabase.from('lexscan_documents').insert([docRecord]).select();
@@ -1641,10 +1568,10 @@ export default function ScannerJuridico() {
       name: finalFile.name,
       type: finalFile.type,
       ts: Date.now(),
-      text: fullExtractedText,
-      confidence: finalConfidence,
-      words: fullExtractedText.split(/\s+/).filter(Boolean).length,
-      chars: fullExtractedText.length,
+      text: '',
+      confidence: 0,
+      words: 0,
+      chars: 0,
       fileUrl: fileUrl,
       preview: fileUrl,
       localBlobUrl: URL.createObjectURL(pdfBlob)
@@ -2038,20 +1965,6 @@ export default function ScannerJuridico() {
                  <option value="unassigned">Geral (Sem Pasta Específica)</option>
                  {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                </select>
-            </div>
-
-            <div style={{marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px', background: G.bg, padding: '12px', borderRadius: '8px', border: `1px solid ${isPremiumPdf ? G.accent : G.border}`}}>
-               <input 
-                 type="checkbox" 
-                 id="premiumPdfOpt"
-                 checked={isPremiumPdf}
-                 onChange={e => setIsPremiumPdf(e.target.checked)}
-                 style={{width: '18px', height: '18px', accentColor: G.accent}}
-               />
-               <label htmlFor="premiumPdfOpt" style={{fontSize: '13px', color: G.text, cursor: 'pointer', lineHeight: '1.4'}}>
-                 <strong style={{color: G.accent, display: 'block', fontSize: '14px'}}>💎 PDF Premium (Pesquisável)</strong>
-                 Aplica IA (OCR) agora para que o texto possa ser copiado/pesquisado, e cria uma página de transcrição de alta qualidade.
-               </label>
             </div>
 
             <div className="modal-actions" style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
