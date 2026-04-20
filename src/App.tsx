@@ -1410,7 +1410,15 @@ export default function ScannerJuridico() {
   const openCamera = async () => {
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+        video: { 
+          facingMode: "environment", 
+          // Solicitamos a resolução 4K (ou o máximo que a lente suportar nativamente)
+          // Sem forçar ratio 16:9, assim ele não "corta" as bordas de cima e de baixo (field of view completo)
+          width: { ideal: 4096 }, 
+          height: { ideal: 2160 },
+          // Pede para o hardware focar continuamente no documento
+          advanced: [{ focusMode: "continuous" }] 
+        }
       });
       setStream(s);
       setCamera(true);
@@ -1428,19 +1436,14 @@ export default function ScannerJuridico() {
     tempCanvas.height = video.videoHeight;
     const ctx = tempCanvas.getContext("2d");
     
-    // OTIMIZAÇÃO AVANÇADA PARA OCR (Modo Documento de Alta Definição)
-    // 1. Escala de Cinza parcial: Reduz ruído de cor do papel pardo ou sombra, mantendo tintas fortes (carimbos)
-    // 2. Contraste Extremo: Força o texto para preto intenso e fundo para branco
-    // 3. Brilho: Clareia a foto evitando manchas cinzas no papel
-    ctx.filter = 'grayscale(60%) contrast(1.8) brightness(1.15) saturate(1.4)';
+    // OTIMIZAÇÃO EQUILIBRADA PARA OCR
+    // O contraste extremo (1.8x) que estava antes "apagava" as letras finas que possuíam tinta clara (lápis, caneta fina).
+    // Agora o contraste (1.2) e o brilho (1.05) vão clarear o papel amarelado suavemente sem estourar as letras claras periféricas.
+    // Preservamos cores (para assinaturas e carimbos).
+    ctx.filter = 'grayscale(15%) contrast(1.2) brightness(1.05) saturate(1.2)';
     
     ctx.drawImage(video, 0, 0);
     ctx.filter = 'none';
-
-    // Sharpening (Filtro de nitidez) via unsharp mask manual simplificado no canvas:
-    // (Opcional, mas realça muito os fios da caneta esferográfica)
-    // Nós pularemos convolução pesada para não travar o celular, e usaremos SVG filter se fosse web puro, 
-    // mas o contraste de 1.8 já faz 90% do trabalho de separação do texto no Gemini.
 
     tempCanvas.toBlob(blob => {
       if(!blob) return;
@@ -1448,8 +1451,11 @@ export default function ScannerJuridico() {
       setFile(tempF);
       setPreview(URL.createObjectURL(blob));
       closeCamera();
+      
+      // Abre o corte sugerindo selecionar a foto inteira, sem forçar zoom excessivo no centro (margin 2%)
+      setCrop({ unit: '%', width: 96, height: 96, x: 2, y: 2 });
       setTimeout(() => setIsCropping(true), 150);
-    }, "image/jpeg", 0.95); // Aumentado para 0.95 (Super Alta Qualidade) para não ter artefato perto de letras
+    }, "image/jpeg", 0.95); // Alta Qualidade preservada
   };
 
   const closeCamera = () => {
