@@ -5,12 +5,20 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  
+  // Mapeia todas as variáveis de ambiente que tenham "GEMINI" no nome para estarem disponíveis
+  // pro front-end (tanto VITE_ quanto sem prefixo, como GEMINI_API_KEY)
+  const geminiEnvVars = Object.keys(env)
+    .filter(key => key.includes('GEMINI'))
+    .reduce((acc, key) => {
+      acc[`process.env.${key}`] = JSON.stringify(env[key]);
+      return acc;
+    }, {});
+
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.VITE_GEMINI_API_KEY_2': JSON.stringify(env.VITE_GEMINI_API_KEY_2),
-      'process.env.VITE_GEMINI_API_KEY_3': JSON.stringify(env.VITE_GEMINI_API_KEY_3),
+      ...geminiEnvVars,
       'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL || ''),
       'process.env.SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || env.SUPABASE_PUBLISHABLE_KEY || env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''),
     },
