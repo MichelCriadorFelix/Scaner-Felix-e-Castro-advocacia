@@ -675,40 +675,33 @@ function getAvailableGeminiKeys() {
   const rawKeys = [];
   
   const addKey = (val) => {
-    if (!val || typeof val !== 'string') return;
-    const parts = val.split(',').map(k => k.trim()).filter(Boolean);
-    rawKeys.push(...parts);
+    if (!val) return;
+    if (typeof val === 'string') {
+      const parts = val.split(',').map(k => k.trim()).filter(Boolean);
+      rawKeys.push(...parts);
+    }
   };
 
-  // 1. Busca por injeção estática (Substituição literal do Vite)
-  // IMPORTANTE: Vite troca 'process.env.GEMINI_API_KEY' diretamente por uma string no build.
+  // 1. Busca por substituiÃ§Ã£o estÃ¡tica (Vite Define)
+  // IMPORTANTE: Vite troca essas chamadas literais por strings no momento do Build.
   try {
-    const keyFromProcess = process.env.GEMINI_API_KEY;
-    if (keyFromProcess) addKey(keyFromProcess);
+    if (process.env.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
   } catch(e) {}
-
-  // 1b. Busca Agregada (Novo padrão para pegar TODAS as variáveis com GEMINI no nome)
   try {
-    const allKeysAggregated = process.env.ALL_GEMINI_KEYS;
-    if (allKeysAggregated) addKey(allKeysAggregated);
+    if (process.env.ALL_GEMINI_KEYS) addKey(process.env.ALL_GEMINI_KEYS);
   } catch(e) {}
 
   // 2. Busca nativa VITE (import.meta.env)
   try {
     if (import.meta && import.meta.env) {
-      if (import.meta.env.GEMINI_API_KEY) addKey(import.meta.env.GEMINI_API_KEY);
-      if (import.meta.env.VITE_GEMINI_API_KEY) addKey(import.meta.env.VITE_GEMINI_API_KEY);
-      
       Object.keys(import.meta.env).forEach(k => {
-        if (k.includes('GEMINI') && typeof import.meta.env[k] === 'string') {
-          addKey(import.meta.env[k]);
-        }
+        if (k.includes('GEMINI')) addKey(import.meta.env[k]);
       });
     }
   } catch (e) {}
 
-  // Remove duplicatas exatas, vazias, e strings que não parecem keys reais
-  return [...new Set(rawKeys)].filter(k => k && k.length > 20);
+  // Remove duplicatas e limpa
+  return [...new Set(rawKeys)].filter(k => k && typeof k === 'string' && k.length > 20);
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
