@@ -682,10 +682,15 @@ function getAvailableGeminiKeys() {
 
   // 1. Busca por injeção estática (Substituição literal do Vite)
   // IMPORTANTE: Vite troca 'process.env.GEMINI_API_KEY' diretamente por uma string no build.
-  // Por isso, NÃO podemos usar process.env dynamicamente. Tem que ser chamada exata.
   try {
     const keyFromProcess = process.env.GEMINI_API_KEY;
     if (keyFromProcess) addKey(keyFromProcess);
+  } catch(e) {}
+
+  // 1b. Busca Agregada (Novo padrão para pegar TODAS as variáveis com GEMINI no nome)
+  try {
+    const allKeysAggregated = process.env.ALL_GEMINI_KEYS;
+    if (allKeysAggregated) addKey(allKeysAggregated);
   } catch(e) {}
 
   // 2. Busca nativa VITE (import.meta.env)
