@@ -705,7 +705,7 @@ function getAvailableGeminiKeys() {
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
-async function extractPageWithGemini(blob) {
+async function extractPageWithGemini(blob, onProgress) {
   const keys = getAvailableGeminiKeys();
   let lastError = null;
 
@@ -742,16 +742,29 @@ Sua missão:
         const { GoogleGenAI } = await import("@google/genai");
         const ai = new GoogleGenAI({ apiKey });
         
-        const response = await ai.models.generateContent({
+        const responseStream = await ai.models.generateContentStream({
           model: modelName,
           contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
         });
+
+        let fullText = "";
+        let chunksReceived = 0;
+        
+        for await (const chunk of responseStream) {
+          fullText += chunk.text;
+          chunksReceived++;
+          if (onProgress) {
+            // Fakes a smooth progression dynamically based on chunks
+            const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+            onProgress(fakePercent, `IA Lendo e Transcrevendo... (Gerado ${chunksReceived} fragmentos)`);
+          }
+        }
 
         // Registrar sucesso no uso da chave para o dashboard
         const keyHash = apiKey.slice(-6); // Usamos os últimos 6 dígitos como ID para privacidade
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
 
-        return response.text.trim();
+        return fullText.trim();
         
       } catch (e) {
         console.warn(`[Matriz Falha] Chave ${i + 1} - Modelo ${modelName}:`, e.message || e);
@@ -823,7 +836,7 @@ async function extractPDFHybrid(file, onProgress, useAi) {
         } else {
             onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
             try {
-                const aiText = await extractPageWithGemini(blob);
+                const aiText = await extractPageWithGemini(blob, onProgress);
                 fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
                 confidenceTotal += 99;
             } catch (e) {
@@ -853,7 +866,7 @@ async function extractImageHybrid(file, onProgress, useAi) {
   if (useAi && ocrRes.confidence < 80) {
       onProgress(70, `Qualidade baixa detectada (${ocrRes.confidence}%). Acionando IA Jurídica...`);
       try {
-          const aiText = await extractPageWithGemini(file);
+          const aiText = await extractPageWithGemini(file, onProgress);
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
           let errMsg = e.message || "Erro desconhecido";
@@ -934,7 +947,14 @@ export default function ScannerJuridico() {
   const [stream, setStream] = useState(null);
 
   const [aiMode, setAiMode] = useState(true);
-  const [keyUsage, setKeyUsage] = useState({}); // Tracking: { "KEY_HEX": count }
+  const [keyUsage, setKeyUsage] = useState(() => {
+    try {
+      const saved = localStorage.getItem('lexscan_key_usage');
+      return saved ? JSON.parse(saved) : {};
+    } catch(e) {
+      return {};
+    }
+  });
 
   // Flow State para Escaneamento em Lote (Multi-Páginas)
   const [cameraPages, setCameraPages] = useState([]);
@@ -955,10 +975,14 @@ export default function ScannerJuridico() {
   // Expor função de tracking para o motor externo de IA
   useEffect(() => {
     window.updateKeyUsage = (hash) => {
-      setKeyUsage(prev => ({
-        ...prev,
-        [hash]: (prev[hash] || 0) + 1
-      }));
+      setKeyUsage(prev => {
+        const next = {
+          ...prev,
+          [hash]: (prev[hash] || 0) + 1
+        };
+        localStorage.setItem('lexscan_key_usage', JSON.stringify(next));
+        return next;
+      });
     };
   }, []);
 
