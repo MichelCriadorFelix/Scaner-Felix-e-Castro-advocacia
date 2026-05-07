@@ -1147,9 +1147,17 @@ export default function ScannerJuridico() {
       return;
     }
 
-    if (validFiles.length > 10) {
-      showToast("Limite de 10 arquivos por vez para segurança", "info");
-      validFiles.splice(10);
+    if (validFiles.length > 15) {
+      showToast("Limite de 15 arquivos por vez", "info");
+      validFiles.splice(15);
+    }
+
+    const allImages = validFiles.every(f => f.type.startsWith("image/"));
+
+    if (validFiles.length > 1 && allImages) {
+      setCameraPages(validFiles);
+      setIsBatchModalOpen(true);
+      return;
     }
 
     if (validFiles.length === 1) {
@@ -1433,6 +1441,87 @@ export default function ScannerJuridico() {
     }
   };
 
+  const saveWithoutOCR = async () => {
+    if (!file) return;
+    setProcessing(true);
+    setProgress(0);
+    setProgressMsg("Iniciando...");
+
+    try {
+      const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
+
+      onProgress(20, "Verificando nuvem...");
+
+      let fileUrl = null;
+      let finalId = Date.now().toString();
+
+      if (supabase) {
+        onProgress(40, "Armazenando PDF/Imagem na Nuvem...");
+        const ext = file.name.split('.').pop() || 'jpg';
+        const rawName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const fileName = `${Date.now()}_${rawName}.${ext}`;
+        
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file);
+        if (!uploadError) {
+           fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
+        } else {
+           console.error("Storage Error:", uploadError);
+           showToast("Erro ao armazenar arquivo na nuvem", "error");
+           return;
+        }
+
+        onProgress(80, "Sincronizando com o banco GED...");
+        const docRecord = {
+           client_id: selectedClient || null,
+           name: file.name,
+           file_type: file.type,
+           file_url: fileUrl,
+           extracted_text: "",
+           confidence: 100, // No OCR, so fully confident it is what it is
+           chars_count: 0,
+           words_count: 0
+        };
+
+        const { data: dbData, error: dbError } = await supabase.from('lexscan_documents').insert([docRecord]).select();
+        if (dbData && dbData[0]) {
+           finalId = dbData[0].id;
+        } else {
+           console.error("DB Error:", dbError);
+        }
+      }
+
+      onProgress(100, "Concluído!");
+
+      const item = {
+        id: finalId,
+        name: file.name,
+        type: file.type,
+        preview: fileUrl || (file.type.startsWith("image/") ? preview : null),
+        localBlobUrl: URL.createObjectURL(file),
+        fileUrl: fileUrl,
+        text: "",
+        confidence: 100,
+        chars: 0,
+        words: 0,
+        ts: Date.now(),
+        clientId: selectedClient || "unassigned"
+      };
+
+      if (!supabase) {
+        showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
+      }
+      setHistory(prev => [item, ...prev]);
+
+      setResult(item);
+      showToast("✓ Arquivo salvo com sucesso!");
+    } catch (err) {
+      console.error(err);
+      showToast(err.message || "Erro ao salvar arquivo", "error");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
   const applyCrop = async () => {
     if (!completedCrop || !croppedImgRef.current || !completedCrop.width || !completedCrop.height) {
       setIsCropping(false);
@@ -1575,6 +1664,17 @@ export default function ScannerJuridico() {
        setCameraPages(prev => [...prev, ...valid]);
        showToast(`${valid.length} imagens adicionadas!`);
     }
+  };
+
+  const movePage = (index, direction) => {
+    setCameraPages(prev => {
+      const arr = [...prev];
+      if (index + direction < 0 || index + direction >= arr.length) return arr;
+      const temp = arr[index];
+      arr[index] = arr[index + direction];
+      arr[index + direction] = temp;
+      return arr;
+    });
   };
 
   const compileCameraBatch = async () => {
@@ -2111,11 +2211,25 @@ export default function ScannerJuridico() {
             
             <div style={{display: 'flex', gap: '8px', overflowX: 'auto', marginBottom: '20px', paddingBottom: '8px'}}>
                {cameraPages.map((p, i) => (
-                  <div key={i} onClick={() => setViewingBatchPage(i)} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`, cursor: 'pointer'}}>
-                    <img src={URL.createObjectURL(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
-                    <div style={{position: 'absolute', bottom: 2, right: 4, fontSize: '10px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 4px', borderRadius: '4px'}}>{i+1}</div>
-                    <div className="hover-overlay" style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: '0.2s'}}>
-                       <span style={{color: '#fff', fontSize: '20px'}}>👁️</span>
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                    <div onClick={() => setViewingBatchPage(i)} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`, cursor: 'pointer'}}>
+                      <img src={URL.createObjectURL(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+                      <div style={{position: 'absolute', bottom: 2, right: 4, fontSize: '10px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 4px', borderRadius: '4px'}}>{i+1}</div>
+                      <div className="hover-overlay" style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: '0.2s'}}>
+                         <span style={{color: '#fff', fontSize: '20px'}}>👁️</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '4px', width: '100%', justifyContent: 'space-between' }}>
+                      <button 
+                        disabled={i === 0} 
+                        onClick={() => movePage(i, -1)} 
+                        style={{ flex: 1, padding: '4px 0', background: G.surface, border: `1px solid ${G.border}`, color: i === 0 ? G.muted : G.text, borderRadius: '4px', fontSize: '12px', cursor: i === 0 ? 'not-allowed' : 'pointer' }}
+                      >◀</button>
+                      <button 
+                        disabled={i === cameraPages.length - 1} 
+                        onClick={() => movePage(i, 1)} 
+                        style={{ flex: 1, padding: '4px 0', background: G.surface, border: `1px solid ${G.border}`, color: i === cameraPages.length - 1 ? G.muted : G.text, borderRadius: '4px', fontSize: '12px', cursor: i === cameraPages.length - 1 ? 'not-allowed' : 'pointer' }}
+                      >▶</button>
                     </div>
                   </div>
                ))}
@@ -2191,8 +2305,22 @@ export default function ScannerJuridico() {
                    if (cameraPages.length === 1) setIsBatchModalOpen(false); // fechar se for a última
                  }} style={{background: G.error, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer'}}>🗑️ Excluir Página</button>
               </div>
-              <div style={{flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden'}}>
+              <div style={{flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden', position: 'relative'}}>
                  <img src={URL.createObjectURL(cameraPages[viewingBatchPage])} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '8px'}} />
+                 
+                 {/* Setinhas dentro do modal de visualização individual */}
+                 <div style={{position: 'absolute', bottom: '30px', display: 'flex', gap: '30px'}}>
+                     <button 
+                        disabled={viewingBatchPage === 0} 
+                        onClick={() => { movePage(viewingBatchPage, -1); setViewingBatchPage(viewingBatchPage - 1); }}
+                        style={{background: viewingBatchPage === 0 ? '#444' : G.accent, color: '#000', padding: '12px 18px', borderRadius: '50%', border: 'none', cursor: viewingBatchPage === 0 ? 'not-allowed' : 'pointer', opacity: viewingBatchPage === 0 ? 0.4 : 1, fontSize: '20px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)'}}
+                     >◀</button>
+                     <button 
+                        disabled={viewingBatchPage === cameraPages.length - 1} 
+                        onClick={() => { movePage(viewingBatchPage, 1); setViewingBatchPage(viewingBatchPage + 1); }}
+                        style={{background: viewingBatchPage === cameraPages.length - 1 ? '#444' : G.accent, color: '#000', padding: '12px 18px', borderRadius: '50%', border: 'none', cursor: viewingBatchPage === cameraPages.length - 1 ? 'not-allowed' : 'pointer', opacity: viewingBatchPage === cameraPages.length - 1 ? 0.4 : 1, fontSize: '20px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)'}}
+                     >▶</button>
+                 </div>
               </div>
             </div>
           )}
@@ -2462,6 +2590,9 @@ export default function ScannerJuridico() {
                 <>
                   <button className="process-btn" onClick={process}>
                     {aiMode ? "🧠 Extrair Inteligente" : "🔍 Extrair Texto (Bruto)"}
+                  </button>
+                  <button className="process-btn" onClick={saveWithoutOCR} style={{ background: G.surface, color: G.text, border: `1px solid ${G.border}`, marginTop: '8px' }}>
+                    ☁️ Apenas Salvar na Pasta (Sem OCR)
                   </button>
                 </>
               )}
