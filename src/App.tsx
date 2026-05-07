@@ -193,6 +193,9 @@ const css = `
   .action-card-full {
     grid-column: span 2;
   }
+  
+  .hover-overlay:hover, .hover-overlay:active { opacity: 1 !important; }
+  
   .action-icon {
     font-size: 32px;
     margin-bottom: 10px;
@@ -968,9 +971,11 @@ export default function ScannerJuridico() {
 
   const fileRefImg = useRef();
   const fileRefPdf = useRef();
+  const fileRefBatchImg = useRef();
   const videoRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
+  const [viewingBatchPage, setViewingBatchPage] = useState(null);
 
   // Expor função de tracking para o motor externo de IA
   useEffect(() => {
@@ -1551,6 +1556,27 @@ export default function ScannerJuridico() {
     });
   };
 
+  const handleBatchImageAdd = (files) => {
+    if (!files || files.length === 0) return;
+    
+    if (files.length === 1) {
+       const f = files[0];
+       setIsBatchModalOpen(false);
+       const reader = new FileReader();
+       reader.onload = (e) => {
+          setPreview(e.target.result); 
+          setFile(f);
+          setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+          setTimeout(() => setIsCropping(true), 150);
+       };
+       reader.readAsDataURL(f);
+    } else {
+       const valid = Array.from(files).filter(f => f.type.startsWith('image/'));
+       setCameraPages(prev => [...prev, ...valid]);
+       showToast(`${valid.length} imagens adicionadas!`);
+    }
+  };
+
   const compileCameraBatch = async () => {
     if (cameraPages.length === 0) return;
     
@@ -2085,9 +2111,12 @@ export default function ScannerJuridico() {
             
             <div style={{display: 'flex', gap: '8px', overflowX: 'auto', marginBottom: '20px', paddingBottom: '8px'}}>
                {cameraPages.map((p, i) => (
-                  <div key={i} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`}}>
+                  <div key={i} onClick={() => setViewingBatchPage(i)} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`, cursor: 'pointer'}}>
                     <img src={URL.createObjectURL(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
                     <div style={{position: 'absolute', bottom: 2, right: 4, fontSize: '10px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 4px', borderRadius: '4px'}}>{i+1}</div>
+                    <div className="hover-overlay" style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: '0.2s'}}>
+                       <span style={{color: '#fff', fontSize: '20px'}}>👁️</span>
+                    </div>
                   </div>
                ))}
             </div>
@@ -2129,16 +2158,44 @@ export default function ScannerJuridico() {
             </div>
 
             <div className="modal-actions" style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
-              <button 
-                className="modal-btn" 
-                style={{background: G.surface, color: G.text, border: `1px solid ${G.border}`}} 
-                onClick={() => { setIsBatchModalOpen(false); openCamera(); }}
-              >
-                📸 Adicionar Outra Página (+1)
-              </button>
+              <div style={{display: 'flex', gap: '8px'}}>
+                <button 
+                  className="modal-btn" 
+                  style={{flex: 1, background: G.surface, color: G.text, border: `1px solid ${G.border}`, fontSize: '12px'}} 
+                  onClick={() => { setIsBatchModalOpen(false); openCamera(); }}
+                >
+                  📸 Câmera
+                </button>
+                <button 
+                  className="modal-btn" 
+                  style={{flex: 1, background: G.surface, color: G.text, border: `1px solid ${G.border}`, fontSize: '12px'}} 
+                  onClick={() => fileRefBatchImg.current.click()}
+                >
+                  🖼️ Arquivo
+                </button>
+              </div>
               <button className="modal-btn capture" onClick={compileCameraBatch}>✅ Finalizar e Salvar para a Pasta</button>
             </div>
           </div>
+          
+          <input ref={fileRefBatchImg} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={e => handleBatchImageAdd(e.target.files)} />
+
+          {/* Viewing Single Page overlay */}
+          {viewingBatchPage !== null && (
+            <div style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.95)', zIndex: 999, display: 'flex', flexDirection: 'column'}}>
+              <div style={{display: 'flex', padding: '16px', justifyContent: 'space-between', alignItems: 'center'}}>
+                 <button onClick={() => setViewingBatchPage(null)} style={{background: 'transparent', color: '#fff', border: 'none', fontSize: '16px', cursor: 'pointer'}}>← Voltar</button>
+                 <button onClick={() => {
+                   setCameraPages(prev => prev.filter((_, idx) => idx !== viewingBatchPage));
+                   setViewingBatchPage(null);
+                   if (cameraPages.length === 1) setIsBatchModalOpen(false); // fechar se for a última
+                 }} style={{background: G.error, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer'}}>🗑️ Excluir Página</button>
+              </div>
+              <div style={{flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden'}}>
+                 <img src={URL.createObjectURL(cameraPages[viewingBatchPage])} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '8px'}} />
+              </div>
+            </div>
+          )}
         </div>
       )}
 
