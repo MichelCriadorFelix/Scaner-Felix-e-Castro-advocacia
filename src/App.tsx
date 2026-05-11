@@ -802,13 +802,21 @@ async function extractPDFHybrid(file, onProgress, useAi) {
   let tesseractWorker = null;
   const Tesseract = await loadTesseract();
 
+  const withTimeout = (promise, ms, errorMsg) => {
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(errorMsg)), ms);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+  };
+
   for (let i = 1; i <= pdf.numPages; i++) {
     try {
       onProgress(Math.round((i / pdf.numPages) * 100), `Lendo pág ${i}/${pdf.numPages}...`);
-      const page = await pdf.getPage(i);
+      const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
       
       // Tenta texto nativo primeiro (100% de confiança, 0 custo)
-      const textContent = await page.getTextContent();
+      const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
       const pageText = textContent.items.map(item => item.str).join(" ").trim();
 
       if (pageText.length > 50) {
@@ -818,21 +826,21 @@ async function extractPDFHybrid(file, onProgress, useAi) {
       } else {
         // É uma página escaneada ou imagem dentro do PDF
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
-        const viewport = page.getViewport({ scale: 2.2 }); 
+        const viewport = page.getViewport({ scale: 2.0 }); // Diminuido para 2.0 para economizar memória 
         const canvas = document.createElement("canvas");
         canvas.width = viewport.width; canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         
         if (!ctx) {
            throw new Error("Erro de memória: Falha ao obter contexto 2D para a página " + i);
         }
 
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 25000, `Timeout na renderização da pág ${i}`);
 
         // Filtro Profissional para melhorar OCR Local
         const tempCanvas = document.createElement("canvas");
         tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
-        const tempCtx = tempCanvas.getContext("2d");
+        const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
         if (tempCtx) {
            tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
            tempCtx.drawImage(canvas, 0, 0);
@@ -850,7 +858,7 @@ async function extractPDFHybrid(file, onProgress, useAi) {
                  logger: () => {}
                });
             }
-            const res = await tesseractWorker.recognize(blob);
+            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
             ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
           } catch (err) {
             console.warn(`Erro no Tesseract na página ${i}`, err);
@@ -887,7 +895,7 @@ async function extractPDFHybrid(file, onProgress, useAi) {
                  }
                });
             }
-            const res = await tesseractWorker.recognize(blob);
+            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local bruto na página ${i}`);
             ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
           } catch (err) {
             console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
@@ -907,6 +915,12 @@ async function extractPDFHybrid(file, onProgress, useAi) {
         blob = null;
         
         pagesEvaluated++;
+
+        // Restart worker proactively to keep WASM memory clean
+        if (pagesEvaluated % 25 === 0 && tesseractWorker) {
+           await tesseractWorker.terminate().catch(()=>null);
+           tesseractWorker = null;
+        }
       }
       
       // Cleanup page to free pdf.js memory
@@ -920,6 +934,10 @@ async function extractPDFHybrid(file, onProgress, useAi) {
   if (tesseractWorker && tesseractWorker.terminate) {
     await tesseractWorker.terminate();
   }
+
+  try {
+     if (pdf && pdf.destroy) await pdf.destroy();
+  } catch(e) { }
 
   return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
 }
