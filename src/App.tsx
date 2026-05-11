@@ -798,6 +798,10 @@ async function extractPDFHybrid(file, onProgress, useAi) {
   let confidenceTotal = 0;
   let pagesEvaluated = 0;
 
+  // Global worker reference to speed up massive PDFs
+  let tesseractWorker = null;
+  const Tesseract = await loadTesseract();
+
   for (let i = 1; i <= pdf.numPages; i++) {
     onProgress(Math.round((i / pdf.numPages) * 100), `Lendo pág ${i}/${pdf.numPages}...`);
     const page = await pdf.getPage(i);
@@ -813,7 +817,7 @@ async function extractPDFHybrid(file, onProgress, useAi) {
     } else {
       // É uma página escaneada ou imagem dentro do PDF
       onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
-      const viewport = page.getViewport({ scale: 3.5 }); 
+      const viewport = page.getViewport({ scale: 2.5 }); 
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width; canvas.height = viewport.height;
       const ctx = canvas.getContext("2d");
@@ -831,7 +835,16 @@ async function extractPDFHybrid(file, onProgress, useAi) {
       if (useAi) {
         // Modo Híbrido: Testa OCR primeiro
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
-        const ocrRes = await runOCR(blob, () => {}); // Silencioso
+        let ocrRes;
+        
+        if (!tesseractWorker) {
+           tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+             logger: () => {}
+           });
+        }
+        
+        const res = await tesseractWorker.recognize(blob);
+        ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
         
         if (ocrRes.confidence >= 80) {
             fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
@@ -851,12 +864,35 @@ async function extractPDFHybrid(file, onProgress, useAi) {
       } else {
         // Modo Texto Bruto Rigoroso
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
-        const ocrRes = await runOCR(blob, (p) => onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(p*100)}%)...`));
+        
+        if (!tesseractWorker) {
+           tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+             logger: ({status, progress}) => {
+                if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
+             }
+           });
+        }
+        
+        const res = await tesseractWorker.recognize(blob);
+        const ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+        
         fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
         confidenceTotal += ocrRes.confidence;
       }
+      
+      // Cleanup to prevent memory leak on large PDFs (500+ pages)
+      canvas.width = 0; canvas.height = 0;
+      tempCanvas.width = 0; tempCanvas.height = 0;
+      
       pagesEvaluated++;
     }
+    
+    // Cleanup page to free pdf.js memory
+    if (page && page.cleanup) page.cleanup();
+  }
+
+  if (tesseractWorker && tesseractWorker.terminate) {
+    await tesseractWorker.terminate();
   }
 
   return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
@@ -879,8 +915,8 @@ async function convertSingleImageToPDF(file) {
   const blobUrl = URL.createObjectURL(file);
   const img = await new Promise((res, rej) => {
     const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = rej;
+    i.onload = () => { URL.revokeObjectURL(blobUrl); res(i); };
+    i.onerror = () => { URL.revokeObjectURL(blobUrl); rej(); };
     i.src = blobUrl;
   });
 
@@ -947,9 +983,10 @@ async function runOCR(imageBlob, onProgress) {
     try {
       const img = await new Promise((res, rej) => {
         const i = new Image();
-        i.onload = () => res(i);
-        i.onerror = rej;
-        i.src = URL.createObjectURL(imageBlob);
+        const url = URL.createObjectURL(imageBlob);
+        i.onload = () => { URL.revokeObjectURL(url); res(i); };
+        i.onerror = () => { URL.revokeObjectURL(url); rej(); };
+        i.src = url;
       });
       const canvas = document.createElement("canvas");
       canvas.width = img.width; canvas.height = img.height;
@@ -957,7 +994,9 @@ async function runOCR(imageBlob, onProgress) {
       // Filtro otimizado para fotos de celular (mais contraste para manuscritos)
       ctx.filter = 'grayscale(100%) contrast(200%) brightness(105%)';
       ctx.drawImage(img, 0, 0);
-      return new Promise(r => canvas.toBlob(r, "image/png", 1.0));
+      const resBlob = await new Promise(r => canvas.toBlob(r, "image/png", 1.0));
+      canvas.width = 0; canvas.height = 0;
+      return resBlob;
     } catch (e) {
       console.warn("Falha no pré-processamento, usando original", e);
       return imageBlob;
@@ -1217,9 +1256,9 @@ export default function ScannerJuridico() {
       return;
     }
 
-    if (validFiles.length > 15) {
-      showToast("Limite de 15 arquivos por vez", "info");
-      validFiles.splice(15);
+    if (validFiles.length > 500) {
+      showToast("Limite de 500 arquivos por vez", "info");
+      validFiles.splice(500);
     }
 
     const allImages = validFiles.every(f => f.type.startsWith("image/"));
