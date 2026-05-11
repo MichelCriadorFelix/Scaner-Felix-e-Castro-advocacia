@@ -862,6 +862,65 @@ async function extractPDFHybrid(file, onProgress, useAi) {
   return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
 }
 
+async function convertSingleImageToPDF(file) {
+  // Injeção Local de Jspdf
+  if (!window.jspdf) {
+    await new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  
+  const blobUrl = URL.createObjectURL(file);
+  const img = await new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = rej;
+    i.src = blobUrl;
+  });
+
+  const pdfW = 210;
+  const pdfH = 297;
+  
+  const compCanvas = document.createElement("canvas");
+  const compCtx = compCanvas.getContext("2d");
+  
+  // Compressão Média
+  let scale = 1;
+  const MAX_SIZE = 1200;
+  if (img.width > MAX_SIZE || img.height > MAX_SIZE) {
+     scale = Math.min(MAX_SIZE / img.width, MAX_SIZE / img.height);
+  }
+  
+  compCanvas.width = img.width * scale;
+  compCanvas.height = img.height * scale;
+  compCtx.drawImage(img, 0, 0, compCanvas.width, compCanvas.height);
+  
+  const compressedDataUrl = compCanvas.toDataURL("image/jpeg", 0.7);
+  
+  let imgW = (compCanvas.width * pdfH) / compCanvas.height;
+  let imgH = (compCanvas.height * pdfW) / compCanvas.width;
+  
+  if (imgH > pdfH) {
+     imgH = pdfH;
+     imgW = (compCanvas.width * pdfH) / compCanvas.height;
+  }
+  
+  const x = (pdfW - imgW) / 2;
+  const y = (pdfH - imgH) / 2;
+
+  doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, 'FAST');
+  URL.revokeObjectURL(blobUrl);
+
+  const pdfBlob = doc.output('blob');
+  return new File([pdfBlob], file.name.replace(/\.[^/.]+$/, "") + ".pdf", { type: "application/pdf" });
+}
+
 async function extractImageHybrid(file, onProgress, useAi) {
   onProgress(10, "Avaliando qualidade da imagem via OCR Local...");
   const ocrRes = await runOCR(file, (p) => onProgress(10 + Math.round(p * 40), `Avaliando OCR: ${Math.round(p*100)}%`));
@@ -1297,13 +1356,24 @@ export default function ScannerJuridico() {
 
       let fileUrl = null;
       let finalId = Date.now().toString() + "_" + current;
+      let finalFileForUpload = f;
+      
+      // Se for imagem, a pedido do usuário, converter para PDF nativamente antes de salvar
+      if (f.type.startsWith("image/")) {
+         onProgress(88, "Convertendo Imagem para PDF...");
+         try {
+            finalFileForUpload = await convertSingleImageToPDF(f);
+         } catch(e) {
+            console.error("Erro na conversão para PDF, enviando original", e);
+         }
+      }
 
       if (supabase) {
-        const ext = f.name.split('.').pop() || 'jpg';
-        const rawName = f.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
+        const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const fileName = `${Date.now()}_${rawName}.${ext}`;
         
-        const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, f);
+        const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
         if (uploadData) {
           const { data: publicUrl } = supabase.storage.from('ged-auditoria').getPublicUrl(fileName);
           fileUrl = publicUrl.publicUrl;
@@ -1376,11 +1446,22 @@ export default function ScannerJuridico() {
 
       if (supabase) {
         onProgress(85, "Armazenando PDF/Imagem na Nuvem...");
-        const ext = file.name.split('.').pop() || 'jpg';
-        const rawName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        
+        let finalFileForUpload = file;
+        if (file.type.startsWith("image/")) {
+           onProgress(88, "Convertendo Imagem para PDF...");
+           try {
+              finalFileForUpload = await convertSingleImageToPDF(file);
+           } catch(e) {
+              console.error("Erro na conversão para PDF, enviando original", e);
+           }
+        }
+        
+        const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
+        const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const fileName = `${Date.now()}_${rawName}.${ext}`;
         
-        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file);
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
         if (!uploadError) {
            fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
         } else {
@@ -1457,11 +1538,22 @@ export default function ScannerJuridico() {
 
       if (supabase) {
         onProgress(40, "Armazenando PDF/Imagem na Nuvem...");
-        const ext = file.name.split('.').pop() || 'jpg';
-        const rawName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        
+        let finalFileForUpload = file;
+        if (file.type.startsWith("image/")) {
+           onProgress(50, "Convertendo Imagem para PDF...");
+           try {
+              finalFileForUpload = await convertSingleImageToPDF(file);
+           } catch(e) {
+              console.error("Erro na conversão para PDF, enviando original", e);
+           }
+        }
+        
+        const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
+        const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
         const fileName = `${Date.now()}_${rawName}.${ext}`;
         
-        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, file);
+        const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
         if (!uploadError) {
            fileUrl = supabase.storage.from('ged-auditoria').getPublicUrl(fileName).data.publicUrl;
         } else {
