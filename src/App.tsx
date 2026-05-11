@@ -790,7 +790,7 @@ Sua missão:
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
-async function extractPDFHybrid(file, onProgress, useAi) {
+async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -810,16 +810,25 @@ async function extractPDFHybrid(file, onProgress, useAi) {
     return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
   };
 
-  for (let i = 1; i <= pdf.numPages; i++) {
+  const startIdx = parseInt(startPage) || 1;
+  const endIdx = pdf.numPages;
+
+  for (let i = startIdx; i <= endIdx; i++) {
+    if (window.lexscan_abort) {
+        window.lexscan_abort = false;
+        fullText += `\n\n[PROCESSO INTERROMPIDO PELO USUÁRIO NA PÁGINA ${i-1}]\n\n`;
+        break;
+    }
+
     try {
-      onProgress(Math.round((i / pdf.numPages) * 100), `Lendo pág ${i}/${pdf.numPages}...`);
+      onProgress(Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100), `Lendo pág ${i}/${endIdx}...`);
       const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
       
       // Tenta texto nativo primeiro (100% de confiança, 0 custo)
       const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
       const pageText = textContent.items.map(item => item.str).join(" ").trim();
 
-      if (pageText.length > 50) {
+      if (pageText.length > 600) {
         fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
         confidenceTotal += 100;
         pagesEvaluated++;
@@ -1076,6 +1085,7 @@ export default function ScannerJuridico() {
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
   const [result, setResult] = useState(null);
+  const [startPage, setStartPage] = useState(1);
   const [history, setHistory] = useState([]);
   const [clients, setClients] = useState([]);
   const [selectedClient, setSelectedClient] = useState("");
@@ -1446,11 +1456,11 @@ export default function ScannerJuridico() {
       };
 
       if (f.type === "application/pdf") {
-        extracted = await extractPDFHybrid(f, onProgress, aiMode);
+        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage);
       } else {
         extracted = await extractImageHybrid(f, onProgress, aiMode);
       }
-      
+
       // Otimização Heurística para todos os casos (limpeza final)
       if (extracted && extracted.text) {
         extracted.text = optimizeRawText(extracted.text);
@@ -1532,8 +1542,10 @@ export default function ScannerJuridico() {
       let extracted;
       const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
 
+      window.lexscan_abort = false;
+
       if (file.type === "application/pdf") {
-        extracted = await extractPDFHybrid(file, onProgress, aiMode);
+        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage);
       } else {
         extracted = await extractImageHybrid(file, onProgress, aiMode);
       }
@@ -2028,8 +2040,10 @@ export default function ScannerJuridico() {
       let extracted;
       const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
 
+      window.lexscan_abort = false;
+
       if (fileToProcess.type === "application/pdf") {
-        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode);
+        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage);
       } else {
         extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode);
       }
@@ -2105,8 +2119,10 @@ export default function ScannerJuridico() {
              setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
           };
     
+          window.lexscan_abort = false;
+
           if (fileToProcess.type === "application/pdf") {
-            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode);
+            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage);
           } else {
             extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode);
           }
@@ -2730,26 +2746,46 @@ export default function ScannerJuridico() {
                       Arquivo {currentQueueIndex + 1} de {queue.length}
                     </div>
                   )}
+                  <button onClick={() => { window.lexscan_abort = true; }} style={{ marginTop: '14px', background: G.card, border: `1px solid ${G.border}`, borderRadius: '8px', padding: '10px 16px', color: G.text, cursor: 'pointer', fontSize: '13px', width: '100%', fontWeight: 500, transition: 'all 0.2s', ':hover': { borderColor: G.accent } }}>
+                     ⏹ Pausar / Salvar Progresso Atual
+                  </button>
                 </div>
               )}
 
               {/* Select Folder area if not processing and not result */}
               {(file || queue.length > 0) && !result && !processing && (
-                <div style={{ marginBottom: '14px' }}>
-                  <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Salvar na Pasta:</label>
-                  <select 
-                    value={selectedClient} 
-                    onChange={e => setSelectedClient(e.target.value)}
-                    style={{
-                      width: '100%', padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`,
-                      background: G.surface, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '14px'
-                    }}
-                  >
-                    <option value="">Geral (Sem Pasta Específica)</option>
-                    {clients.map(c => (
-                      <option key={c.id} value={c.id}>{c.parentId ? '↳ ' : ''}{c.name}</option>
-                    ))}
-                  </select>
+                <div style={{ marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {file && file.type === "application/pdf" && queue.length === 0 && (
+                    <div>
+                      <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Página Inicial do PDF (Para continuar de onde parou):</label>
+                      <input 
+                         type="number" min="1" 
+                         value={startPage} 
+                         onChange={(e) => setStartPage(e.target.value)} 
+                         style={{
+                           width: '100%', padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`,
+                           background: G.surface, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '14px'
+                         }}
+                      />
+                    </div>
+                  )}
+                  
+                  <div>
+                    <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Salvar na Pasta:</label>
+                    <select 
+                      value={selectedClient} 
+                      onChange={e => setSelectedClient(e.target.value)}
+                      style={{
+                        width: '100%', padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`,
+                        background: G.surface, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '14px'
+                      }}
+                    >
+                      <option value="">Geral (Sem Pasta Específica)</option>
+                      {clients.map(c => (
+                        <option key={c.id} value={c.id}>{c.parentId ? '↳ ' : ''}{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               )}
 
