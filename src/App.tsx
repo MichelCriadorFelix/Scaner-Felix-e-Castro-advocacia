@@ -803,105 +803,118 @@ async function extractPDFHybrid(file, onProgress, useAi) {
   const Tesseract = await loadTesseract();
 
   for (let i = 1; i <= pdf.numPages; i++) {
-    onProgress(Math.round((i / pdf.numPages) * 100), `Lendo pág ${i}/${pdf.numPages}...`);
-    const page = await pdf.getPage(i);
-    
-    // Tenta texto nativo primeiro (100% de confiança, 0 custo)
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items.map(item => item.str).join(" ").trim();
-
-    if (pageText.length > 50) {
-      fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
-      confidenceTotal += 100;
-      pagesEvaluated++;
-    } else {
-      // É uma página escaneada ou imagem dentro do PDF
-      onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
-      const viewport = page.getViewport({ scale: 2.5 }); 
-      const canvas = document.createElement("canvas");
-      canvas.width = viewport.width; canvas.height = viewport.height;
-      const ctx = canvas.getContext("2d");
-      await page.render({ canvasContext: ctx, viewport }).promise;
-
-      // Filtro Profissional para melhorar OCR Local
-      const tempCanvas = document.createElement("canvas");
-      tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
-      const tempCtx = tempCanvas.getContext("2d");
-      tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
-      tempCtx.drawImage(canvas, 0, 0);
-
-      const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 1.0));
+    try {
+      onProgress(Math.round((i / pdf.numPages) * 100), `Lendo pág ${i}/${pdf.numPages}...`);
+      const page = await pdf.getPage(i);
       
-      if (useAi) {
-        // Modo Híbrido: Testa OCR primeiro
-        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
-        let ocrRes = { text: "", confidence: 0 };
-        try {
-          if (!tesseractWorker) {
-             tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-               logger: () => {}
-             });
-          }
-          const res = await tesseractWorker.recognize(blob);
-          ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
-        } catch (err) {
-          console.warn(`Erro no Tesseract na página ${i}`, err);
-          ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL]", confidence: 0 };
-          if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-          tesseractWorker = null;
-        }
-        
-        if (ocrRes.confidence >= 80) {
-            fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-            confidenceTotal += ocrRes.confidence;
-        } else {
-            onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
-            try {
-                const aiText = await extractPageWithGemini(blob, onProgress);
-                fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
-                confidenceTotal += 99;
-            } catch (e) {
-                let errMsg = e.message || "Erro desconhecido";
-                fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
-                confidenceTotal += ocrRes.confidence;
-            }
-        }
+      // Tenta texto nativo primeiro (100% de confiança, 0 custo)
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(item => item.str).join(" ").trim();
+
+      if (pageText.length > 50) {
+        fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
+        confidenceTotal += 100;
+        pagesEvaluated++;
       } else {
-        // Modo Texto Bruto Rigoroso
-        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
+        // É uma página escaneada ou imagem dentro do PDF
+        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
+        const viewport = page.getViewport({ scale: 2.2 }); 
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
         
-        let ocrRes = { text: "", confidence: 0 };
-        try {
-          if (!tesseractWorker) {
-             tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-               logger: ({status, progress}) => {
-                  if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
-               }
-             });
+        if (!ctx) {
+           throw new Error("Erro de memória: Falha ao obter contexto 2D para a página " + i);
+        }
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        // Filtro Profissional para melhorar OCR Local
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+        const tempCtx = tempCanvas.getContext("2d");
+        if (tempCtx) {
+           tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
+           tempCtx.drawImage(canvas, 0, 0);
+        }
+
+        const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
+        
+        if (useAi) {
+          // Modo Híbrido: Testa OCR primeiro
+          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
+          let ocrRes = { text: "", confidence: 0 };
+          try {
+            if (!tesseractWorker) {
+               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+                 logger: () => {}
+               });
+            }
+            const res = await tesseractWorker.recognize(blob);
+            ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+          } catch (err) {
+            console.warn(`Erro no Tesseract na página ${i}`, err);
+            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - TESSERACT CRASH]", confidence: 0 };
+            if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+            tesseractWorker = null;
           }
-          const res = await tesseractWorker.recognize(blob);
-          ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
-        } catch (err) {
-          console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
-          ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - PÁGINA PULADA]", confidence: 0 };
-          // Attempt to recreate worker to unstick it if it crashed
-          if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-          tesseractWorker = null;
+          
+          if (ocrRes.confidence >= 80) {
+              fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+              confidenceTotal += ocrRes.confidence;
+          } else {
+              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
+              try {
+                  const aiText = await extractPageWithGemini(blob, onProgress);
+                  fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
+                  confidenceTotal += 99;
+              } catch (e) {
+                  let errMsg = e.message || "Erro desconhecido";
+                  fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
+                  confidenceTotal += ocrRes.confidence;
+              }
+          }
+        } else {
+          // Modo Texto Bruto Rigoroso
+          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
+          
+          let ocrRes = { text: "", confidence: 0 };
+          try {
+            if (!tesseractWorker) {
+               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+                 logger: ({status, progress}) => {
+                    if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
+                 }
+               });
+            }
+            const res = await tesseractWorker.recognize(blob);
+            ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+          } catch (err) {
+            console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
+            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - PÁGINA PULADA]", confidence: 0 };
+            // Attempt to recreate worker to unstick it if it crashed
+            if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+            tesseractWorker = null;
+          }
+          
+          fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+          confidenceTotal += ocrRes.confidence;
         }
         
-        fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-        confidenceTotal += ocrRes.confidence;
+        // Cleanup to prevent memory leak on large PDFs (500+ pages)
+        canvas.width = 0; canvas.height = 0;
+        tempCanvas.width = 0; tempCanvas.height = 0;
+        blob = null;
+        
+        pagesEvaluated++;
       }
       
-      // Cleanup to prevent memory leak on large PDFs (500+ pages)
-      canvas.width = 0; canvas.height = 0;
-      tempCanvas.width = 0; tempCanvas.height = 0;
-      
-      pagesEvaluated++;
+      // Cleanup page to free pdf.js memory
+      if (page && page.cleanup) page.cleanup();
+    } catch (pageErr) {
+      console.error(`Erro crítico ao processar página ${i}:`, pageErr);
+      fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
     }
-    
-    // Cleanup page to free pdf.js memory
-    if (page && page.cleanup) page.cleanup();
   }
 
   if (tesseractWorker && tesseractWorker.terminate) {
