@@ -1055,7 +1055,18 @@ export default function ScannerJuridico() {
       if (supabase) {
         try {
           const { data: cData } = await supabase.from('lexscan_clients').select('*').order('created_at', { ascending: false });
-          if (cData) setClients(cData.map(c => ({ id: c.id, name: c.name, ts: c.created_at })));
+          if (cData) {
+            setClients(cData.map(c => {
+               let name = c.name;
+               let parentId = null;
+               if (name.includes('::')) {
+                  const parts = name.split('::');
+                  parentId = parts[0];
+                  name = parts.slice(1).join('::');
+               }
+               return { id: c.id, name, parentId, ts: c.created_at, originalName: c.name };
+            }));
+          }
           
           const { data: dData } = await supabase.from('lexscan_documents').select('*').order('created_at', { ascending: false });
           if (dData) {
@@ -1275,13 +1286,23 @@ export default function ScannerJuridico() {
       try {
         let fileUrl = null;
         let finalId = Date.now().toString() + "_" + i;
+        let finalFileForUpload = f;
+
+        if (f.type.startsWith("image/")) {
+           setProgressMsg(`[${i+1}/${queue.length}] Convertendo para PDF: ${f.name}`);
+           try {
+              finalFileForUpload = await convertSingleImageToPDF(f);
+           } catch(e) {
+              console.error("Erro na conversão para PDF, enviando original", e);
+           }
+        }
 
         if (supabase) {
-          const ext = f.name.split('.').pop() || 'jpg';
-          const rawName = f.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+          const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
+          const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
           const fileName = `${Date.now()}_${rawName}.${ext}`;
           
-          const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, f);
+          const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
           if (uploadData) {
             const { data: publicUrl } = supabase.storage.from('ged-auditoria').getPublicUrl(fileName);
             fileUrl = publicUrl.publicUrl;
@@ -1289,11 +1310,11 @@ export default function ScannerJuridico() {
 
           const { data: inserted } = await supabase.from('lexscan_documents').insert({
             client_id: selectedClient === 'unassigned' || !selectedClient ? null : selectedClient,
-            name: f.name,
+            name: finalFileForUpload.name,
             extracted_text: '',
             confidence: 0,
             file_url: fileUrl,
-            file_type: f.type,
+            file_type: finalFileForUpload.type,
             chars_count: 0,
             words_count: 0
           }).select().single();
@@ -1304,8 +1325,8 @@ export default function ScannerJuridico() {
         const item = {
           id: finalId,
           clientId: selectedClient || 'unassigned',
-          name: f.name,
-          type: f.type,
+          name: finalFileForUpload.name,
+          type: finalFileForUpload.type,
           ts: Date.now(),
           text: '',
           confidence: 0,
@@ -1313,7 +1334,7 @@ export default function ScannerJuridico() {
           chars: 0,
           fileUrl,
           preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
-          localBlobUrl: URL.createObjectURL(f)
+          localBlobUrl: URL.createObjectURL(finalFileForUpload)
         };
 
         setHistory(prev => [item, ...prev]);
@@ -2135,20 +2156,33 @@ export default function ScannerJuridico() {
 
   const handleCreateClient = async () => {
     if(!newClientName.trim()) return;
-    const name = newClientName.trim();
-     setIsCreatingClient(false);
+    const isSubfolder = viewingClient !== null && viewingClient !== 'unassigned';
+    const finalName = isSubfolder ? `${viewingClient}::${newClientName.trim()}` : newClientName.trim();
+    
+    setIsCreatingClient(false);
     setNewClientName("");
     
     if (supabase) {
       showToast("Criando pasta...");
-      const { data, error } = await supabase.from('lexscan_clients').insert([{ name }]).select();
+      const { data, error } = await supabase.from('lexscan_clients').insert([{ name: finalName }]).select();
       if (error) {
         console.error("Supabase Error:", error);
         showToast("Erro DB: " + error.message, "error");
       } else if (data && data.length > 0) {
-        const nc = { id: data[0].id, name: data[0].name, ts: data[0].created_at };
-        setClients(prev => [nc, ...prev]);
-        setSelectedClient(nc.id);
+        setClients(prev => {
+          let name = data[0].name;
+          let parentId = null;
+          if (name.includes('::')) {
+             const parts = name.split('::');
+             parentId = parts[0];
+             name = parts.slice(1).join('::');
+          }
+          const nc = { id: data[0].id, name, parentId, ts: data[0].created_at, originalName: data[0].name };
+          if (!parentId) {
+            setSelectedClient(nc.id); // select it in drop down if it's a main folder
+          }
+          return [nc, ...prev];
+        });
         showToast("Pasta criada no banco!");
       }
     } else {
@@ -2359,7 +2393,7 @@ export default function ScannerJuridico() {
                  style={{background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '12px', color: G.text, borderRadius: '8px', width: '100%', fontSize: '14px', cursor: 'pointer'}}
                >
                  <option value="unassigned">Geral (Sem Pasta Específica)</option>
-                 {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                 {clients.map(c => <option key={c.id} value={c.id}>{c.parentId ? '↳ ' : ''}{c.name}</option>)}
                </select>
             </div>
 
@@ -2446,11 +2480,18 @@ export default function ScannerJuridico() {
                   key={c.id}
                   onClick={() => moveDocumentHandler(movingItem.id, c.id)}
                   style={{
-                    padding: '12px', borderRadius: '10px', background: movingItem.clientId === c.id ? G.accent : G.surface, 
-                    color: movingItem.clientId === c.id ? '#000' : G.text, border: `1px solid ${G.border}`, cursor: 'pointer', textAlign: 'left', fontSize: '13px'
+                    padding: '12px', 
+                    paddingLeft: c.parentId ? '32px' : '12px',
+                    borderRadius: '10px', 
+                    background: movingItem.clientId === c.id ? G.accent : G.surface, 
+                    color: movingItem.clientId === c.id ? '#000' : G.text, 
+                    border: `1px solid ${G.border}`, 
+                    cursor: 'pointer', 
+                    textAlign: 'left', 
+                    fontSize: '13px'
                   }}
                 >
-                  📂 {c.name}
+                  {c.parentId ? '↳ 📂' : '📂'} {c.name}
                 </button>
               ))}
             </div>
@@ -2623,7 +2664,7 @@ export default function ScannerJuridico() {
                   >
                     <option value="">Geral (Sem Pasta Específica)</option>
                     {clients.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id}>{c.parentId ? '↳ ' : ''}{c.name}</option>
                     ))}
                   </select>
                 </div>
@@ -2798,8 +2839,9 @@ export default function ScannerJuridico() {
                       <div style={{ color: G.muted }}>→</div>
                     </div>
 
-                    {clients.map(c => {
+                    {clients.filter(c => !c.parentId).map(c => {
                       const docsCount = history.filter(h => h.clientId === c.id).length;
+                      const subfoldersCount = clients.filter(sub => sub.parentId === c.id).length;
                       return (
                         <div 
                           key={c.id}
@@ -2810,7 +2852,9 @@ export default function ScannerJuridico() {
                           <div style={{ fontSize: '24px' }}>📂</div>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontWeight: 500, color: G.text }}>{c.name}</div>
-                            <div style={{ fontSize: '12px', color: G.muted }}>{docsCount} documentos</div>
+                            <div style={{ fontSize: '12px', color: G.muted }}>
+                              {docsCount} documentos {subfoldersCount > 0 ? `• ${subfoldersCount} subpasta${subfoldersCount>1?'s':''}` : ''}
+                            </div>
                           </div>
                           <button 
                             onClick={(e) => { e.stopPropagation(); deleteClientHandler(c.id, c.name); }}
@@ -2828,7 +2872,10 @@ export default function ScannerJuridico() {
                   <div style={{ background: G.surface, padding: '16px', borderRadius: '16px', border: `1px solid ${G.border}`, marginBottom: '4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
                       <button 
-                        onClick={() => setViewingClient(null)}
+                        onClick={() => {
+                          const currentClient = clients.find(c => c.id === viewingClient);
+                          setViewingClient(currentClient?.parentId || null);
+                        }}
                         style={{ background: G.card, border: `1px solid ${G.border}`, color: G.muted, cursor: 'pointer', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
                       >
                         <span>←</span> Voltar
@@ -2836,7 +2883,33 @@ export default function ScannerJuridico() {
                       <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent, flex: 1 }}>
                         {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
                       </h3>
+                      {viewingClient !== 'unassigned' && (
+                        <button 
+                          onClick={() => setIsCreatingClient(true)}
+                          style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
+                        >
+                          + Nova Subpasta
+                        </button>
+                      )}
                     </div>
+
+                    {isCreatingClient && viewingClient !== 'unassigned' && (
+                      <div style={{ background: G.card, padding: '16px', borderRadius: '12px', marginBottom: '16px', border: `1px solid ${G.border}` }}>
+                        <input 
+                          type="text" 
+                          autoFocus
+                          placeholder="Nome da Subpasta..."
+                          value={newClientName}
+                          onChange={e => setNewClientName(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handleCreateClient()}
+                          style={{ width: '100%', padding: '10px', borderRadius: '8px', border: `1px solid ${G.border}`, background: G.bg, color: G.text, outline: 'none', marginBottom: '10px' }}
+                        />
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button onClick={() => setIsCreatingClient(false)} style={{ flex: 1, padding: '8px', borderRadius: '8px', background: 'transparent', color: G.muted, border: 'none', cursor: 'pointer' }}>Cancelar</button>
+                          <button onClick={handleCreateClient} style={{ flex: 1, padding: '8px', borderRadius: '8px', background: G.success, color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Salvar</button>
+                        </div>
+                      </div>
+                    )}
                     
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                       <div style={{ flex: 1 }}>
@@ -2885,10 +2958,43 @@ export default function ScannerJuridico() {
                     </div>
                   </div>
 
+                  {clients.filter(c => c.parentId === viewingClient).length > 0 && (
+                    <div style={{ padding: '8px 0' }}>
+                      <div style={{ fontSize: '12px', fontWeight: 600, color: G.muted, padding: '0 8px', marginBottom: '8px', textTransform: 'uppercase' }}>Subpastas</div>
+                      <div className="folders-grid" style={{ display: 'grid', gap: '8px' }}>
+                        {clients.filter(c => c.parentId === viewingClient).map(c => {
+                          const docsCount = history.filter(h => h.clientId === c.id).length;
+                          const subfoldersCount = clients.filter(sub => sub.parentId === c.id).length;
+                          return (
+                            <div 
+                              key={c.id}
+                              className="folder-card"
+                              onClick={() => setViewingClient(c.id)}
+                              style={{ background: G.card, padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
+                            >
+                              <div style={{ fontSize: '20px' }}>📂</div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontWeight: 500, color: G.text, fontSize: '14px' }}>{c.name}</div>
+                                <div style={{ fontSize: '11px', color: G.muted }}>
+                                  {docsCount} documentos {subfoldersCount > 0 ? `• ${subfoldersCount} subpasta${subfoldersCount>1?'s':''}` : ''}
+                                </div>
+                              </div>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); deleteClientHandler(c.id, c.name); }}
+                                style={{ background: 'none', border: 'none', color: G.error, cursor: 'pointer', padding: '4px', fontSize: '14px' }}
+                              >🗑</button>
+                              <div style={{ color: G.muted, fontSize: '14px' }}>→</div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length === 0 ? (
                     <div className="history-empty">
                       <div className="history-empty-icon">📭</div>
-                      <p>Pasta vazia.</p>
+                      <p>{clients.filter(c => c.parentId === viewingClient).length > 0 ? "Pasta não possui arquivos (apenas subpastas)." : "Pasta vazia."}</p>
                     </div>
                   ) : (
                     history
