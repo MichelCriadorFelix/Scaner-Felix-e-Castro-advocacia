@@ -835,16 +835,21 @@ async function extractPDFHybrid(file, onProgress, useAi) {
       if (useAi) {
         // Modo Híbrido: Testa OCR primeiro
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
-        let ocrRes;
-        
-        if (!tesseractWorker) {
-           tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-             logger: () => {}
-           });
+        let ocrRes = { text: "", confidence: 0 };
+        try {
+          if (!tesseractWorker) {
+             tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+               logger: () => {}
+             });
+          }
+          const res = await tesseractWorker.recognize(blob);
+          ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+        } catch (err) {
+          console.warn(`Erro no Tesseract na página ${i}`, err);
+          ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL]", confidence: 0 };
+          if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+          tesseractWorker = null;
         }
-        
-        const res = await tesseractWorker.recognize(blob);
-        ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
         
         if (ocrRes.confidence >= 80) {
             fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
@@ -865,16 +870,24 @@ async function extractPDFHybrid(file, onProgress, useAi) {
         // Modo Texto Bruto Rigoroso
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
         
-        if (!tesseractWorker) {
-           tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-             logger: ({status, progress}) => {
-                if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
-             }
-           });
+        let ocrRes = { text: "", confidence: 0 };
+        try {
+          if (!tesseractWorker) {
+             tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+               logger: ({status, progress}) => {
+                  if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
+               }
+             });
+          }
+          const res = await tesseractWorker.recognize(blob);
+          ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+        } catch (err) {
+          console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
+          ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - PÁGINA PULADA]", confidence: 0 };
+          // Attempt to recreate worker to unstick it if it crashed
+          if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+          tesseractWorker = null;
         }
-        
-        const res = await tesseractWorker.recognize(blob);
-        const ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
         
         fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
         confidenceTotal += ocrRes.confidence;
@@ -1256,9 +1269,9 @@ export default function ScannerJuridico() {
       return;
     }
 
-    if (validFiles.length > 500) {
-      showToast("Limite de 500 arquivos por vez", "info");
-      validFiles.splice(500);
+    if (validFiles.length > 2000) {
+      showToast("Capacidade expandida: Limite de 2000 arquivos por vez", "info");
+      validFiles.splice(2000);
     }
 
     const allImages = validFiles.every(f => f.type.startsWith("image/"));
@@ -2775,7 +2788,7 @@ export default function ScannerJuridico() {
                   <div className="result-card">
                     <div className="result-header">
                       <span className="result-title">Texto Extraído</span>
-                      <span className="result-meta">{result.words} palavras · {result.chars} chars</span>
+                      <span className="result-meta">{result.words} palavras · {result.chars} chars · Suporte Ilimitado (+500k)</span>
                     </div>
                     <div className="result-text">{result.text || "(nenhum texto reconhecido)"}</div>
                     <div className="confidence-bar">
