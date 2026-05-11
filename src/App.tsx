@@ -1381,11 +1381,11 @@ export default function ScannerJuridico() {
 
         const { data: inserted } = await supabase.from('lexscan_documents').insert({
           client_id: selectedClient === 'unassigned' || !selectedClient ? null : selectedClient,
-          name: f.name,
+          name: finalFileForUpload.name,
           extracted_text: extracted.text,
           confidence: extracted.confidence,
           file_url: fileUrl,
-          file_type: f.type,
+          file_type: finalFileForUpload.type,
           chars_count: extracted.text.length,
           words_count: extracted.text.split(/\s+/).length
         }).select().single();
@@ -1396,15 +1396,15 @@ export default function ScannerJuridico() {
       const item = {
         id: finalId,
         clientId: selectedClient || 'unassigned',
-        name: f.name,
-        type: f.type,
+        name: finalFileForUpload.name,
+        type: finalFileForUpload.type,
         ts: Date.now(),
         text: extracted.text,
         confidence: extracted.confidence,
         words: extracted.text.split(/\s+/).length,
         fileUrl,
         preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
-        localBlobUrl: URL.createObjectURL(f)
+        localBlobUrl: URL.createObjectURL(finalFileForUpload)
       };
 
       setHistory(prev => [item, ...prev]);
@@ -1473,8 +1473,8 @@ export default function ScannerJuridico() {
         onProgress(95, "Sincronizando com o banco GED...");
         const docRecord = {
            client_id: selectedClient || null,
-           name: file.name,
-           file_type: file.type,
+           name: finalFileForUpload.name,
+           file_type: finalFileForUpload.type,
            file_url: fileUrl,
            extracted_text: extracted.text,
            confidence: extracted.confidence,
@@ -1494,10 +1494,10 @@ export default function ScannerJuridico() {
 
       const item = {
         id: finalId,
-        name: file.name,
-        type: file.type,
+        name: finalFileForUpload.name,
+        type: finalFileForUpload.type,
         preview: fileUrl || (file.type.startsWith("image/") ? preview : null),
-        localBlobUrl: URL.createObjectURL(file),
+        localBlobUrl: URL.createObjectURL(finalFileForUpload),
         fileUrl: fileUrl,
         text: extracted.text,
         confidence: extracted.confidence,
@@ -1565,8 +1565,8 @@ export default function ScannerJuridico() {
         onProgress(80, "Sincronizando com o banco GED...");
         const docRecord = {
            client_id: selectedClient || null,
-           name: file.name,
-           file_type: file.type,
+           name: finalFileForUpload.name,
+           file_type: finalFileForUpload.type,
            file_url: fileUrl,
            extracted_text: "",
            confidence: 100, // No OCR, so fully confident it is what it is
@@ -1586,10 +1586,10 @@ export default function ScannerJuridico() {
 
       const item = {
         id: finalId,
-        name: file.name,
-        type: file.type,
+        name: finalFileForUpload.name,
+        type: finalFileForUpload.type,
         preview: fileUrl || (file.type.startsWith("image/") ? preview : null),
-        localBlobUrl: URL.createObjectURL(file),
+        localBlobUrl: URL.createObjectURL(finalFileForUpload),
         fileUrl: fileUrl,
         text: "",
         confidence: 100,
