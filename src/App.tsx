@@ -1464,19 +1464,19 @@ export default function ScannerJuridico() {
 
       let fileUrl = null;
       let finalId = Date.now().toString();
+      let finalFileForUpload = file;
+
+      if (file.type.startsWith("image/")) {
+         onProgress(88, "Convertendo Imagem para PDF...");
+         try {
+            finalFileForUpload = await convertSingleImageToPDF(file);
+         } catch(e) {
+            console.error("Erro na conversão para PDF, enviando original", e);
+         }
+      }
 
       if (supabase) {
-        onProgress(85, "Armazenando PDF/Imagem na Nuvem...");
-        
-        let finalFileForUpload = file;
-        if (file.type.startsWith("image/")) {
-           onProgress(88, "Convertendo Imagem para PDF...");
-           try {
-              finalFileForUpload = await convertSingleImageToPDF(file);
-           } catch(e) {
-              console.error("Erro na conversão para PDF, enviando original", e);
-           }
-        }
+        onProgress(85, "Armazenando PDF na Nuvem...");
         
         const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
         const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1556,19 +1556,19 @@ export default function ScannerJuridico() {
 
       let fileUrl = null;
       let finalId = Date.now().toString();
+      let finalFileForUpload = file;
+
+      if (file.type.startsWith("image/")) {
+         onProgress(50, "Convertendo Imagem para PDF...");
+         try {
+            finalFileForUpload = await convertSingleImageToPDF(file);
+         } catch(e) {
+            console.error("Erro na conversão para PDF, enviando original", e);
+         }
+      }
 
       if (supabase) {
-        onProgress(40, "Armazenando PDF/Imagem na Nuvem...");
-        
-        let finalFileForUpload = file;
-        if (file.type.startsWith("image/")) {
-           onProgress(50, "Convertendo Imagem para PDF...");
-           try {
-              finalFileForUpload = await convertSingleImageToPDF(file);
-           } catch(e) {
-              console.error("Erro na conversão para PDF, enviando original", e);
-           }
-        }
+        onProgress(40, "Armazenando PDF na Nuvem...");
         
         const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
         const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
