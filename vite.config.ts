@@ -11,13 +11,13 @@ export default defineConfig(({mode}) => {
 
   // Mapeia todas as variáveis de ambiente que tenham "GEMINI" ou seja "API_KEY"
   const geminiKeysList = Object.keys(allAvailableEnv)
-    .filter(key => key.includes('GEMINI') || key === 'API_KEY')
+    .filter(key => key.includes('GEMINI') || key.includes('API_KEY'))
     .map(key => allAvailableEnv[key])
     .filter(Boolean)
     .join(',');
 
   const geminiEnvVars = Object.keys(allAvailableEnv)
-    .filter(key => key.includes('GEMINI') || key === 'API_KEY')
+    .filter(key => key.includes('GEMINI') || key.includes('API_KEY'))
     .reduce((acc, key) => {
       acc[`process.env.${key}`] = JSON.stringify(allAvailableEnv[key]);
       return acc;
