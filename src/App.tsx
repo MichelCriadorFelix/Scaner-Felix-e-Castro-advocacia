@@ -685,10 +685,13 @@ function getAvailableGeminiKeys() {
     }
   };
 
-  // 1. Busca por substituiÃ§Ã£o estÃ¡tica (Vite Define)
+  // 1. Busca por substituição estática (Vite Define)
   // IMPORTANTE: Vite troca essas chamadas literais por strings no momento do Build.
   try {
     if (process.env.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
+  } catch(e) {}
+  try {
+    if (process.env.API_KEY) addKey(process.env.API_KEY);
   } catch(e) {}
   try {
     if (process.env.ALL_GEMINI_KEYS) addKey(process.env.ALL_GEMINI_KEYS);
@@ -698,7 +701,7 @@ function getAvailableGeminiKeys() {
   try {
     if (import.meta && import.meta.env) {
       Object.keys(import.meta.env).forEach(k => {
-        if (k.includes('GEMINI')) addKey(import.meta.env[k]);
+        if (k.includes('GEMINI') || k === 'VITE_API_KEY' || k === 'API_KEY') addKey(import.meta.env[k]);
       });
     }
   } catch (e) {}
@@ -713,7 +716,7 @@ async function extractPageWithGemini(blob, onProgress) {
   let lastError = null;
 
   if (keys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI configurada. Renomeie para VITE_GEMINI_API_KEY no Vercel.");
+    throw new Error("❌ Nenhuma Chave GEMINI configurada. Renomeie para VITE_API_KEY no Vercel (ou use GEMINI_API_KEY).");
   }
 
   const base64 = await new Promise((r) => {
@@ -1171,13 +1174,15 @@ export default function ScannerJuridico() {
 
   // Gatilho seguro para processamento em lote
   useEffect(() => {
+    let timeout;
     if (batchTrigger && tab === "scanner" && !processing) {
-      setBatchTrigger(false);
-      // Aguarda um frame para garantir que o container do scanner esteja pronto no DOM
-      requestAnimationFrame(() => {
-        setTimeout(() => processFolderOCR(), 100);
-      });
+      // Pequeno delay para garantir que a aba scanner foi montada e o DOM está estável
+      timeout = setTimeout(() => {
+        setBatchTrigger(false);
+        processFolderOCR();
+      }, 500);
     }
+    return () => clearTimeout(timeout);
   }, [batchTrigger, tab, processing]);
 
   const confColor = (c_raw) => {
