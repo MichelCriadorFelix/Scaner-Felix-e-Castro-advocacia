@@ -929,9 +929,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
   return { text: fullText.trim(), confidence: finalConf };
 }
 
-
 async function convertSingleImageToPDF(file) {
-  // Injeção Local de Jspdf
   if (!window.jspdf) {
     await new Promise((res, rej) => {
       const s = document.createElement("script");
@@ -940,10 +938,8 @@ async function convertSingleImageToPDF(file) {
       document.head.appendChild(s);
     });
   }
-  
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
-  
   const blobUrl = URL.createObjectURL(file);
   const img = await new Promise((res, rej) => {
     const i = new Image();
@@ -951,40 +947,28 @@ async function convertSingleImageToPDF(file) {
     i.onerror = () => { URL.revokeObjectURL(blobUrl); rej(); };
     i.src = blobUrl;
   });
-
-  const pdfW = 210;
-  const pdfH = 297;
-  
+  const pdfW = 210, pdfH = 297;
   const compCanvas = document.createElement("canvas");
   const compCtx = compCanvas.getContext("2d");
-  
-  // Compressão Média
   let scale = 1;
   const MAX_SIZE = 1200;
   if (img.width > MAX_SIZE || img.height > MAX_SIZE) {
      scale = Math.min(MAX_SIZE / img.width, MAX_SIZE / img.height);
   }
-  
   compCanvas.width = img.width * scale;
   compCanvas.height = img.height * scale;
   compCtx.drawImage(img, 0, 0, compCanvas.width, compCanvas.height);
-  
   const compressedDataUrl = compCanvas.toDataURL("image/jpeg", 0.7);
-  
   let imgW = (compCanvas.width * pdfH) / compCanvas.height;
   let imgH = (compCanvas.height * pdfW) / compCanvas.width;
-  
   if (imgH > pdfH) {
      imgH = pdfH;
      imgW = (compCanvas.width * pdfH) / compCanvas.height;
   }
-  
   const x = (pdfW - imgW) / 2;
   const y = (pdfH - imgH) / 2;
-
   doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, 'FAST');
   URL.revokeObjectURL(blobUrl);
-
   const pdfBlob = doc.output('blob');
   return new File([pdfBlob], file.name.replace(/\.[^/.]+$/, "") + ".pdf", { type: "application/pdf" });
 }
@@ -1000,12 +984,13 @@ async function extractImageHybrid(file, onProgress, useAi) {
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
           let errMsg = e.message || "Erro desconhecido";
-          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: ocrRes.confidence };
+          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: Math.min(100, ocrRes.confidence) };
       }
   }
   
-  const modeLabel = useAi ? `OCR LOCAL (${ocrRes.confidence}%)` : `OCR BRUTO (${ocrRes.confidence}%)`;
-  return { text: `[${modeLabel}]\n` + ocrRes.text, confidence: ocrRes.confidence };
+  const finalConf = Math.min(100, ocrRes.confidence);
+  const modeLabel = useAi ? `OCR LOCAL (${finalConf}%)` : `OCR BRUTO (${finalConf}%)`;
+  return { text: `[${modeLabel}]\n` + ocrRes.text, confidence: finalConf };
 }
 
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
@@ -2077,6 +2062,8 @@ export default function ScannerJuridico() {
     }
 
     setTab("scanner");
+    // Pequeno delay para garantir que o React finalize a transição de abas e limpeza do DOM
+    await new Promise(r => setTimeout(r, 400));
     setProcessing(true);
     
     let processedCount = 0;
@@ -3143,7 +3130,7 @@ export default function ScannerJuridico() {
                               </div>
                             )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
-                            <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
+                            <div className="hist-chars">{item.words} palavras · {Math.min(100, item.confidence || 0)}% OCR</div>
                           </div>
                           <div className="hist-actions">
                             {item.type && item.type.startsWith('image/') && (
