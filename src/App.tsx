@@ -718,8 +718,7 @@ async function extractPageWithGemini(blob, onProgress) {
   let lastError = null;
 
   if (keys.length === 0) {
-    const keysEncontradas = Object.keys(import.meta.env).filter(k => k.includes('VITE') || k.includes('API') || k.includes('GEMINI')).join(', ');
-    throw new Error(`❌ Chave 'API_KEY' não encontrada. O React (Vite) embute as variáveis de ambiente no momento em que o site é COMPILADO (Build). Como você acabou de adicionar a 'API_KEY' nas configurações da Vercel, o site atual ainda não possui essa chave. Você PRECISA acessar a Vercel, ir em 'Deployments', clicar nos 3 pontinhos do último deploy e depois em 'Redeploy'.`);
+    throw new Error("❌ Nenhuma Chave GEMINI ou API_KEY configurada.");
   }
 
   const base64 = await new Promise((r) => {
