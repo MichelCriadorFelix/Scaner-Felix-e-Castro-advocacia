@@ -718,7 +718,8 @@ async function extractPageWithGemini(blob, onProgress) {
   let lastError = null;
 
   if (keys.length === 0) {
-    throw new Error("❌ Nenhuma Chave detectada. Se você acabou de adicionar a variável 'API_KEY' na Vercel, você PRECISA refazer o deploy. Vá em 'Deployments' > clique no último > 'Redeploy'. Sem o redeploy, o sistema não enxerga a chave.");
+    const keysEncontradas = Object.keys(import.meta.env).filter(k => k.includes('VITE') || k.includes('API') || k.includes('GEMINI')).join(', ');
+    throw new Error(`❌ Chave 'API_KEY' não encontrada. O React (Vite) embute as variáveis de ambiente no momento em que o site é COMPILADO (Build). Como você acabou de adicionar a 'API_KEY' nas configurações da Vercel, o site atual ainda não possui essa chave. Você PRECISA acessar a Vercel, ir em 'Deployments', clicar nos 3 pontinhos do último deploy e depois em 'Redeploy'.`);
   }
 
   const base64 = await new Promise((r) => {
@@ -881,7 +882,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
             tesseractWorker = null;
           }
           
-          if (ocrRes.confidence >= 80) {
+          if (ocrRes.confidence >= 99) {
               fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
               confidenceTotal += ocrRes.confidence;
           } else {
@@ -1019,7 +1020,7 @@ async function extractImageHybrid(file, onProgress, useAi) {
   onProgress(10, "Avaliando qualidade da imagem via OCR Local...");
   const ocrRes = await runOCR(file, (p) => onProgress(10 + Math.round(p * 40), `Avaliando OCR: ${Math.round(p*100)}%`));
   
-  if (useAi && ocrRes.confidence < 80) {
+  if (useAi && ocrRes.confidence < 99) {
       onProgress(70, `Qualidade baixa detectada (${ocrRes.confidence}%). Acionando IA Jurídica...`);
       try {
           const aiText = await extractPageWithGemini(file, onProgress);
