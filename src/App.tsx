@@ -953,7 +953,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
      if (pdf && pdf.destroy) await pdf.destroy();
   } catch(e) { }
 
-  return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
+  return { text: fullText.trim(), confidence: Math.min(100, Math.max(0, Math.round(confidenceTotal / (pagesEvaluated || 1)))) };
 }
 
 async function convertSingleImageToPDF(file) {
@@ -2866,9 +2866,9 @@ export default function ScannerJuridico() {
                     <div className="confidence-bar">
                       <span>Confiança OCR</span>
                       <div className="conf-fill">
-                        <div className="conf-inner" style={{ width: result.confidence + "%", background: confColor(result.confidence) }} />
+                        <div className="conf-inner" style={{ width: Math.min(100, result.confidence) + "%", background: confColor(Math.min(100, result.confidence)) }} />
                       </div>
-                      <span style={{ color: confColor(result.confidence) }}>{result.confidence}%</span>
+                      <span style={{ color: confColor(Math.min(100, result.confidence)) }}>{Math.min(100, result.confidence)}%</span>
                     </div>
                     <div className="result-actions">
                       <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
@@ -3164,7 +3164,7 @@ export default function ScannerJuridico() {
                               </div>
                             )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
-                            <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
+                            <div className="hist-chars">{item.words} palavras · {Math.min(100, item.confidence)}% OCR</div>
                           </div>
                           <div className="hist-actions">
                             {item.type && item.type.startsWith('image/') && (
