@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ReactCrop from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import { createClient } from '@supabase/supabase-js';
@@ -1048,6 +1048,7 @@ export default function ScannerJuridico() {
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
+  const [batchTrigger, setBatchTrigger] = useState(false); // Novo gatilho seguro
   const [result, setResult] = useState(null);
   const [startPage, setStartPage] = useState(1);
   const [history, setHistory] = useState([]);
@@ -1149,9 +1150,40 @@ export default function ScannerJuridico() {
     loadData();
   }, []);
 
-  const confColor = (c) => {
+  // ── Ordenação e Memoização do Histórico ─────────────────────────────────────
+  const sortedHistory = useMemo(() => {
+    const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
+    
+    return [...docs].sort((a, b) => {
+      if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
+      if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
+      if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
+      return 0;
+    });
+  }, [history, viewingClient, sortOrder]);
+
+  // Limpa estados temporários ao trocar de aba para evitar conflitos de DOM
+  useEffect(() => {
+    setRenamingItem(null);
+    setMovingItem(null);
+  }, [tab]);
+
+  // Gatilho seguro para processamento em lote
+  useEffect(() => {
+    if (batchTrigger && tab === "scanner" && !processing) {
+      setBatchTrigger(false);
+      // Aguarda um frame para garantir que o container do scanner esteja pronto no DOM
+      requestAnimationFrame(() => {
+        setTimeout(() => processFolderOCR(), 100);
+      });
+    }
+  }, [batchTrigger, tab, processing]);
+
+  const confColor = (c_raw) => {
+    const c = Math.min(100, parseInt(c_raw) || 0);
     if (c >= 90) return G.success;
-    if (c >= 70) return G.warning;
+    if (c >= 70) return G.accent;
     return G.error;
   };
 
@@ -2018,11 +2050,14 @@ export default function ScannerJuridico() {
       
       onProgress(90, "Atualizando banco de dados...");
       
+      const wordsCount = extracted.text.split(/\s+/).filter(Boolean).length;
+      const finalConfidence = Math.min(100, extracted.confidence || 0);
+      
       if (supabase) {
         await supabase.from("lexscan_documents").update({
           extracted_text: extracted.text,
-          confidence: extracted.confidence,
-          words_count: extracted.text.split(/\s+/).filter(Boolean).length,
+          confidence: finalConfidence,
+          words_count: wordsCount,
           chars_count: extracted.text.length
         }).eq("id", item.id);
       }
@@ -2030,8 +2065,8 @@ export default function ScannerJuridico() {
       const updatedItem = {
         ...item,
         text: extracted.text,
-        confidence: extracted.confidence,
-        words: extracted.text.split(/\s+/).filter(Boolean).length,
+        confidence: finalConfidence,
+        words: wordsCount,
         chars: extracted.text.length
       };
 
@@ -2051,28 +2086,30 @@ export default function ScannerJuridico() {
   };
 
   const processFolderOCR = async () => {
+    // Filtramos itens que não tem texto, confiança baixa ou confiança errada (>100)
     const docs = history.filter(h => 
        (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)
-       && (!h.text || h.text.trim() === '' || h.confidence <= 98)
+       && (!h.text || h.text.trim() === '' || h.confidence <= 85 || h.confidence > 100)
     );
     
     if (docs.length === 0) {
-       showToast("Todos os documentos já possuem OCR extraído ou confiança >= 99%.", "info");
+       showToast("Todos os documentos nesta pasta já possuem OCR de alta qualidade.", "info");
        return;
     }
 
-    setTab("scanner");
-    // Pequeno delay para garantir que o React finalize a transição de abas e limpeza do DOM
-    await new Promise(r => setTimeout(r, 400));
     setProcessing(true);
+    setProgress(0);
+    setProgressMsg("Iniciando lote jurídico...");
     
     let processedCount = 0;
 
     for (let i = 0; i < docs.length; i++) {
+        // ... loop de lote ...
         const item = docs[i];
-        setProgress(0);
-        setProgressMsg(`[${i + 1}/${docs.length}] Processando: ${item.name}...`);
         
+        // Pequeno atraso para dar fôlego ao DOM e evitar conflitos de removeChild do React
+        if (i > 0) await new Promise(r => setTimeout(r, 200));
+
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
           const res = await fetch(urlToFetch);
@@ -2082,7 +2119,7 @@ export default function ScannerJuridico() {
           let extracted;
           const onProgress = (p, msg) => { 
              setProgress(p); 
-             setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
+             setProgressMsg(`[LOTE ${i + 1}/${docs.length}] ${msg || ""}`); 
           };
     
           window.lexscan_abort = false;
@@ -2097,13 +2134,14 @@ export default function ScannerJuridico() {
             extracted.text = optimizeRawText(extracted.text);
           }
           
-          onProgress(90, "Atualizando banco de dados...");
-          
+          const wordsCount = extracted.text.split(/\s+/).filter(Boolean).length;
+          const finalConfidence = Math.min(100, extracted.confidence || 0);
+
           if (supabase) {
             await supabase.from("lexscan_documents").update({
               extracted_text: extracted.text,
-              confidence: extracted.confidence,
-              words_count: extracted.text.split(/\s+/).filter(Boolean).length,
+              confidence: finalConfidence,
+              words_count: wordsCount,
               chars_count: extracted.text.length
             }).eq("id", item.id);
           }
@@ -2111,8 +2149,8 @@ export default function ScannerJuridico() {
           const updatedItem = {
             ...item,
             text: extracted.text,
-            confidence: extracted.confidence,
-            words: extracted.text.split(/\s+/).filter(Boolean).length,
+            confidence: finalConfidence,
+            words: wordsCount,
             chars: extracted.text.length
           };
     
@@ -2124,14 +2162,13 @@ export default function ScannerJuridico() {
           processedCount++;
         } catch (e) {
           console.error(`Error on file ${item.name}`, e);
-          showToast(`Erro ao processar: ${item.name}`, "error");
         }
     }
     
     setProcessing(false);
     setProgress(0);
     setProgressMsg("");
-    setTab("history"); // Retorna para o histórico após processar todos
+    setTab("history"); 
     showToast(`✓ Lote de OCR concluído! ${processedCount} documentos processados.`, "success");
   };
 
@@ -2832,9 +2869,9 @@ export default function ScannerJuridico() {
                     <div className="confidence-bar">
                       <span>Confiança OCR</span>
                       <div className="conf-fill">
-                        <div className="conf-inner" style={{ width: result.confidence + "%", background: confColor(result.confidence) }} />
+                        <div className="conf-inner" style={{ width: Math.min(100, parseInt(result.confidence) || 0) + "%", background: confColor(result.confidence) }} />
                       </div>
-                      <span style={{ color: confColor(result.confidence) }}>{result.confidence}%</span>
+                      <span style={{ color: confColor(result.confidence) }}>{Math.min(100, parseInt(result.confidence) || 0)}%</span>
                     </div>
                     <div className="result-actions">
                       <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
@@ -3019,7 +3056,10 @@ export default function ScannerJuridico() {
                       <div style={{ display: 'flex', gap: '8px', alignSelf: 'flex-end' }}>
                         {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
                           <button 
-                            onClick={processFolderOCR}
+                            onClick={() => {
+                              setTab("scanner");
+                              setBatchTrigger(true);
+                            }}
                             style={{ background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
                             title="Gerar OCR para documentos sem texto ou falhos"
                           >
@@ -3087,16 +3127,7 @@ export default function ScannerJuridico() {
                       <p>{clients.filter(c => c.parentId === viewingClient).length > 0 ? "Pasta não possui arquivos (apenas subpastas)." : "Pasta vazia."}</p>
                     </div>
                   ) : (
-                    history
-                      .filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient))
-                      .sort((a, b) => {
-                        if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
-                        if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
-                        if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-                        if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
-                        return 0;
-                      })
-                      .map(item => (
+                    sortedHistory.map(item => (
                       <div key={item.id} className="hist-card">
                         <div className="hist-header">
                           {item.preview
@@ -3130,7 +3161,7 @@ export default function ScannerJuridico() {
                               </div>
                             )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
-                            <div className="hist-chars">{item.words} palavras · {Math.min(100, item.confidence || 0)}% OCR</div>
+                            <div className="hist-chars">{item.words} palavras · {Math.min(100, parseInt(item.confidence) || 0)}% OCR</div>
                           </div>
                           <div className="hist-actions">
                             {item.type && item.type.startsWith('image/') && (
