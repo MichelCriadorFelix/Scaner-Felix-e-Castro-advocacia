@@ -1051,7 +1051,6 @@ export default function ScannerJuridico() {
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
-  const [batchTrigger, setBatchTrigger] = useState(false); // Novo gatilho seguro
   const [result, setResult] = useState(null);
   const [startPage, setStartPage] = useState(1);
   const [history, setHistory] = useState([]);
@@ -1171,19 +1170,6 @@ export default function ScannerJuridico() {
     setRenamingItem(null);
     setMovingItem(null);
   }, [tab]);
-
-  // Gatilho seguro para processamento em lote
-  useEffect(() => {
-    let timeout;
-    if (batchTrigger && tab === "scanner" && !processing) {
-      // Pequeno delay para garantir que a aba scanner foi montada e o DOM está estável
-      timeout = setTimeout(() => {
-        setBatchTrigger(false);
-        processFolderOCR();
-      }, 500);
-    }
-    return () => clearTimeout(timeout);
-  }, [batchTrigger, tab, processing]);
 
   const confColor = (c_raw) => {
     const c = Math.min(100, parseInt(c_raw) || 0);
@@ -2671,8 +2657,33 @@ export default function ScannerJuridico() {
         {/* Content */}
         <div className="content">
 
+          {/* Progress / Loading View (Global to block interactions and handle conflicts) */}
+          {processing && (
+            <div className="progress-wrap" style={{ margin: '20px' }}>
+              <div className="progress-label">
+                <span>{currentQueueIndex !== -1 ? `Processando Lote` : `Processando OCR...`}</span>
+                <span>{progress}%</span>
+              </div>
+              <div className="progress-bar-bg">
+                <div className="progress-bar" style={{ width: progress + "%" }} />
+              </div>
+              <div className="progress-status">{progressMsg}</div>
+              {currentQueueIndex !== -1 && (
+                <div style={{ marginTop: 8, fontSize: '11px', color: G.muted, textAlign: 'center' }}>
+                  Arquivo {currentQueueIndex + 1} de {queue.length}
+                </div>
+              )}
+              <button 
+                onClick={() => { window.lexscan_abort = true; }} 
+                style={{ marginTop: '14px', background: G.card, border: `1px solid ${G.border}`, borderRadius: '8px', padding: '10px 16px', color: G.text, cursor: 'pointer', fontSize: '13px', width: '100%', fontWeight: 500, transition: 'all 0.2s' }}
+              >
+                  ⏹ Pausar / Salvar Progresso Atual
+              </button>
+            </div>
+          )}
+
           {/* ── SCANNER TAB ── */}
-          {tab === "scanner" && (
+          {tab === "scanner" && !processing && (
             <div className="scanner-panel">
 
               {/* Upload zone */}
@@ -2735,28 +2746,6 @@ export default function ScannerJuridico() {
                       </button>
                     </div>
                   )}
-                </div>
-              )}
-
-              {/* Progress */}
-              {processing && (
-                <div className="progress-wrap">
-                  <div className="progress-label">
-                    <span>{currentQueueIndex !== -1 ? `Processando Lote` : `Processando`}</span>
-                    <span>{progress}%</span>
-                  </div>
-                  <div className="progress-bar-bg">
-                    <div className="progress-bar" style={{ width: progress + "%" }} />
-                  </div>
-                  <div className="progress-status">{progressMsg}</div>
-                  {currentQueueIndex !== -1 && (
-                    <div style={{ marginTop: 8, fontSize: '11px', color: G.muted, textAlign: 'center' }}>
-                      Arquivo {currentQueueIndex + 1} de {queue.length}
-                    </div>
-                  )}
-                  <button onClick={() => { window.lexscan_abort = true; }} style={{ marginTop: '14px', background: G.card, border: `1px solid ${G.border}`, borderRadius: '8px', padding: '10px 16px', color: G.text, cursor: 'pointer', fontSize: '13px', width: '100%', fontWeight: 500, transition: 'all 0.2s', ':hover': { borderColor: G.accent } }}>
-                     ⏹ Pausar / Salvar Progresso Atual
-                  </button>
                 </div>
               )}
 
@@ -2924,7 +2913,7 @@ export default function ScannerJuridico() {
           )}
 
           {/* ── HISTORY TAB ── */}
-          {tab === "history" && (
+          {tab === "history" && !processing && (
             <div className="history-panel">
               {viewingClient === null ? (
                 // View: Lista de Pastas
@@ -3061,10 +3050,7 @@ export default function ScannerJuridico() {
                       <div style={{ display: 'flex', gap: '8px', alignSelf: 'flex-end' }}>
                         {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
                           <button 
-                            onClick={() => {
-                              setTab("scanner");
-                              setBatchTrigger(true);
-                            }}
+                            onClick={processFolderOCR}
                             style={{ background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
                             title="Gerar OCR para documentos sem texto ou falhos"
                           >

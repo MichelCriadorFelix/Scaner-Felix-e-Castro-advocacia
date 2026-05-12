@@ -9,15 +9,17 @@ export default defineConfig(({mode}) => {
   // Combina env do Vite com process.env do Node para garantir que pegamos tudo da Vercel
   const allAvailableEnv = { ...process.env, ...env };
 
-  // Mapeia todas as variÃ¡veis de ambiente que tenham "GEMINI" no nome para estarem disponÃveis
-  // pro front-end (tanto VITE_ quanto sem prefixo, como GEMINI_API_KEY)
+  const isRelevantKey = (key) => key.includes('GEMINI') || key === 'API_KEY' || key === 'VITE_API_KEY';
+
+  // Mapeia todas as variáveis de ambiente relevantes para estarem disponíveis
+  // pro front-end (tanto VITE_ quanto sem prefixo)
   const geminiKeysList = Object.keys(allAvailableEnv)
-    .filter(key => key.includes('GEMINI'))
+    .filter(isRelevantKey)
     .map(key => allAvailableEnv[key])
     .join(',');
 
   const geminiEnvVars = Object.keys(allAvailableEnv)
-    .filter(key => key.includes('GEMINI'))
+    .filter(isRelevantKey)
     .reduce((acc, key) => {
       acc[`process.env.${key}`] = JSON.stringify(allAvailableEnv[key]);
       return acc;
