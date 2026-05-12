@@ -782,7 +782,9 @@ Sua missão:
         // Se a chave na Vercel estiver com Limite Esgotado (429) ou Bloqueada, a gente aborta ELA
         // e pula direto pro próximo "i" (Próxima Chave) poupando tempo
         if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("api key not valid") || errorStr.includes("key")) {
-          console.warn(`👉 [Auto-Failover] Chave ${i + 1} indisponível. Alternando para a próxima chave Vercel!`);
+          console.warn(`👉 [Auto-Failover] Chave ${i + 1} indisponível a. Alternando para a próxima chave Vercel!`);
+          const keyHash = apiKey.slice(-6);
+          if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
           break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave)
         }
         // Se for erro 503 (High Demand/Unavailable), ele SIMPLESMENTE não dá o break,
@@ -1115,6 +1117,8 @@ export default function ScannerJuridico() {
       return {};
     }
   });
+  
+  const [keyErrors, setKeyErrors] = useState({}); // Track 'quota' or 'active'
 
   // Flow State para Escaneamento em Lote (Multi-Páginas)
   const [cameraPages, setCameraPages] = useState([]);
@@ -1145,6 +1149,10 @@ export default function ScannerJuridico() {
         localStorage.setItem('lexscan_key_usage', JSON.stringify(next));
         return next;
       });
+      setKeyErrors(prev => ({...prev, [hash]: 'active'}));
+    };
+    window.setKeyError = (hash, errorType) => {
+      setKeyErrors(prev => ({...prev, [hash]: errorType}));
     };
   }, []);
 
@@ -2643,22 +2651,24 @@ export default function ScannerJuridico() {
             {getAvailableGeminiKeys().map((key, idx) => {
               const hash = key.slice(-6);
               const usageCount = keyUsage[hash] || 0;
-              const totalUsage = Object.values(keyUsage).reduce((a, b) => a + b, 0) || 1;
-              const percent = Math.round((usageCount / totalUsage) * 100);
-              
+              const hasQuotaError = keyErrors[hash] === 'quota_exceeded';
+              const percent = hasQuotaError ? 100 : 0; // If quota error, bar is full/red
+
               return (
                 <div key={hash} style={{ 
-                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${G.border}`,
+                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${hasQuotaError ? '#ef4444' : G.border}`,
                   display: 'flex', flexDirection: 'column', gap: '4px'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: '10px', color: G.text, fontWeight: 500 }}>API #{idx + 1} (..{hash})</span>
-                    <span style={{ fontSize: '10px', color: G.accent }}>{usageCount} reqs</span>
+                    <span style={{ fontSize: '9px', color: hasQuotaError ? '#ef4444' : G.accent }}>{hasQuotaError ? 'ESGOTADA' : `${usageCount} reqs`}</span>
                   </div>
-                  <div style={{ height: '4px', background: G.bg, borderRadius: '4px', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${percent}%`, background: G.accent, transition: 'width 0.5s ease-out' }}></div>
-                  </div>
-                  <div style={{ fontSize: '9px', color: G.muted, textAlign: 'right' }}>Taxa de uso: {percent}%</div>
+                  {!hasQuotaError && (
+                    <div style={{ fontSize: '9px', color: G.muted, textAlign: 'left', marginTop: '2px' }}>Status: Ok</div>
+                  )}
+                  {hasQuotaError && (
+                    <div style={{ fontSize: '9px', color: '#ef4444', textAlign: 'left', marginTop: '2px' }}>Limite de uso diário atingido.</div>
+                  )}
                 </div>
               );
             })}
