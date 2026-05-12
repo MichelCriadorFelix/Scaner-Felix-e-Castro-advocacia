@@ -793,7 +793,9 @@ Sua missão:
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+  
   let fullText = "";
   let confidenceTotal = 0;
   let pagesEvaluated = 0;
@@ -820,33 +822,37 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         break;
     }
 
+    let pageTextRes = "";
+    let pageConfRes = 0;
+    let pageSucceeded = false;
+    let pageRef = null;
+
     try {
       onProgress(Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100), `Lendo pág ${i}/${endIdx}...`);
-      const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
+      pageRef = await withTimeout(pdf.getPage(i), 20000, `Timeout ao obter a página ${i}`);
       
-      // Tenta texto nativo primeiro (100% de confiança, 0 custo)
-      const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
-      const pageText = textContent.items.map(item => item.str).join(" ").trim();
+      // Tenta texto nativo primeiro
+      const textContent = await withTimeout(pageRef.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
+      const pageTextRaw = textContent.items.map(item => item.str).join(" ").trim();
 
-      if (pageText.length > 600) {
-        fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
-        confidenceTotal += 100;
-        pagesEvaluated++;
+      // threshold de 600 caracteres para garantir que não é apenas um cabeçalho digital em página escaneada
+      if (pageTextRaw.length > 600) {
+        pageTextRes = `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageTextRaw;
+        pageConfRes = 100;
+        pageSucceeded = true;
       } else {
         // É uma página escaneada ou imagem dentro do PDF
-        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
-        const viewport = page.getViewport({ scale: 2.0 }); // Diminuido para 2.0 para economizar memória 
+        onProgress(null, `Pág ${i}: Extraindo imagem de alta definição...`);
+        const viewport = pageRef.getViewport({ scale: 2.0 }); 
         const canvas = document.createElement("canvas");
         canvas.width = viewport.width; canvas.height = viewport.height;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         
-        if (!ctx) {
-           throw new Error("Erro de memória: Falha ao obter contexto 2D para a página " + i);
-        }
+        if (!ctx) throw new Error("Falha ao obter contexto 2D");
 
-        await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 25000, `Timeout na renderização da pág ${i}`);
+        await withTimeout(pageRef.render({ canvasContext: ctx, viewport }).promise, 40000, `Timeout na renderização da pág ${i}`);
 
-        // Filtro Profissional para melhorar OCR Local
+        // Filtro para melhorar OCR
         const tempCanvas = document.createElement("canvas");
         tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
         const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
@@ -857,99 +863,72 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
 
         const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
         
+        // Clean up canvases immediately to free memory
+        canvas.width = 0; canvas.height = 0;
+        tempCanvas.width = 0; tempCanvas.height = 0;
+
         if (useAi) {
-          // Modo Híbrido: Testa OCR primeiro
-          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
+          onProgress(null, `Pág ${i}: Avaliando qualidade...`);
           let ocrRes = { text: "", confidence: 0 };
           try {
             if (!tesseractWorker) {
-               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-                 logger: () => {}
-               });
+               tesseractWorker = await Tesseract.createWorker("por+eng", 1);
             }
-            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
+            const res = await withTimeout(tesseractWorker.recognize(blob), 90000, `Timeout OCR local na página ${i}`);
             ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
           } catch (err) {
-            console.warn(`Erro no Tesseract na página ${i}`, err);
-            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - TESSERACT CRASH]", confidence: 0 };
+            console.warn(`Erro Tesseract pág ${i}`, err);
             if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
             tesseractWorker = null;
           }
           
           if (ocrRes.confidence >= 80) {
-              fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-              confidenceTotal += ocrRes.confidence;
+              pageTextRes = `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text;
+              pageConfRes = ocrRes.confidence;
           } else {
-              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
-              try {
-                  const aiText = await extractPageWithGemini(blob, onProgress);
-                  fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
-                  confidenceTotal += 99;
-              } catch (e) {
-                  let errMsg = e.message || "Erro desconhecido";
-                  fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
-                  confidenceTotal += ocrRes.confidence;
-              }
+              onProgress(null, `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
+              const aiText = await extractPageWithGemini(blob, onProgress);
+              pageTextRes = `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText;
+              pageConfRes = 99;
           }
         } else {
-          // Modo Texto Bruto Rigoroso
-          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
-          
-          let ocrRes = { text: "", confidence: 0 };
-          try {
-            if (!tesseractWorker) {
-               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-                 logger: ({status, progress}) => {
-                    if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
-                 }
-               });
-            }
-            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local bruto na página ${i}`);
-            ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
-          } catch (err) {
-            console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
-            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - PÁGINA PULADA]", confidence: 0 };
-            // Attempt to recreate worker to unstick it if it crashed
-            if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-            tesseractWorker = null;
-          }
-          
-          fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-          confidenceTotal += ocrRes.confidence;
+          // Strictly OCR
+          if (!tesseractWorker) tesseractWorker = await Tesseract.createWorker("por+eng", 1);
+          const res = await withTimeout(tesseractWorker.recognize(blob), 120000, `Timeout OCR pág ${i}`);
+          pageTextRes = `[PÁGINA ${i} - OCR BRUTO (${Math.round(res.data.confidence)}%)]\n` + res.data.text.trim();
+          pageConfRes = Math.round(res.data.confidence);
         }
-        
-        // Cleanup to prevent memory leak on large PDFs (500+ pages)
-        canvas.width = 0; canvas.height = 0;
-        tempCanvas.width = 0; tempCanvas.height = 0;
-        blob = null;
-        
-        pagesEvaluated++;
-
-        // Restart worker proactively to keep WASM memory clean
-        if (pagesEvaluated % 25 === 0 && tesseractWorker) {
-           await tesseractWorker.terminate().catch(()=>null);
-           tesseractWorker = null;
-        }
+        pageSucceeded = true;
       }
+    } catch (err) {
+      console.error(`Erro pág ${i}:`, err);
+      pageTextRes = `\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\nMsg: ${err.message || ""}\n`;
+      pageConfRes = 0;
+    } finally {
+      fullText += pageTextRes + "\n\n";
+      confidenceTotal += pageConfRes;
+      pagesEvaluated++;
       
-      // Cleanup page to free pdf.js memory
-      if (page && page.cleanup) page.cleanup();
-    } catch (pageErr) {
-      console.error(`Erro crítico ao processar página ${i}:`, pageErr);
-      fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
+      try { if (pageRef && pageRef.cleanup) pageRef.cleanup(); } catch(e) {}
+      
+      // Garbage collection breathing space on huge documents
+      if (i % 10 === 0) await new Promise(r => setTimeout(r, 100));
+      
+      // Proactive worker restart to keep memory clean every 30 pages
+      if (pagesEvaluated > 0 && pagesEvaluated % 30 === 0 && tesseractWorker) {
+         await tesseractWorker.terminate().catch(()=>null);
+         tesseractWorker = null;
+      }
     }
   }
 
-  if (tesseractWorker && tesseractWorker.terminate) {
-    await tesseractWorker.terminate();
-  }
+  if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+  await loadingTask.destroy().catch(()=>null);
 
-  try {
-     if (pdf && pdf.destroy) await pdf.destroy();
-  } catch(e) { }
-
-  return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
+  const finalConf = Math.min(100, Math.round(confidenceTotal / (pagesEvaluated || 1)));
+  return { text: fullText.trim(), confidence: finalConf };
 }
+
 
 async function convertSingleImageToPDF(file) {
   // Injeção Local de Jspdf
@@ -2756,17 +2735,22 @@ export default function ScannerJuridico() {
               {(file || queue.length > 0) && !result && !processing && (
                 <div style={{ marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
                   {file && file.type === "application/pdf" && queue.length === 0 && (
-                    <div>
-                      <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Página Inicial do PDF (Para continuar de onde parou):</label>
-                      <input 
-                         type="number" min="1" 
-                         value={startPage} 
-                         onChange={(e) => setStartPage(e.target.value)} 
-                         style={{
-                           width: '100%', padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`,
-                           background: G.surface, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '14px'
-                         }}
-                      />
+                    <div style={{ background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}` }}>
+                      <label style={{ display: 'block', fontSize: '12px', color: G.muted, marginBottom: '6px', fontWeight: 600 }}>Página Inicial (Para processos grandes):</label>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                         <input 
+                            type="number" min="1" 
+                            placeholder="Ex: 215"
+                            value={startPage} 
+                            onChange={(e) => setStartPage(e.target.value)} 
+                            style={{
+                              flex: 1, padding: '8px 12px', borderRadius: '8px', border: `1px solid ${G.border}`,
+                              background: G.bg, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '13px'
+                            }}
+                         />
+                         <button onClick={() => setStartPage(1)} style={{ background: 'none', border: 'none', color: G.accent, fontSize: '11px', cursor: 'pointer' }}>Reset</button>
+                      </div>
+                      <div style={{ fontSize: '10px', color: G.muted, marginTop: '4px' }}>Dica: Se o OCR parou na pág 215, digite 216 aqui.</div>
                     </div>
                   )}
                   
