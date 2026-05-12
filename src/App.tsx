@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import ReactCrop from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import { createClient } from '@supabase/supabase-js';
@@ -685,7 +685,7 @@ function getAvailableGeminiKeys() {
     }
   };
 
-  // 1. Busca por substituição estática (Vite Define)
+  // 1. Busca por substituiÃ§Ã£o estÃ¡tica (Vite Define)
   // IMPORTANTE: Vite troca essas chamadas literais por strings no momento do Build.
   try {
     if (process.env.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
@@ -700,8 +700,10 @@ function getAvailableGeminiKeys() {
   // 2. Busca nativa VITE (import.meta.env)
   try {
     if (import.meta && import.meta.env) {
+      if (import.meta.env.VITE_API_KEY) addKey(import.meta.env.VITE_API_KEY);
       Object.keys(import.meta.env).forEach(k => {
-        if (k.includes('GEMINI') || k === 'VITE_API_KEY' || k === 'API_KEY') addKey(import.meta.env[k]);
+        if (k.includes('GEMINI')) addKey(import.meta.env[k]);
+        if (k.includes('API_KEY')) addKey(import.meta.env[k]);
       });
     }
   } catch (e) {}
@@ -716,7 +718,7 @@ async function extractPageWithGemini(blob, onProgress) {
   let lastError = null;
 
   if (keys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI configurada. Renomeie para VITE_API_KEY no Vercel (ou use GEMINI_API_KEY).");
+    throw new Error("❌ Nenhuma Chave GEMINI configurada. Renomeie para VITE_GEMINI_API_KEY no Vercel.");
   }
 
   const base64 = await new Promise((r) => {
@@ -796,9 +798,7 @@ Sua missão:
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-  const pdf = await loadingTask.promise;
-  
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = "";
   let confidenceTotal = 0;
   let pagesEvaluated = 0;
@@ -825,37 +825,33 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         break;
     }
 
-    let pageTextRes = "";
-    let pageConfRes = 0;
-    let pageSucceeded = false;
-    let pageRef = null;
-
     try {
       onProgress(Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100), `Lendo pág ${i}/${endIdx}...`);
-      pageRef = await withTimeout(pdf.getPage(i), 20000, `Timeout ao obter a página ${i}`);
+      const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
       
-      // Tenta texto nativo primeiro
-      const textContent = await withTimeout(pageRef.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
-      const pageTextRaw = textContent.items.map(item => item.str).join(" ").trim();
+      // Tenta texto nativo primeiro (100% de confiança, 0 custo)
+      const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
+      const pageText = textContent.items.map(item => item.str).join(" ").trim();
 
-      // threshold de 600 caracteres para garantir que não é apenas um cabeçalho digital em página escaneada
-      if (pageTextRaw.length > 600) {
-        pageTextRes = `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageTextRaw;
-        pageConfRes = 100;
-        pageSucceeded = true;
+      if (pageText.length > 600) {
+        fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
+        confidenceTotal += 100;
+        pagesEvaluated++;
       } else {
         // É uma página escaneada ou imagem dentro do PDF
-        onProgress(null, `Pág ${i}: Extraindo imagem de alta definição...`);
-        const viewport = pageRef.getViewport({ scale: 2.0 }); 
+        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
+        const viewport = page.getViewport({ scale: 2.0 }); // Diminuido para 2.0 para economizar memória 
         const canvas = document.createElement("canvas");
         canvas.width = viewport.width; canvas.height = viewport.height;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         
-        if (!ctx) throw new Error("Falha ao obter contexto 2D");
+        if (!ctx) {
+           throw new Error("Erro de memória: Falha ao obter contexto 2D para a página " + i);
+        }
 
-        await withTimeout(pageRef.render({ canvasContext: ctx, viewport }).promise, 40000, `Timeout na renderização da pág ${i}`);
+        await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 25000, `Timeout na renderização da pág ${i}`);
 
-        // Filtro para melhorar OCR
+        // Filtro Profissional para melhorar OCR Local
         const tempCanvas = document.createElement("canvas");
         tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
         const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
@@ -864,75 +860,104 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
            tempCtx.drawImage(canvas, 0, 0);
         }
 
-        const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
+        let blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
         
-        // Clean up canvases immediately to free memory
-        canvas.width = 0; canvas.height = 0;
-        tempCanvas.width = 0; tempCanvas.height = 0;
-
         if (useAi) {
-          onProgress(null, `Pág ${i}: Avaliando qualidade...`);
+          // Modo Híbrido: Testa OCR primeiro
+          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
           let ocrRes = { text: "", confidence: 0 };
           try {
             if (!tesseractWorker) {
-               tesseractWorker = await Tesseract.createWorker("por+eng", 1);
+               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+                 logger: () => {}
+               });
             }
-            const res = await withTimeout(tesseractWorker.recognize(blob), 90000, `Timeout OCR local na página ${i}`);
+            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
             ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
           } catch (err) {
-            console.warn(`Erro Tesseract pág ${i}`, err);
+            console.warn(`Erro no Tesseract na página ${i}`, err);
+            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - TESSERACT CRASH]", confidence: 0 };
             if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
             tesseractWorker = null;
           }
           
           if (ocrRes.confidence >= 80) {
-              pageTextRes = `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text;
-              pageConfRes = ocrRes.confidence;
+              fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+              confidenceTotal += ocrRes.confidence;
           } else {
-              onProgress(null, `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
-              const aiText = await extractPageWithGemini(blob, onProgress);
-              pageTextRes = `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText;
-              pageConfRes = 99;
+              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
+              try {
+                  const aiText = await extractPageWithGemini(blob, onProgress);
+                  fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
+                  confidenceTotal += 99;
+              } catch (e) {
+                  let errMsg = e.message || "Erro desconhecido";
+                  fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
+                  confidenceTotal += ocrRes.confidence;
+              }
           }
         } else {
-          // Strictly OCR
-          if (!tesseractWorker) tesseractWorker = await Tesseract.createWorker("por+eng", 1);
-          const res = await withTimeout(tesseractWorker.recognize(blob), 120000, `Timeout OCR pág ${i}`);
-          pageTextRes = `[PÁGINA ${i} - OCR BRUTO (${Math.round(res.data.confidence)}%)]\n` + res.data.text.trim();
-          pageConfRes = Math.round(res.data.confidence);
+          // Modo Texto Bruto Rigoroso
+          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
+          
+          let ocrRes = { text: "", confidence: 0 };
+          try {
+            if (!tesseractWorker) {
+               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+                 logger: ({status, progress}) => {
+                    if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
+                 }
+               });
+            }
+            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local bruto na página ${i}`);
+            ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+          } catch (err) {
+            console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
+            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - PÁGINA PULADA]", confidence: 0 };
+            // Attempt to recreate worker to unstick it if it crashed
+            if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+            tesseractWorker = null;
+          }
+          
+          fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+          confidenceTotal += ocrRes.confidence;
         }
-        pageSucceeded = true;
+        
+        // Cleanup to prevent memory leak on large PDFs (500+ pages)
+        canvas.width = 0; canvas.height = 0;
+        tempCanvas.width = 0; tempCanvas.height = 0;
+        blob = null;
+        
+        pagesEvaluated++;
+
+        // Restart worker proactively to keep WASM memory clean
+        if (pagesEvaluated % 25 === 0 && tesseractWorker) {
+           await tesseractWorker.terminate().catch(()=>null);
+           tesseractWorker = null;
+        }
       }
-    } catch (err) {
-      console.error(`Erro pág ${i}:`, err);
-      pageTextRes = `\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\nMsg: ${err.message || ""}\n`;
-      pageConfRes = 0;
-    } finally {
-      fullText += pageTextRes + "\n\n";
-      confidenceTotal += pageConfRes;
-      pagesEvaluated++;
       
-      try { if (pageRef && pageRef.cleanup) pageRef.cleanup(); } catch(e) {}
-      
-      // Garbage collection breathing space on huge documents
-      if (i % 10 === 0) await new Promise(r => setTimeout(r, 100));
-      
-      // Proactive worker restart to keep memory clean every 30 pages
-      if (pagesEvaluated > 0 && pagesEvaluated % 30 === 0 && tesseractWorker) {
-         await tesseractWorker.terminate().catch(()=>null);
-         tesseractWorker = null;
-      }
+      // Cleanup page to free pdf.js memory
+      if (page && page.cleanup) page.cleanup();
+    } catch (pageErr) {
+      console.error(`Erro crítico ao processar página ${i}:`, pageErr);
+      fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
     }
   }
 
-  if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-  await loadingTask.destroy().catch(()=>null);
+  if (tesseractWorker && tesseractWorker.terminate) {
+    await tesseractWorker.terminate();
+  }
 
-  const finalConf = Math.min(100, Math.round(confidenceTotal / (pagesEvaluated || 1)));
-  return { text: fullText.trim(), confidence: finalConf };
+  try {
+     if (pdf && pdf.destroy) await pdf.destroy();
+  } catch(e) { }
+
+  return { text: fullText.trim(), confidence: Math.round(confidenceTotal / (pagesEvaluated || 1)) };
 }
 
 async function convertSingleImageToPDF(file) {
+  // Injeção Local de Jspdf
   if (!window.jspdf) {
     await new Promise((res, rej) => {
       const s = document.createElement("script");
@@ -941,8 +966,10 @@ async function convertSingleImageToPDF(file) {
       document.head.appendChild(s);
     });
   }
+  
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
+  
   const blobUrl = URL.createObjectURL(file);
   const img = await new Promise((res, rej) => {
     const i = new Image();
@@ -950,28 +977,40 @@ async function convertSingleImageToPDF(file) {
     i.onerror = () => { URL.revokeObjectURL(blobUrl); rej(); };
     i.src = blobUrl;
   });
-  const pdfW = 210, pdfH = 297;
+
+  const pdfW = 210;
+  const pdfH = 297;
+  
   const compCanvas = document.createElement("canvas");
   const compCtx = compCanvas.getContext("2d");
+  
+  // Compressão Média
   let scale = 1;
   const MAX_SIZE = 1200;
   if (img.width > MAX_SIZE || img.height > MAX_SIZE) {
      scale = Math.min(MAX_SIZE / img.width, MAX_SIZE / img.height);
   }
+  
   compCanvas.width = img.width * scale;
   compCanvas.height = img.height * scale;
   compCtx.drawImage(img, 0, 0, compCanvas.width, compCanvas.height);
+  
   const compressedDataUrl = compCanvas.toDataURL("image/jpeg", 0.7);
+  
   let imgW = (compCanvas.width * pdfH) / compCanvas.height;
   let imgH = (compCanvas.height * pdfW) / compCanvas.width;
+  
   if (imgH > pdfH) {
      imgH = pdfH;
      imgW = (compCanvas.width * pdfH) / compCanvas.height;
   }
+  
   const x = (pdfW - imgW) / 2;
   const y = (pdfH - imgH) / 2;
+
   doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, 'FAST');
   URL.revokeObjectURL(blobUrl);
+
   const pdfBlob = doc.output('blob');
   return new File([pdfBlob], file.name.replace(/\.[^/.]+$/, "") + ".pdf", { type: "application/pdf" });
 }
@@ -987,13 +1026,12 @@ async function extractImageHybrid(file, onProgress, useAi) {
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
           let errMsg = e.message || "Erro desconhecido";
-          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: Math.min(100, ocrRes.confidence) };
+          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: ocrRes.confidence };
       }
   }
   
-  const finalConf = Math.min(100, ocrRes.confidence);
-  const modeLabel = useAi ? `OCR LOCAL (${finalConf}%)` : `OCR BRUTO (${finalConf}%)`;
-  return { text: `[${modeLabel}]\n` + ocrRes.text, confidence: finalConf };
+  const modeLabel = useAi ? `OCR LOCAL (${ocrRes.confidence}%)` : `OCR BRUTO (${ocrRes.confidence}%)`;
+  return { text: `[${modeLabel}]\n` + ocrRes.text, confidence: ocrRes.confidence };
 }
 
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
@@ -1152,29 +1190,9 @@ export default function ScannerJuridico() {
     loadData();
   }, []);
 
-  // ── Ordenação e Memoização do Histórico ─────────────────────────────────────
-  const sortedHistory = useMemo(() => {
-    const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
-    
-    return [...docs].sort((a, b) => {
-      if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
-      if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
-      if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-      if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
-      return 0;
-    });
-  }, [history, viewingClient, sortOrder]);
-
-  // Limpa estados temporários ao trocar de aba para evitar conflitos de DOM
-  useEffect(() => {
-    setRenamingItem(null);
-    setMovingItem(null);
-  }, [tab]);
-
-  const confColor = (c_raw) => {
-    const c = Math.min(100, parseInt(c_raw) || 0);
+  const confColor = (c) => {
     if (c >= 90) return G.success;
-    if (c >= 70) return G.accent;
+    if (c >= 70) return G.warning;
     return G.error;
   };
 
@@ -2041,14 +2059,11 @@ export default function ScannerJuridico() {
       
       onProgress(90, "Atualizando banco de dados...");
       
-      const wordsCount = extracted.text.split(/\s+/).filter(Boolean).length;
-      const finalConfidence = Math.min(100, extracted.confidence || 0);
-      
       if (supabase) {
         await supabase.from("lexscan_documents").update({
           extracted_text: extracted.text,
-          confidence: finalConfidence,
-          words_count: wordsCount,
+          confidence: extracted.confidence,
+          words_count: extracted.text.split(/\s+/).filter(Boolean).length,
           chars_count: extracted.text.length
         }).eq("id", item.id);
       }
@@ -2056,8 +2071,8 @@ export default function ScannerJuridico() {
       const updatedItem = {
         ...item,
         text: extracted.text,
-        confidence: finalConfidence,
-        words: wordsCount,
+        confidence: extracted.confidence,
+        words: extracted.text.split(/\s+/).filter(Boolean).length,
         chars: extracted.text.length
       };
 
@@ -2077,30 +2092,26 @@ export default function ScannerJuridico() {
   };
 
   const processFolderOCR = async () => {
-    // Filtramos itens que não tem texto, confiança baixa ou confiança errada (>100)
     const docs = history.filter(h => 
        (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)
-       && (!h.text || h.text.trim() === '' || h.confidence <= 85 || h.confidence > 100)
+       && (!h.text || h.text.trim() === '' || h.confidence <= 98)
     );
     
     if (docs.length === 0) {
-       showToast("Todos os documentos nesta pasta já possuem OCR de alta qualidade.", "info");
+       showToast("Todos os documentos já possuem OCR extraído ou confiança >= 99%.", "info");
        return;
     }
 
+    setTab("scanner");
     setProcessing(true);
-    setProgress(0);
-    setProgressMsg("Iniciando lote jurídico...");
     
     let processedCount = 0;
 
     for (let i = 0; i < docs.length; i++) {
-        // ... loop de lote ...
         const item = docs[i];
+        setProgress(0);
+        setProgressMsg(`[${i + 1}/${docs.length}] Processando: ${item.name}...`);
         
-        // Pequeno atraso para dar fôlego ao DOM e evitar conflitos de removeChild do React
-        if (i > 0) await new Promise(r => setTimeout(r, 200));
-
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
           const res = await fetch(urlToFetch);
@@ -2110,7 +2121,7 @@ export default function ScannerJuridico() {
           let extracted;
           const onProgress = (p, msg) => { 
              setProgress(p); 
-             setProgressMsg(`[LOTE ${i + 1}/${docs.length}] ${msg || ""}`); 
+             setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
           };
     
           window.lexscan_abort = false;
@@ -2125,14 +2136,13 @@ export default function ScannerJuridico() {
             extracted.text = optimizeRawText(extracted.text);
           }
           
-          const wordsCount = extracted.text.split(/\s+/).filter(Boolean).length;
-          const finalConfidence = Math.min(100, extracted.confidence || 0);
-
+          onProgress(90, "Atualizando banco de dados...");
+          
           if (supabase) {
             await supabase.from("lexscan_documents").update({
               extracted_text: extracted.text,
-              confidence: finalConfidence,
-              words_count: wordsCount,
+              confidence: extracted.confidence,
+              words_count: extracted.text.split(/\s+/).filter(Boolean).length,
               chars_count: extracted.text.length
             }).eq("id", item.id);
           }
@@ -2140,8 +2150,8 @@ export default function ScannerJuridico() {
           const updatedItem = {
             ...item,
             text: extracted.text,
-            confidence: finalConfidence,
-            words: wordsCount,
+            confidence: extracted.confidence,
+            words: extracted.text.split(/\s+/).filter(Boolean).length,
             chars: extracted.text.length
           };
     
@@ -2153,13 +2163,14 @@ export default function ScannerJuridico() {
           processedCount++;
         } catch (e) {
           console.error(`Error on file ${item.name}`, e);
+          showToast(`Erro ao processar: ${item.name}`, "error");
         }
     }
     
     setProcessing(false);
     setProgress(0);
     setProgressMsg("");
-    setTab("history"); 
+    setTab("history"); // Retorna para o histórico após processar todos
     showToast(`✓ Lote de OCR concluído! ${processedCount} documentos processados.`, "success");
   };
 
@@ -2657,33 +2668,8 @@ export default function ScannerJuridico() {
         {/* Content */}
         <div className="content">
 
-          {/* Progress / Loading View (Global to block interactions and handle conflicts) */}
-          {processing && (
-            <div className="progress-wrap" style={{ margin: '20px' }}>
-              <div className="progress-label">
-                <span>{currentQueueIndex !== -1 ? `Processando Lote` : `Processando OCR...`}</span>
-                <span>{progress}%</span>
-              </div>
-              <div className="progress-bar-bg">
-                <div className="progress-bar" style={{ width: progress + "%" }} />
-              </div>
-              <div className="progress-status">{progressMsg}</div>
-              {currentQueueIndex !== -1 && (
-                <div style={{ marginTop: 8, fontSize: '11px', color: G.muted, textAlign: 'center' }}>
-                  Arquivo {currentQueueIndex + 1} de {queue.length}
-                </div>
-              )}
-              <button 
-                onClick={() => { window.lexscan_abort = true; }} 
-                style={{ marginTop: '14px', background: G.card, border: `1px solid ${G.border}`, borderRadius: '8px', padding: '10px 16px', color: G.text, cursor: 'pointer', fontSize: '13px', width: '100%', fontWeight: 500, transition: 'all 0.2s' }}
-              >
-                  ⏹ Pausar / Salvar Progresso Atual
-              </button>
-            </div>
-          )}
-
           {/* ── SCANNER TAB ── */}
-          {tab === "scanner" && !processing && (
+          {tab === "scanner" && (
             <div className="scanner-panel">
 
               {/* Upload zone */}
@@ -2749,26 +2735,43 @@ export default function ScannerJuridico() {
                 </div>
               )}
 
+              {/* Progress */}
+              {processing && (
+                <div className="progress-wrap">
+                  <div className="progress-label">
+                    <span>{currentQueueIndex !== -1 ? `Processando Lote` : `Processando`}</span>
+                    <span>{progress}%</span>
+                  </div>
+                  <div className="progress-bar-bg">
+                    <div className="progress-bar" style={{ width: progress + "%" }} />
+                  </div>
+                  <div className="progress-status">{progressMsg}</div>
+                  {currentQueueIndex !== -1 && (
+                    <div style={{ marginTop: 8, fontSize: '11px', color: G.muted, textAlign: 'center' }}>
+                      Arquivo {currentQueueIndex + 1} de {queue.length}
+                    </div>
+                  )}
+                  <button onClick={() => { window.lexscan_abort = true; }} style={{ marginTop: '14px', background: G.card, border: `1px solid ${G.border}`, borderRadius: '8px', padding: '10px 16px', color: G.text, cursor: 'pointer', fontSize: '13px', width: '100%', fontWeight: 500, transition: 'all 0.2s', ':hover': { borderColor: G.accent } }}>
+                     ⏹ Pausar / Salvar Progresso Atual
+                  </button>
+                </div>
+              )}
+
               {/* Select Folder area if not processing and not result */}
               {(file || queue.length > 0) && !result && !processing && (
                 <div style={{ marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
                   {file && file.type === "application/pdf" && queue.length === 0 && (
-                    <div style={{ background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}` }}>
-                      <label style={{ display: 'block', fontSize: '12px', color: G.muted, marginBottom: '6px', fontWeight: 600 }}>Página Inicial (Para processos grandes):</label>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                         <input 
-                            type="number" min="1" 
-                            placeholder="Ex: 215"
-                            value={startPage} 
-                            onChange={(e) => setStartPage(e.target.value)} 
-                            style={{
-                              flex: 1, padding: '8px 12px', borderRadius: '8px', border: `1px solid ${G.border}`,
-                              background: G.bg, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '13px'
-                            }}
-                         />
-                         <button onClick={() => setStartPage(1)} style={{ background: 'none', border: 'none', color: G.accent, fontSize: '11px', cursor: 'pointer' }}>Reset</button>
-                      </div>
-                      <div style={{ fontSize: '10px', color: G.muted, marginTop: '4px' }}>Dica: Se o OCR parou na pág 215, digite 216 aqui.</div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '13px', color: G.muted, marginBottom: '6px' }}>Página Inicial do PDF (Para continuar de onde parou):</label>
+                      <input 
+                         type="number" min="1" 
+                         value={startPage} 
+                         onChange={(e) => setStartPage(e.target.value)} 
+                         style={{
+                           width: '100%', padding: '12px', borderRadius: '12px', border: `1px solid ${G.border}`,
+                           background: G.surface, color: G.text, outline: 'none', fontFamily: 'DM Sans', fontSize: '14px'
+                         }}
+                      />
                     </div>
                   )}
                   
@@ -2863,9 +2866,9 @@ export default function ScannerJuridico() {
                     <div className="confidence-bar">
                       <span>Confiança OCR</span>
                       <div className="conf-fill">
-                        <div className="conf-inner" style={{ width: Math.min(100, parseInt(result.confidence) || 0) + "%", background: confColor(result.confidence) }} />
+                        <div className="conf-inner" style={{ width: result.confidence + "%", background: confColor(result.confidence) }} />
                       </div>
-                      <span style={{ color: confColor(result.confidence) }}>{Math.min(100, parseInt(result.confidence) || 0)}%</span>
+                      <span style={{ color: confColor(result.confidence) }}>{result.confidence}%</span>
                     </div>
                     <div className="result-actions">
                       <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
@@ -2913,7 +2916,7 @@ export default function ScannerJuridico() {
           )}
 
           {/* ── HISTORY TAB ── */}
-          {tab === "history" && !processing && (
+          {tab === "history" && (
             <div className="history-panel">
               {viewingClient === null ? (
                 // View: Lista de Pastas
@@ -3118,7 +3121,16 @@ export default function ScannerJuridico() {
                       <p>{clients.filter(c => c.parentId === viewingClient).length > 0 ? "Pasta não possui arquivos (apenas subpastas)." : "Pasta vazia."}</p>
                     </div>
                   ) : (
-                    sortedHistory.map(item => (
+                    history
+                      .filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient))
+                      .sort((a, b) => {
+                        if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
+                        if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
+                        if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                        if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
+                        return 0;
+                      })
+                      .map(item => (
                       <div key={item.id} className="hist-card">
                         <div className="hist-header">
                           {item.preview
@@ -3152,7 +3164,7 @@ export default function ScannerJuridico() {
                               </div>
                             )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
-                            <div className="hist-chars">{item.words} palavras · {Math.min(100, parseInt(item.confidence) || 0)}% OCR</div>
+                            <div className="hist-chars">{item.words} palavras · {item.confidence}% OCR</div>
                           </div>
                           <div className="hist-actions">
                             {item.type && item.type.startsWith('image/') && (
