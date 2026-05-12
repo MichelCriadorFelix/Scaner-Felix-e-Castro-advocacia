@@ -718,7 +718,7 @@ async function extractPageWithGemini(blob, onProgress) {
   let lastError = null;
 
   if (keys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI configurada. Renomeie para VITE_GEMINI_API_KEY no Vercel.");
+    throw new Error("❌ Nenhuma Chave detectada. Se você acabou de adicionar a variável 'API_KEY' na Vercel, você PRECISA refazer o deploy. Vá em 'Deployments' > clique no último > 'Redeploy'. Sem o redeploy, o sistema não enxerga a chave.");
   }
 
   const base64 = await new Promise((r) => {
