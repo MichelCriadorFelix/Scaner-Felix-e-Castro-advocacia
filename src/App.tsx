@@ -773,13 +773,18 @@ async function extractPageWithGemini(blob, onProgress) {
     reader.readAsDataURL(blob);
   });
   
-  const prompt = `Você é um especialista em transcrição jurídica de alta precisão. 
-Este documento ou página falhou no OCR tradicional por ser manuscrito, letra de médico ou ter baixa qualidade visual.
+  const prompt = `Você é um especialista em transcrição jurídica, processamento de documentos e OCR de altíssima precisão.
+O documento fornecido pode ser um formulário estruturado, uma tabela, uma planilha de entregas (como a "CAF Consolidada" contendo tabelas de encomendas), uma petição, uma imagem com texto manuscrito ou anotações nas margens, ou um laudo/atestado médico.
+
 Sua missão:
-1. Transcreva *exatamente* o texto visível. 
-2. Se for um laudo ou atestado médico, descreva com precisão CIDs, sintomas e recomendações.
-3. Não adicione comentários, introduções ou saudações, devolva apenas o conteúdo transcrito.
-4. Estruture as informações de forma limpa, mantendo o contexto.`;
+1. Transcrever todo o texto visível com precisão milimétrica.
+2. IMPORTANTE PARA TABELAS/CAF CONSOLIDADA: Se houver uma tabela ou formulário de entregas (contendo colunas como Nº, Tipo, Serv., Rota, AWB, Peso, Embarcador, Destinatário, Endereço), transcreva OBRIGATORIAMENTE em formato de Tabela Markdown (\`| Nº | Tipo | Serv. | Rota | AWB | Peso | Embarcador | Destinatário | Endereço |\`). Transcreva cada linha com rigor absoluto:
+   - Preserve os códigos exatos das colunas (ex: códigos AWB "TXAQ...", "AMZB...", "WEPI...", "SELS...").
+   - Transcreva todos os nomes de destinatários, rotas e pesos correspondentes.
+   - NÃO PULE NENHUMA LINHA OU ELEMENTO DA TABELA.
+3. DETECTAR ANOTAÇÕES MANUSCRITAS: Transcreva com atenção extrema as anotações feitas à mão que apareçam riscadas, marcadas com caneta azul/preta/vermelha, circuladas, assinaturas ou texto inseridos nas margens superior, inferior ou laterais (exemplos reais: datas como "30/03/2026", "15/04/26", nomes anotados à mão como "ALDO 971733523", "FABIO LUIZ 03/03", assinaturas ou observações escritas como "Espera 30 minutos", "Ficou na empresa", "Ausente", "Não veio"). Coloque todas essas anotações extraídas em destaque no final da transcrição sob o título "[Anotações Manuscritas Detectadas: <conteúdo>]".
+4. Se for um documento corrido (petição, sentença, laudo, atestado): Estrudere o texto de forma limpa, preservando parágrafos, CIDs, datas, nomes, valores e assinaturas de forma idêntica ao original.
+5. Seja puramente descritivo de texto. Não adicione comentários, explicações, introduções ou notas sobre o seu próprio processamento (devolva apenas o texto transcrito formatado do documento).`;
 
   // Lista de modelos do Google
   // Usando EXCLUSIVAMENTE o modelo Gemini 3 Flash Preview solicitado pelo usuário.
@@ -949,13 +954,15 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
         
         let viewport = null;
-        let canvas = document.createElement("canvas");
-        let ctx = null;
+        let finalCanvasToUse = null;
         let renderSuccess = false;
 
         // Escalas adaptativas: Se falhar por OOM ou Timeout, tenta resoluções menores para poupar memória e tempo
         const scalesToTry = [1.8, 1.2, 1.0];
         for (let scaleAttempt of scalesToTry) {
+          let canvas = document.createElement("canvas");
+          let ctx = null;
+          let renderTask = null;
           try {
             viewport = page.getViewport({ scale: scaleAttempt });
             canvas.width = viewport.width;
@@ -963,25 +970,36 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
             ctx = canvas.getContext("2d", { willReadFrequently: true });
             if (!ctx) continue;
             
-            await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 15000, `Timeout scale ${scaleAttempt}`);
+            renderTask = page.render({ canvasContext: ctx, viewport });
+            await withTimeout(renderTask.promise, 15000, `Timeout scale ${scaleAttempt}`);
+            finalCanvasToUse = canvas;
             renderSuccess = true;
             break;
           } catch (renderErr) {
             console.warn(`[Pág ${i}] Falha ao renderizar em escala ${scaleAttempt}, tentando próxima...`, renderErr);
+            if (renderTask) {
+              try {
+                renderTask.cancel();
+              } catch (cancelErr) {
+                console.warn("Erro ao cancelar renderTask do PDF:", cancelErr);
+              }
+            }
+            // Libera memória do canvas que falhou imediatamente
+            canvas.width = 0; canvas.height = 0;
           }
         }
 
-        if (!renderSuccess) {
+        if (!renderSuccess || !finalCanvasToUse) {
           throw new Error(`Falha de memória ou timeout ao tentar renderizar a página ${i} visualmente.`);
         }
 
         // Filtro Profissional para melhorar OCR Local
         const tempCanvas = document.createElement("canvas");
-        tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+        tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
         const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
         if (tempCtx) {
            tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
-           tempCtx.drawImage(canvas, 0, 0);
+           tempCtx.drawImage(finalCanvasToUse, 0, 0);
         }
 
         let blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
@@ -1048,7 +1066,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         }
         
         // Cleanup to prevent memory leak on large PDFs (500+ pages)
-        canvas.width = 0; canvas.height = 0;
+        if (finalCanvasToUse) {
+          finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
+        }
         tempCanvas.width = 0; tempCanvas.height = 0;
         blob = null;
         
