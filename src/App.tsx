@@ -752,10 +752,12 @@ async function extractPageWithGemini(blob, onProgress) {
     return { key, ...meta };
   });
 
-  // Filtra chaves que NÃO estão esgotadas (quota_exceeded)
-  const activeKeys = keysMetadata.filter(m => m.errorStatus !== 'quota_exceeded');
+  // Filtra chaves que NÃO estão com erro (deve ter status 'ok' ou 'active' ou vazio)
+  const activeKeys = keysMetadata.filter(m => 
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+  );
   
-  // Se TODAS as chaves estiverem esgotadas, usamos todas como fallback (quem sabe alguma resetou ou foi reiniciada)
+  // Se TODAS as chaves estiverem marcadas com erro, usamos todas como fallback (reiniciando tentativa caso alguma tenha resetado)
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
 
   // ORDENAÇÃO INTELIGENTE (Load-Balancing Dinâmico): 
@@ -823,15 +825,21 @@ Sua missão:
         lastError = e;
         
         const errorStr = (e.message || "").toLowerCase();
-        // Se a chave na Vercel estiver com Limite Esgotado (429) ou Bloqueada, a gente aborta ELA
-        // e pula direto pro próximo "i" (Próxima Chave) poupando tempo
-        if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("api key not valid") || errorStr.includes("key")) {
-          console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível. Alternando para a próxima chave!`);
-          if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
-          break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave)
+        
+        // Identificar tipo exato do erro para atualizar o dashboard
+        let errorType = 'error';
+        if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden") || errorStr.includes("permission")) {
+          errorType = 'blocked'; 
+        } else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("key is invalid")) {
+          errorType = 'invalid';
+        } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
+          errorType = 'quota_exceeded';
         }
-        // Se for erro 503 (High Demand/Unavailable), ele SIMPLESMENTE não dá o break,
-        // o código continua e tenta a MESMA chave no próximo modelo mais forte.
+
+        console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível (${errorType}). Alternando imediatamente!`);
+        if (window.setKeyError) window.setKeyError(keyHash, errorType);
+        
+        break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave) para poupar precioso tempo!
       }
     }
   }
@@ -2814,30 +2822,87 @@ export default function ScannerJuridico() {
         <div style={{ padding: '12px 20px', background: G.bg, borderBottom: `1px solid ${G.border}` }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <span style={{ fontSize: '11px', color: G.muted, fontWeight: 600, letterSpacing: '0.05em' }}>STATUS DA INFRAESTRUTURA IA</span>
-            <span style={{ fontSize: '10px', color: G.success, background: 'rgba(34, 197, 94, 0.1)', padding: '2px 8px', borderRadius: '10px' }}>Ativo</span>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button 
+                onClick={() => {
+                  if (confirm("Deseja realmente limpar/resetar o status e contadores de todas as chaves de API?")) {
+                    localStorage.removeItem('lexscan_key_errors');
+                    localStorage.removeItem('lexscan_key_usage');
+                    setKeyErrors({});
+                    setKeyUsage({});
+                  }
+                }}
+                style={{
+                  fontSize: '9px',
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.02em',
+                  transition: 'background 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.18)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'}
+              >
+                🔄 Resetar Status
+              </button>
+              <span style={{ fontSize: '10px', color: G.success, background: 'rgba(34, 197, 94, 0.1)', padding: '2px 8px', borderRadius: '10px' }}>Ativo</span>
+            </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
             {getAvailableGeminiKeys().map((key, idx) => {
               const hash = key.slice(-6);
               const usageCount = keyUsage[hash] || 0;
-              const hasQuotaError = keyErrors[hash] === 'quota_exceeded';
-              const percent = hasQuotaError ? 100 : 0; // If quota error, bar is full/red
+              const errorStatus = keyErrors[hash] || 'ok';
+              
+              const isOk = errorStatus === 'ok' || errorStatus === 'active';
+              
+              let badgeText = `${usageCount} ${usageCount === 1 ? 'requisito' : 'requisições'}`;
+              let statusText = 'Status: Ok';
+              let statusColor = G.muted;
+              let cardBorder = G.border;
+              let badgeColor = G.accent;
+
+              if (errorStatus === 'quota_exceeded') {
+                badgeText = 'ESGOTADA';
+                statusText = 'Limite de uso diário atingido.';
+                statusColor = '#ef4444';
+                cardBorder = 'rgba(239, 68, 68, 0.6)';
+                badgeColor = '#ef4444';
+              } else if (errorStatus === 'blocked') {
+                badgeText = 'BLOQUEADA';
+                statusText = 'Chave suspensa / Denied Access.';
+                statusColor = '#ef4444';
+                cardBorder = 'rgba(239, 68, 68, 0.6)';
+                badgeColor = '#ef4444';
+              } else if (errorStatus === 'invalid') {
+                badgeText = 'INVÁLIDA';
+                statusText = 'Chave incorreta ou expirada.';
+                statusColor = '#ef4444';
+                cardBorder = 'rgba(239, 68, 68, 0.6)';
+                badgeColor = '#ef4444';
+              } else if (!isOk) {
+                badgeText = 'FALHA';
+                statusText = 'Erro detectado na requisição.';
+                statusColor = '#ef4444';
+                cardBorder = 'rgba(239, 68, 68, 0.6)';
+                badgeColor = '#ef4444';
+              }
 
               return (
                 <div key={hash} style={{ 
-                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${hasQuotaError ? '#ef4444' : G.border}`,
+                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${cardBorder}`,
                   display: 'flex', flexDirection: 'column', gap: '4px'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: '10px', color: G.text, fontWeight: 500 }}>API #{idx + 1} (..{hash})</span>
-                    <span style={{ fontSize: '9px', color: hasQuotaError ? '#ef4444' : G.accent }}>{hasQuotaError ? 'ESGOTADA' : `${usageCount} reqs`}</span>
+                    <span style={{ fontSize: '9px', color: badgeColor, fontWeight: '600' }}>{badgeText}</span>
                   </div>
-                  {!hasQuotaError && (
-                    <div style={{ fontSize: '9px', color: G.muted, textAlign: 'left', marginTop: '2px' }}>Status: Ok</div>
-                  )}
-                  {hasQuotaError && (
-                    <div style={{ fontSize: '9px', color: '#ef4444', textAlign: 'left', marginTop: '2px' }}>Limite de uso diário atingido.</div>
-                  )}
+                  <div style={{ fontSize: '9px', color: statusColor, textAlign: 'left', marginTop: '2px' }}>{statusText}</div>
                 </div>
               );
             })}
