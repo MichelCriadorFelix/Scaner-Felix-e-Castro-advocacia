@@ -797,6 +797,59 @@ Sua missão:
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
+function getRealConfidence(text, fallbackConfidence) {
+  if (!text || typeof text !== 'string') return fallbackConfidence || 0;
+  
+  const pageRegex = /(?:PÁGINA|PAGINA)\s+(\d+)/gi;
+  const lines = text.split('\n');
+  const pagesSeen = new Set();
+  const failedPagesSeen = new Set();
+  let hasCheckedPages = false;
+  
+  for (let line of lines) {
+    const match = pageRegex.exec(line);
+    pageRegex.lastIndex = 0;
+    
+    if (match) {
+      const pageNum = parseInt(match[1], 10);
+      const lowerLine = line.toLowerCase();
+      
+      const isFailed = lowerLine.includes('pulada') || 
+                       lowerLine.includes('crash') || 
+                       lowerLine.includes('falha') || 
+                       lowerLine.includes('erro crítico') || 
+                       lowerLine.includes('erro critico') ||
+                       lowerLine.includes('indisponível') ||
+                       lowerLine.includes('indisponivel');
+      
+      pagesSeen.add(pageNum);
+      if (isFailed) {
+        failedPagesSeen.add(pageNum);
+      }
+      hasCheckedPages = true;
+    }
+  }
+  
+  if (hasCheckedPages && pagesSeen.size > 0) {
+    const totalCount = pagesSeen.size;
+    const failedCount = failedPagesSeen.size;
+    const successfulCount = Math.max(0, totalCount - failedCount);
+    
+    if (successfulCount === 0) return 0;
+    
+    const baseConfidence = Math.max(0, Math.min(100, fallbackConfidence || 99));
+    const successRatio = successfulCount / totalCount;
+    return Math.min(100, Math.max(0, Math.round(baseConfidence * successRatio)));
+  }
+  
+  const textLower = text.toLowerCase();
+  if (textLower.includes('página pulada') || textLower.includes('pagina pulada') || textLower.includes('erro crítico na página') || textLower.includes('erro critico na pagina')) {
+    return Math.max(0, Math.round((fallbackConfidence || 99) * 0.5));
+  }
+  
+  return Math.min(100, Math.max(0, Math.round(fallbackConfidence || 0)));
+}
+
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
@@ -944,6 +997,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
     } catch (pageErr) {
       console.error(`Erro crítico ao processar página ${i}:`, pageErr);
       fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
+      pagesEvaluated++;
     }
   }
 
@@ -955,7 +1009,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
      if (pdf && pdf.destroy) await pdf.destroy();
   } catch(e) { }
 
-  return { text: fullText.trim(), confidence: Math.min(100, Math.max(0, Math.round(confidenceTotal / (pagesEvaluated || 1)))) };
+  const rawConfidence = Math.min(100, Math.max(0, Math.round(confidenceTotal / (pagesEvaluated || 1))));
+  return { text: fullText.trim(), confidence: getRealConfidence(fullText, rawConfidence) };
 }
 
 async function convertSingleImageToPDF(file) {
@@ -2876,9 +2931,9 @@ export default function ScannerJuridico() {
                     <div className="confidence-bar">
                       <span>Confiança OCR</span>
                       <div className="conf-fill">
-                        <div className="conf-inner" style={{ width: Math.min(100, result.confidence) + "%", background: confColor(Math.min(100, result.confidence)) }} />
+                        <div className="conf-inner" style={{ width: getRealConfidence(result.text, result.confidence) + "%", background: confColor(getRealConfidence(result.text, result.confidence)) }} />
                       </div>
-                      <span style={{ color: confColor(Math.min(100, result.confidence)) }}>{Math.min(100, result.confidence)}%</span>
+                      <span style={{ color: confColor(getRealConfidence(result.text, result.confidence)) }}>{getRealConfidence(result.text, result.confidence)}%</span>
                     </div>
                     <div className="result-actions">
                       <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
@@ -3174,7 +3229,7 @@ export default function ScannerJuridico() {
                               </div>
                             )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
-                            <div className="hist-chars">{item.words} palavras · {Math.min(100, item.confidence)}% OCR</div>
+                            <div className="hist-chars">{item.words} palavras · {getRealConfidence(item.text, item.confidence)}% OCR</div>
                           </div>
                           <div className="hist-actions">
                             {item.type && item.type.startsWith('image/') && (
