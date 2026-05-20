@@ -874,9 +874,7 @@ function getRealConfidence(text, fallbackConfidence) {
                        lowerLine.includes('crash') || 
                        lowerLine.includes('falha') || 
                        lowerLine.includes('erro crítico') || 
-                       lowerLine.includes('erro critico') ||
-                       lowerLine.includes('indisponível') ||
-                       lowerLine.includes('indisponivel');
+                       lowerLine.includes('erro critico');
       
       pagesSeen.add(pageNum);
       if (isFailed) {
@@ -957,8 +955,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         let finalCanvasToUse = null;
         let renderSuccess = false;
 
-        // Escalas adaptativas: Se falhar por OOM ou Timeout, tenta resoluções menores para poupar memória e tempo
-        const scalesToTry = [1.8, 1.2, 1.0];
+        // Escalas adaptativas super otimizadas: inicia com 1.25 (balanço perfeito de leveza, nitidez e velocidade), decaindo para 1.0 se necessário
+        const scalesToTry = [1.25, 1.0];
         for (let scaleAttempt of scalesToTry) {
           let canvas = document.createElement("canvas");
           let ctx = null;
@@ -971,7 +969,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
             if (!ctx) continue;
             
             renderTask = page.render({ canvasContext: ctx, viewport });
-            await withTimeout(renderTask.promise, 15000, `Timeout scale ${scaleAttempt}`);
+            // Timeout expandido para 25s por segurança, mas renderização em 1.25 costuma ser instantânea
+            await withTimeout(renderTask.promise, 25000, `Timeout scale ${scaleAttempt}`);
             finalCanvasToUse = canvas;
             renderSuccess = true;
             break;
