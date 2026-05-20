@@ -1211,47 +1211,80 @@ export default function ScannerJuridico() {
     };
   }, []);
 
-  useEffect(() => { 
-    async function loadData() {
-      if (supabase) {
-        try {
-          const { data: cData } = await supabase.from('lexscan_clients').select('*').order('created_at', { ascending: false });
-          if (cData) {
-            setClients(cData.map(c => {
-               let name = c.name;
-               let parentId = null;
-               if (name.includes('::')) {
-                  const parts = name.split('::');
-                  parentId = parts[0];
-                  name = parts.slice(1).join('::');
-               }
-               return { id: c.id, name, parentId, ts: c.created_at, originalName: c.name };
-            }));
-          }
-          
-          const { data: dData } = await supabase.from('lexscan_documents').select('*').order('created_at', { ascending: false });
-          if (dData) {
-            setHistory(dData.map(d => ({
-              id: d.id,
-              clientId: d.client_id || 'unassigned',
-              name: d.name,
-              type: d.file_type || '',
-              preview: d.file_url || null,
-              fileUrl: d.file_url || null,
-              text: d.extracted_text,
-              confidence: d.confidence,
-              chars: d.chars_count,
-              words: d.words_count,
-              ts: d.created_at
-            })));
-          }
-        } catch(e) { console.error('Erro Supabase:', e); }
-      } else {
-        console.warn("Supabase não está configurado. A persistência de dados está desativada.");
-      }
+  const loadData = useCallback(async () => {
+    if (supabase) {
+      try {
+        const { data: cData } = await supabase.from('lexscan_clients').select('*').order('created_at', { ascending: false });
+        if (cData) {
+          setClients(cData.map(c => {
+             let name = c.name;
+             let parentId = null;
+             if (name.includes('::')) {
+                const parts = name.split('::');
+                parentId = parts[0];
+                name = parts.slice(1).join('::');
+             }
+             return { id: c.id, name, parentId, ts: c.created_at, originalName: c.name };
+          }));
+        }
+        
+        const { data: dData } = await supabase.from('lexscan_documents').select('*').order('created_at', { ascending: false });
+        if (dData) {
+          setHistory(dData.map(d => ({
+            id: d.id,
+            clientId: d.client_id || 'unassigned',
+            name: d.name,
+            type: d.file_type || '',
+            preview: d.file_url || null,
+            fileUrl: d.file_url || null,
+            text: d.extracted_text,
+            confidence: d.confidence,
+            chars: d.chars_count,
+            words: d.words_count,
+            ts: d.created_at
+          })));
+        }
+      } catch(e) { console.error('Erro Supabase:', e); }
+    } else {
+      console.warn("Supabase não está configurado. A persistência de dados está desativada.");
     }
-    loadData();
   }, []);
+
+  useEffect(() => { 
+    loadData();
+  }, [loadData]);
+
+  // Sincronização em Tempo Real (Realtime Sync) para multiplos usuários simultâneos
+  useEffect(() => {
+    if (!supabase) return;
+
+    const clientsChannel = supabase
+      .channel('realtime-clients')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lexscan_clients' },
+        () => {
+          loadData();
+        }
+      )
+      .subscribe();
+
+    const docsChannel = supabase
+      .channel('realtime-docs')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'lexscan_documents' },
+        () => {
+          loadData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(clientsChannel);
+      supabase.removeChannel(docsChannel);
+    };
+  }, [loadData]);
 
   const confColor = (c) => {
     if (c >= 90) return G.success;
