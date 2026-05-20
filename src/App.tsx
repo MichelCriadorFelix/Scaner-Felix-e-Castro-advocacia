@@ -712,14 +712,58 @@ function getAvailableGeminiKeys() {
   return [...new Set(rawKeys)].filter(k => k && typeof k === 'string' && k.length > 20);
 }
 
+// Helper para ler status e uso de chaves diretamente do localStorage (compartilhado com React)
+function getKeyMetadata(apiKey) {
+  const hash = apiKey.slice(-6);
+  let usage = 0;
+  let errorStatus = 'ok';
+
+  try {
+    const savedUsage = localStorage.getItem('lexscan_key_usage');
+    if (savedUsage) {
+      const parsed = JSON.parse(savedUsage);
+      usage = parsed[hash] || 0;
+    }
+  } catch (e) {}
+
+  try {
+    const savedErrors = localStorage.getItem('lexscan_key_errors');
+    if (savedErrors) {
+      const parsed = JSON.parse(savedErrors);
+      errorStatus = parsed[hash] || 'ok';
+    }
+  } catch (e) {}
+
+  return { hash, usage, errorStatus };
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress) {
-  const keys = getAvailableGeminiKeys();
+  const allKeys = getAvailableGeminiKeys();
   let lastError = null;
 
-  if (keys.length === 0) {
+  if (allKeys.length === 0) {
     throw new Error("❌ Nenhuma Chave GEMINI ou API_KEY configurada.");
   }
+
+  // Mapeia todas as chaves com metadados do localStorage
+  const keysMetadata = allKeys.map((key) => {
+    const meta = getKeyMetadata(key);
+    return { key, ...meta };
+  });
+
+  // Filtra chaves que NÃO estão esgotadas (quota_exceeded)
+  const activeKeys = keysMetadata.filter(m => m.errorStatus !== 'quota_exceeded');
+  
+  // Se TODAS as chaves estiverem esgotadas, usamos todas como fallback (quem sabe alguma resetou ou foi reiniciada)
+  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
+
+  // ORDENAÇÃO INTELIGENTE (Load-Balancing Dinâmico): 
+  // Prioriza chaves com MENOR número de requisições realizadas (usage crescente).
+  // Isso faz com que as chaves 7, 8 e 9 (com 0 ou poucas chamadas) sejam usadas antes de sobrecarregar as chaves 4, 5 e 6!
+  candidateKeysInfo.sort((a, b) => a.usage - b.usage);
+
+  const finalSortedKeys = candidateKeysInfo.map(info => info.key);
 
   const base64 = await new Promise((r) => {
     const reader = new FileReader();
@@ -740,13 +784,14 @@ Sua missão:
   const modelsToTry = ["gemini-3-flash-preview"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
-  for (let i = 0; i < keys.length; i++) {
-    const apiKey = keys[i];
+  for (let i = 0; i < finalSortedKeys.length; i++) {
+    const apiKey = finalSortedKeys[i];
+    const keyHash = apiKey.slice(-6);
     
     for (let m = 0; m < modelsToTry.length; m++) {
       const modelName = modelsToTry[m];
       try {
-        console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${keys.length} | Tentando modelo: ${modelName}`);
+        console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
         const { GoogleGenAI } = await import("@google/genai");
         const ai = new GoogleGenAI({ apiKey });
         
@@ -769,21 +814,19 @@ Sua missão:
         }
 
         // Registrar sucesso no uso da chave para o dashboard
-        const keyHash = apiKey.slice(-6); // Usamos os últimos 6 dígitos como ID para privacidade
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
 
         return fullText.trim();
         
       } catch (e) {
-        console.warn(`[Matriz Falha] Chave ${i + 1} - Modelo ${modelName}:`, e.message || e);
+        console.warn(`[Matriz Falha] Chave ${i + 1} (..${keyHash}) - Modelo ${modelName}:`, e.message || e);
         lastError = e;
         
         const errorStr = (e.message || "").toLowerCase();
         // Se a chave na Vercel estiver com Limite Esgotado (429) ou Bloqueada, a gente aborta ELA
         // e pula direto pro próximo "i" (Próxima Chave) poupando tempo
         if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("api key not valid") || errorStr.includes("key")) {
-          console.warn(`👉 [Auto-Failover] Chave ${i + 1} indisponível a. Alternando para a próxima chave Vercel!`);
-          const keyHash = apiKey.slice(-6);
+          console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível. Alternando para a próxima chave!`);
           if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
           break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave)
         }
@@ -1196,7 +1239,14 @@ export default function ScannerJuridico() {
     }
   });
   
-  const [keyErrors, setKeyErrors] = useState({}); // Track 'quota' or 'active'
+  const [keyErrors, setKeyErrors] = useState(() => {
+    try {
+      const saved = localStorage.getItem('lexscan_key_errors');
+      return saved ? JSON.parse(saved) : {};
+    } catch(e) {
+      return {};
+    }
+  });
 
   // Flow State para Escaneamento em Lote (Multi-Páginas)
   const [cameraPages, setCameraPages] = useState([]);
@@ -1227,10 +1277,18 @@ export default function ScannerJuridico() {
         localStorage.setItem('lexscan_key_usage', JSON.stringify(next));
         return next;
       });
-      setKeyErrors(prev => ({...prev, [hash]: 'active'}));
+      setKeyErrors(prev => {
+        const next = { ...prev, [hash]: 'active' };
+        localStorage.setItem('lexscan_key_errors', JSON.stringify(next));
+        return next;
+      });
     };
     window.setKeyError = (hash, errorType) => {
-      setKeyErrors(prev => ({...prev, [hash]: errorType}));
+      setKeyErrors(prev => {
+        const next = { ...prev, [hash]: errorType };
+        localStorage.setItem('lexscan_key_errors', JSON.stringify(next));
+        return next;
+      });
     };
   }, []);
 
