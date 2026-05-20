@@ -3254,9 +3254,17 @@ export default function ScannerJuridico() {
                       .map(item => (
                       <div key={item.id} className="hist-card">
                         <div className="hist-header">
-                          {item.preview
+                          {item.preview && item.type && item.type.startsWith("image/")
                             ? <img src={item.preview} alt="" className="hist-thumb" />
-                            : <div className="hist-thumb-placeholder">📄</div>
+                            : <div className="hist-thumb-placeholder" style={{ 
+                                background: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.08)' : `${G.bg}`, 
+                                borderColor: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.25)' : `${G.border}`,
+                                color: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? '#ef4444' : `${G.text}`,
+                                fontSize: '12px',
+                                fontWeight: '600'
+                              }}>
+                                {(item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'PDF' : '📄'}
+                              </div>
                           }
                           <div className="hist-info">
                             {renamingItem?.id === item.id ? (
