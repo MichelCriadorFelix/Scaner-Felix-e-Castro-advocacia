@@ -2157,11 +2157,11 @@ export default function ScannerJuridico() {
   const processFolderOCR = async () => {
     const docs = history.filter(h => 
        (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)
-       && (!h.text || h.text.trim() === '' || h.confidence <= 98)
+       && (!h.text || h.text.trim() === '' || getRealConfidence(h.text, h.confidence) <= 98)
     );
     
     if (docs.length === 0) {
-       showToast("Todos os documentos já possuem OCR extraído ou confiança >= 99%.", "info");
+       showToast("Todos os documentos já possuem OCR extraído ou confiança real >= 99%.", "info");
        return;
     }
 
