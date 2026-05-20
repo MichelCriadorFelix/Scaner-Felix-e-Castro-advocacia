@@ -1,1 +1,24 @@
 @import "tailwindcss";
+
+/* ── SECURE ENTERPRISE PURGE: REMOVE VERCEL TOOLBAR & FEEDBACK OVERLAYS ── */
+vercel-live-feedback,
+#vercel-preview-feedback-iframe,
+iframe[src*="vercel.com"],
+iframe[src*="vercel.app"],
+[id*="vercel-preview-feedback"],
+[class*="vercel-preview-feedback"],
+[id*="vercel-feedback-iframe"],
+[id^="vercel-"],
+[class^="vercel-"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  position: absolute !important;
+  top: -9999px !important;
+  left: -9999px !important;
+  width: 0 !important;
+  height: 0 !important;
+  pointer-events: none !important;
+  z-index: -999999 !important;
+}
+

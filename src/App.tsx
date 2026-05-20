@@ -1319,6 +1319,60 @@ export default function ScannerJuridico() {
     };
   }, []);
 
+  // Proactive Purge: Bloqueia e destrói completamente qualquer elemento ou iframe do Vercel Toolbar/Live Feedback/GitHub
+  useEffect(() => {
+    try {
+      window.__VERCEL_FEEDBACK = null;
+      window.__VERCEL_TOOLBAR = null;
+      window.__VERCEL_DEV_SHORTS = null;
+      Object.defineProperty(window, '__VERCEL_FEEDBACK', {
+        value: null,
+        writable: false,
+        configurable: false
+      });
+      Object.defineProperty(window, '__VERCEL_TOOLBAR', {
+        value: null,
+        writable: false,
+        configurable: false
+      });
+    } catch (e) {
+      console.warn("Supressão de variáveis Vercel:", e);
+    }
+
+    const purgeVercelElements = () => {
+      const selectors = [
+        'vercel-live-feedback',
+        '#vercel-preview-feedback-iframe',
+        '[id*="vercel-preview-feedback"]',
+        '[class*="vercel-preview-feedback"]',
+        'iframe[src*="vercel.com"]',
+        'iframe[src*="vercel.app"]'
+      ];
+      selectors.forEach(sel => {
+        try {
+          const elements = document.querySelectorAll(sel);
+          elements.forEach(el => el.remove());
+        } catch (err) {}
+      });
+    };
+
+    purgeVercelElements();
+    const intervalId = setInterval(purgeVercelElements, 200);
+
+    const observer = new MutationObserver(() => {
+      purgeVercelElements();
+    });
+
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    return () => {
+      clearInterval(intervalId);
+      observer.disconnect();
+    };
+  }, []);
+
   const loadData = useCallback(async () => {
     if (supabase) {
       try {
