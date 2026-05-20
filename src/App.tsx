@@ -880,13 +880,14 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         break;
     }
 
+    let pageText = "";
     try {
       onProgress(Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100), `Lendo pág ${i}/${endIdx}...`);
       const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
       
       // Tenta texto nativo primeiro (100% de confiança, 0 custo)
       const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
-      const pageText = textContent.items.map(item => item.str).join(" ").trim();
+      pageText = textContent.items.map(item => item.str).join(" ").trim();
 
       if (pageText.length > 600) {
         fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
@@ -895,16 +896,33 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
       } else {
         // É uma página escaneada ou imagem dentro do PDF
         onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
-        const viewport = page.getViewport({ scale: 2.0 }); // Diminuido para 2.0 para economizar memória 
-        const canvas = document.createElement("canvas");
-        canvas.width = viewport.width; canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         
-        if (!ctx) {
-           throw new Error("Erro de memória: Falha ao obter contexto 2D para a página " + i);
+        let viewport = null;
+        let canvas = document.createElement("canvas");
+        let ctx = null;
+        let renderSuccess = false;
+
+        // Escalas adaptativas: Se falhar por OOM ou Timeout, tenta resoluções menores para poupar memória e tempo
+        const scalesToTry = [1.8, 1.2, 1.0];
+        for (let scaleAttempt of scalesToTry) {
+          try {
+            viewport = page.getViewport({ scale: scaleAttempt });
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            ctx = canvas.getContext("2d", { willReadFrequently: true });
+            if (!ctx) continue;
+            
+            await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 15000, `Timeout scale ${scaleAttempt}`);
+            renderSuccess = true;
+            break;
+          } catch (renderErr) {
+            console.warn(`[Pág ${i}] Falha ao renderizar em escala ${scaleAttempt}, tentando próxima...`, renderErr);
+          }
         }
 
-        await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 25000, `Timeout na renderização da pág ${i}`);
+        if (!renderSuccess) {
+          throw new Error(`Falha de memória ou timeout ao tentar renderizar a página ${i} visualmente.`);
+        }
 
         // Filtro Profissional para melhorar OCR Local
         const tempCanvas = document.createElement("canvas");
@@ -960,7 +978,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
             if (!tesseractWorker) {
                tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
                  logger: ({status, progress}) => {
-                    if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
+                     if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
                  }
                });
             }
@@ -996,7 +1014,12 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
       if (page && page.cleanup) page.cleanup();
     } catch (pageErr) {
       console.error(`Erro crítico ao processar página ${i}:`, pageErr);
-      fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
+      if (pageText && pageText.trim().length > 5) {
+        fullText += `\n\n[PÁGINA ${i} - RECUPERADA VIA TEXTO DIGITAL EXISTENTE (FALHA DE RENDERIZAÇÃO)]\n\n` + pageText + "\n\n";
+        confidenceTotal += 75;
+      } else {
+        fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
+      }
       pagesEvaluated++;
     }
   }
