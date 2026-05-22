@@ -856,6 +856,11 @@ Sua missão:
 function getRealConfidence(text, fallbackConfidence) {
   if (!text || typeof text !== 'string') return fallbackConfidence || 0;
   
+  const textLower = text.toLowerCase();
+  if (textLower.includes('[ocr local') || textLower.includes('[ocr bruto') || textLower.includes('ocr local (') || textLower.includes('ocr bruto (')) {
+    return 0;
+  }
+  
   const pageRegex = /(?:PÁGINA|PAGINA)\s+(\d+)/gi;
   const lines = text.split('\n');
   const pagesSeen = new Set();
@@ -896,7 +901,6 @@ function getRealConfidence(text, fallbackConfidence) {
     return Math.min(100, Math.max(0, Math.round(baseConfidence * successRatio)));
   }
   
-  const textLower = text.toLowerCase();
   if (textLower.includes('página pulada') || textLower.includes('pagina pulada') || textLower.includes('erro crítico na página') || textLower.includes('erro critico na pagina')) {
     return Math.max(0, Math.round((fallbackConfidence || 99) * 0.5));
   }
@@ -1023,45 +1027,45 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
           }
           
           if (ocrRes.confidence >= 99) {
-              fullText += `[PÁGINA ${i} - OCR LOCAL (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-              confidenceTotal += ocrRes.confidence;
+              fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
+              confidenceTotal += 100;
           } else {
-              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade baixa (${ocrRes.confidence}%). Acionando IA...`);
+              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade insuficiente (${ocrRes.confidence}%). Acionando IA Jurídica...`);
               try {
                   const aiText = await extractPageWithGemini(blob, onProgress);
                   fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
                   confidenceTotal += 99;
               } catch (e) {
                   let errMsg = e.message || "Erro desconhecido";
+                  // Se falhar a IA, marcamos como OCR BRUTO 0% para forçar reprocessamento depois
                   fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
-                  confidenceTotal += ocrRes.confidence;
+                  confidenceTotal += 0;
               }
           }
         } else {
-          // Modo Texto Bruto Rigoroso
-          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Rodando OCR Local...`);
+          // Mesmo sem useAi explicitamente, usamos o Padrão Ouro se possível, senão marcamos como 0%
+          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Analisando página...`);
           
           let ocrRes = { text: "", confidence: 0 };
           try {
             if (!tesseractWorker) {
                tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-                 logger: ({status, progress}) => {
-                     if(status === "recognizing text") onProgress(Math.round((i / pdf.numPages) * 100), `OCR pág ${i} (${Math.round(progress*100)}%)...`);
-                 }
+                 logger: () => {}
                });
             }
-            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local bruto na página ${i}`);
+            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
             ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
           } catch (err) {
-            console.warn(`Erro no Tesseract Bruto na página ${i}`, err);
-            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - PÁGINA PULADA]", confidence: 0 };
-            // Attempt to recreate worker to unstick it if it crashed
-            if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-            tesseractWorker = null;
+            ocrRes = { text: "[PÁGINA PULADA]", confidence: 0 };
           }
           
-          fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-          confidenceTotal += ocrRes.confidence;
+          if (ocrRes.confidence >= 99) {
+             fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
+             confidenceTotal += 100;
+          } else {
+             fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+             confidenceTotal += 0; // Força reprocessamento
+          }
         }
         
         // Cleanup to prevent memory leak on large PDFs (500+ pages)
@@ -1085,8 +1089,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
     } catch (pageErr) {
       console.error(`Erro crítico ao processar página ${i}:`, pageErr);
       if (pageText && pageText.trim().length > 5) {
-        fullText += `\n\n[PÁGINA ${i} - RECUPERADA VIA TEXTO DIGITAL EXISTENTE (FALHA DE RENDERIZAÇÃO)]\n\n` + pageText + "\n\n";
-        confidenceTotal += 75;
+        fullText += `\n\n[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n\n` + pageText + "\n\n";
+        confidenceTotal += 100;
       } else {
         fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
       }
@@ -1170,18 +1174,22 @@ async function extractImageHybrid(file, onProgress, useAi) {
   const ocrRes = await runOCR(file, (p) => onProgress(10 + Math.round(p * 40), `Avaliando OCR: ${Math.round(p*100)}%`));
   
   if (useAi && ocrRes.confidence < 99) {
-      onProgress(70, `Qualidade baixa detectada (${ocrRes.confidence}%). Acionando IA Jurídica...`);
+      onProgress(70, `Qualidade insuficiente (${ocrRes.confidence}%). Acionando IA Jurídica...`);
       try {
           const aiText = await extractPageWithGemini(file, onProgress);
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
           let errMsg = e.message || "Erro desconhecido";
-          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: ocrRes.confidence };
+          // Se falhar a IA, marcamos como 0 para permitir lote posterior
+          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: 0 };
       }
   }
   
-  const modeLabel = useAi ? `OCR LOCAL (${ocrRes.confidence}%)` : `OCR BRUTO (${ocrRes.confidence}%)`;
-  return { text: `[${modeLabel}]\n` + ocrRes.text, confidence: ocrRes.confidence };
+  if (ocrRes.confidence >= 99) {
+      return { text: `[TEXTO DIGITAL NATIVO]\n` + ocrRes.text, confidence: 100 };
+  }
+  
+  return { text: `[OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text, confidence: 0 };
 }
 
 // ── OCR via Tesseract ─────────────────────────────────────────────────────────
@@ -3499,7 +3507,7 @@ export default function ScannerJuridico() {
                             {(item.fileUrl || item.localBlobUrl) && (
                                <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
                             )}
-                            {(!item.text) ? (
+                            {(!item.text || getRealConfidence(item.text, item.confidence) === 0) ? (
                                <button className="icon-btn" style={{background: G.accent, color: '#000', fontWeight: 'bold'}} title="Processar OCR agora" onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}>🔍 OCR</button>
                             ) : (
                                <>
