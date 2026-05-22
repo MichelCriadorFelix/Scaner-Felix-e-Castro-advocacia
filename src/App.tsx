@@ -948,7 +948,7 @@ function getRealConfidence(text, fallbackConfidence) {
   return computedConfidence;
 }
 
-async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
+async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi = false) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -983,11 +983,15 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
       onProgress(Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100), `Lendo pág ${i}/${endIdx}...`);
       const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
       
-      // Tenta texto nativo primeiro (100% de confiança, 0 custo)
-      const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
-      pageText = textContent.items.map(item => item.str).join(" ").trim();
+      const shouldBypassNative = forceAi;
 
-      if (pageText.length > 600) {
+      if (!shouldBypassNative) {
+        // Tenta texto nativo primeiro (100% de confiança, 0 custo)
+        const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
+        pageText = textContent.items.map(item => item.str).join(" ").trim();
+      }
+
+      if (!shouldBypassNative && pageText.length > 600) {
         fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
         confidenceTotal += 100;
         pagesEvaluated++;
@@ -1047,30 +1051,37 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
 
         let blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
         
-        if (useAi) {
-          // Modo Híbrido: Testa OCR primeiro
-          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
+        if (useAi || forceAi) {
+          // Modo Híbrido: Testa OCR primeiro se não estiver forçando IA
           let ocrRes = { text: "", confidence: 0 };
-          try {
-            if (!tesseractWorker) {
-               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-                 logger: () => {}
-               });
+          let shouldGoToAi = forceAi;
+
+          if (!shouldGoToAi) {
+            onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
+            try {
+              if (!tesseractWorker) {
+                 tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
+                   logger: () => {}
+                 });
+              }
+              const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
+              ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+            } catch (err) {
+              console.warn(`Erro no Tesseract na página ${i}`, err);
+              ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - TESSERACT CRASH]", confidence: 0 };
+              if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
+              tesseractWorker = null;
             }
-            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
-            ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
-          } catch (err) {
-            console.warn(`Erro no Tesseract na página ${i}`, err);
-            ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - TESSERACT CRASH]", confidence: 0 };
-            if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-            tesseractWorker = null;
+            if (ocrRes.confidence >= 99) {
+                fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
+                confidenceTotal += 100;
+            } else {
+                shouldGoToAi = true;
+            }
           }
           
-          if (ocrRes.confidence >= 99) {
-              fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
-              confidenceTotal += 100;
-          } else {
-              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade insuficiente (${ocrRes.confidence}%). Acionando IA Jurídica...`);
+          if (shouldGoToAi) {
+              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Extraindo via IA Jurídica...`);
               try {
                   // Gera imagem colorida em alta qualidade do canvas original para a IA ler perfeitamente!
                   const originalColorBlob = await new Promise(r => finalCanvasToUse.toBlob(r, "image/jpeg", 0.95));
@@ -1103,11 +1114,11 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
           }
           
           if (ocrRes.confidence >= 99) {
-             fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
-             confidenceTotal += 100;
+              fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
+              confidenceTotal += 100;
           } else {
-             fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-             confidenceTotal += 0; // Força reprocessamento
+              fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
+              confidenceTotal += 0; // Força reprocessamento
           }
         }
         
@@ -1124,21 +1135,21 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
         if (pagesEvaluated % 25 === 0 && tesseractWorker) {
            await tesseractWorker.terminate().catch(()=>null);
            tesseractWorker = null;
-        }
-      }
-      
-      // Cleanup page to free pdf.js memory
-      if (page && page.cleanup) page.cleanup();
-    } catch (pageErr) {
-      console.error(`Erro crítico ao processar página ${i}:`, pageErr);
-      if (pageText && pageText.trim().length > 5) {
-        fullText += `\n\n[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n\n` + pageText + "\n\n";
-        confidenceTotal += 100;
-      } else {
-        fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
-      }
-      pagesEvaluated++;
-    }
+         }
+       }
+       
+       // Cleanup page to free pdf.js memory
+       if (page && page.cleanup) page.cleanup();
+     } catch (pageErr) {
+       console.error(`Erro crítico ao processar página ${i}:`, pageErr);
+       if (pageText && pageText.trim().length > 5) {
+         fullText += `\n\n[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n\n` + pageText + "\n\n";
+         confidenceTotal += 100;
+       } else {
+         fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
+       }
+       pagesEvaluated++;
+     }
   }
 
   if (tesseractWorker && tesseractWorker.terminate) {
@@ -1212,7 +1223,19 @@ async function convertSingleImageToPDF(file) {
   return new File([pdfBlob], file.name.replace(/\.[^/.]+$/, "") + ".pdf", { type: "application/pdf" });
 }
 
-async function extractImageHybrid(file, onProgress, useAi) {
+async function extractImageHybrid(file, onProgress, useAi, forceAi = false) {
+  if (forceAi) {
+      onProgress(20, "Forçando extração via IA Jurídica...");
+      try {
+          const enhancedForAi = await enhanceImageForGemini(file);
+          const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
+          return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
+      } catch(e) {
+          let errMsg = e.message || "Erro desconhecido";
+          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n`, confidence: 0 };
+      }
+  }
+
   onProgress(10, "Avaliando qualidade da imagem via OCR Local...");
   const ocrRes = await runOCR(file, (p) => onProgress(10 + Math.round(p * 40), `Avaliando OCR: ${Math.round(p*100)}%`));
   
@@ -2359,9 +2382,9 @@ export default function ScannerJuridico() {
       window.lexscan_abort = false;
 
       if (fileToProcess.type === "application/pdf") {
-        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage);
+        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true);
       } else {
-        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode);
+        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true);
       }
 
       if (extracted && extracted.text) {
