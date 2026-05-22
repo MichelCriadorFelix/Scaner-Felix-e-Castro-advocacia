@@ -3507,9 +3507,22 @@ export default function ScannerJuridico() {
                             {(item.fileUrl || item.localBlobUrl) && (
                                <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
                             )}
-                            {(!item.text || getRealConfidence(item.text, item.confidence) === 0) ? (
-                               <button className="icon-btn" style={{background: G.accent, color: '#000', fontWeight: 'bold'}} title="Processar OCR agora" onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}>🔍 OCR</button>
-                            ) : (
+                            {/* Botão de Refazer OCR (Sempre disponível para correção manual) */}
+                            <button 
+                              className="icon-btn" 
+                              style={{
+                                background: (!item.text || getRealConfidence(item.text, item.confidence) === 0) ? G.accent : 'transparent', 
+                                color: (!item.text || getRealConfidence(item.text, item.confidence) === 0) ? '#000' : G.muted,
+                                border: (!item.text || getRealConfidence(item.text, item.confidence) === 0) ? 'none' : `1px solid ${G.border}`,
+                                fontWeight: 'bold'
+                              }} 
+                              title="Refazer OCR via IA Jurídica (Correção)" 
+                              onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}
+                            >
+                              {(!item.text || getRealConfidence(item.text, item.confidence) === 0) ? '🔍 OCR' : '🔄'}
+                            </button>
+
+                            {item.text && getRealConfidence(item.text, item.confidence) > 0 && (
                                <>
                                  <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
                                  <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
