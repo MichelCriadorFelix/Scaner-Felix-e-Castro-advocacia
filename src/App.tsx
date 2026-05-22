@@ -737,6 +737,34 @@ function getKeyMetadata(apiKey) {
   return { hash, usage, errorStatus };
 }
 
+// Aumenta o contraste, nitidez e saturação para PDFs ou imagens de baixa qualidade antes do OCR/IA, sem perder as cores originais importantes para CNH/RG.
+async function enhanceImageForGemini(imageBlob) {
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      const url = URL.createObjectURL(imageBlob);
+      i.onload = () => { URL.revokeObjectURL(url); res(i); };
+      i.onerror = () => { URL.revokeObjectURL(url); rej(); };
+      i.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width; canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      // Filtro profissional inteligente: Melhora contraste (+20%), brilho (+2%) e cores (+10%) sem binarizar.
+      // Isso é crucial para CNH e RG que possuem fundos verdes ou cinzas que somem sob binarização severa.
+      ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
+      ctx.drawImage(img, 0, 0);
+    }
+    const resBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
+    canvas.width = 0; canvas.height = 0;
+    return resBlob || imageBlob;
+  } catch (e) {
+    console.warn("Falha ao otimizar imagem para a IA, usando original:", e);
+    return imageBlob;
+  }
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress) {
   const allKeys = getAvailableGeminiKeys();
@@ -853,9 +881,20 @@ function getRealConfidence(text, fallbackConfidence) {
   if (!text || typeof text !== 'string') return fallbackConfidence || 0;
   
   const textLower = text.toLowerCase();
-  if (textLower.includes('[ocr local') || textLower.includes('[ocr bruto') || textLower.includes('ocr local (') || textLower.includes('ocr bruto (')) {
+  
+  // REGRA DE OURO: Se o texto contém marcação de OCR LOCAL, OCR BRUTO ou TEXTO DIGITAL NATIVO, a confiança líquida é ZERO para permitir reprocessamento.
+  if (
+    textLower.includes('ocr local') || 
+    textLower.includes('ocr bruto') || 
+    textLower.includes('texto digital nativo') || 
+    textLower.includes('digital nativo')
+  ) {
     return 0;
   }
+  
+  // Se o documento tiver marcas de "[ILEGÍVEL]" ou "ILEGÍVEL", penaliza a confiança proporcionalmente
+  const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
+  let computedConfidence = fallbackConfidence || 99;
   
   const pageRegex = /(?:PÁGINA|PAGINA)\s+(\d+)/gi;
   const lines = text.split('\n');
@@ -892,16 +931,21 @@ function getRealConfidence(text, fallbackConfidence) {
     
     if (successfulCount === 0) return 0;
     
-    const baseConfidence = Math.max(0, Math.min(100, fallbackConfidence || 99));
+    const baseConfidence = Math.max(0, Math.min(100, computedConfidence));
     const successRatio = successfulCount / totalCount;
-    return Math.min(100, Math.max(0, Math.round(baseConfidence * successRatio)));
+    computedConfidence = Math.min(100, Math.max(0, Math.round(baseConfidence * successRatio)));
+  } else if (textLower.includes('página pulada') || textLower.includes('pagina pulada') || textLower.includes('erro crítico na página') || textLower.includes('erro critico na pagina')) {
+    computedConfidence = Math.max(0, Math.round(computedConfidence * 0.5));
+  } else {
+    computedConfidence = Math.min(100, Math.max(0, Math.round(computedConfidence)));
   }
-  
-  if (textLower.includes('página pulada') || textLower.includes('pagina pulada') || textLower.includes('erro crítico na página') || textLower.includes('erro critico na pagina')) {
-    return Math.max(0, Math.round((fallbackConfidence || 99) * 0.5));
+
+  // Aplica penalidade se houver campos ilegíveis detectados pela IA
+  if (ilegivelCount > 0) {
+    computedConfidence = Math.max(0, computedConfidence - (ilegivelCount * 15));
   }
-  
-  return Math.min(100, Math.max(0, Math.round(fallbackConfidence || 0)));
+
+  return computedConfidence;
 }
 
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
@@ -1028,7 +1072,10 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1) {
           } else {
               onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Qualidade insuficiente (${ocrRes.confidence}%). Acionando IA Jurídica...`);
               try {
-                  const aiText = await extractPageWithGemini(blob, onProgress);
+                  // Gera imagem colorida em alta qualidade do canvas original para a IA ler perfeitamente!
+                  const originalColorBlob = await new Promise(r => finalCanvasToUse.toBlob(r, "image/jpeg", 0.95));
+                  const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
+                  const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
                   fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
                   confidenceTotal += 99;
               } catch (e) {
@@ -1172,7 +1219,9 @@ async function extractImageHybrid(file, onProgress, useAi) {
   if (useAi && ocrRes.confidence < 99) {
       onProgress(70, `Qualidade insuficiente (${ocrRes.confidence}%). Acionando IA Jurídica...`);
       try {
-          const aiText = await extractPageWithGemini(file, onProgress);
+          // Melhora o contraste de imagem nativa/foto antes de extrair com Gemini
+          const enhancedForAi = await enhanceImageForGemini(file);
+          const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
           let errMsg = e.message || "Erro desconhecido";
@@ -3518,7 +3567,7 @@ export default function ScannerJuridico() {
                               {(!item.text || getRealConfidence(item.text, item.confidence) === 0) ? '🔍 OCR' : '🔄'}
                             </button>
 
-                            {item.text && getRealConfidence(item.text, item.confidence) > 0 && (
+                            {item.text && (
                                <>
                                  <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
                                  <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
