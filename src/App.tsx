@@ -773,22 +773,18 @@ async function extractPageWithGemini(blob, onProgress) {
     reader.readAsDataURL(blob);
   });
   
-  const prompt = `Você é um especialista em transcrição jurídica, processamento de documentos e OCR de altíssima precisão.
-O documento fornecido pode ser um formulário estruturado, uma tabela, uma planilha de entregas (como a "CAF Consolidada" contendo tabelas de encomendas), uma petição, uma imagem com texto manuscrito ou anotações nas margens, ou um laudo/atestado médico.
+  const prompt = `Você é um especialista em transcrição jurídica e processamento de documentos de fidelidade extrema.
+SUA MISSÃO E REGRA DE OURO: TRANSCRITURA LITERAL.
+1. Transcreva o texto exatamente como está no documento.
+2. SE UM CAMPO ESTIVER EMBACIADO, CORTADO OU ILEGÍVEL: Escreva obrigatoriamente "[ILEGÍVEL]". 
+3. PROIBIÇÃO DE ALUCINAÇÃO: Nunca invente nomes, CPFs, números de RG, datas ou códigos. Se não conseguir ler com 100% de certeza, marque como [ILEGÍVEL]. Inventar dados causa danos jurídicos graves.
+4. PARA CNH/RG: Transcreva os nomes e números com precisão absoluta. Se o nome estiver borrado, não tente "adivinhar" pelo contexto.
+5. FORMATO: Use tabelas markdown para formulários estruturados.
+6. ANOTAÇÕES: Transcreva anotações manuscritas marginais ao final sob "[Anotações Manuscritas Detectadas: <conteúdo>]".
+7. RESULTADO: Retorne apenas a transcrição, sem introduções ou explicações.`;
 
-Sua missão:
-1. Transcrever todo o texto visível com precisão milimétrica.
-2. IMPORTANTE PARA TABELAS/CAF CONSOLIDADA: Se houver uma tabela ou formulário de entregas (contendo colunas como Nº, Tipo, Serv., Rota, AWB, Peso, Embarcador, Destinatário, Endereço), transcreva OBRIGATORIAMENTE em formato de Tabela Markdown (\`| Nº | Tipo | Serv. | Rota | AWB | Peso | Embarcador | Destinatário | Endereço |\`). Transcreva cada linha com rigor absoluto:
-   - Preserve os códigos exatos das colunas (ex: códigos AWB "TXAQ...", "AMZB...", "WEPI...", "SELS...").
-   - Transcreva todos os nomes de destinatários, rotas e pesos correspondentes.
-   - NÃO PULE NENHUMA LINHA OU ELEMENTO DA TABELA.
-3. DETECTAR ANOTAÇÕES MANUSCRITAS: Transcreva com atenção extrema as anotações feitas à mão que apareçam riscadas, marcadas com caneta azul/preta/vermelha, circuladas, assinaturas ou texto inseridos nas margens superior, inferior ou laterais (exemplos reais: datas como "30/03/2026", "15/04/26", nomes anotados à mão como "ALDO 971733523", "FABIO LUIZ 03/03", assinaturas ou observações escritas como "Espera 30 minutos", "Ficou na empresa", "Ausente", "Não veio"). Coloque todas essas anotações extraídas em destaque no final da transcrição sob o título "[Anotações Manuscritas Detectadas: <conteúdo>]".
-4. Se for um documento corrido (petição, sentença, laudo, atestado): Estrudere o texto de forma limpa, preservando parágrafos, CIDs, datas, nomes, valores e assinaturas de forma idêntica ao original.
-5. Seja puramente descritivo de texto. Não adicione comentários, explicações, introduções ou notas sobre o seu próprio processamento (devolva apenas o texto transcrito formatado do documento).`;
-
-  // Lista de modelos do Google
-  // Usando EXCLUSIVAMENTE o modelo Gemini 3 Flash Preview solicitado pelo usuário.
-  const modelsToTry = ["gemini-3-flash-preview"];
+  // Lista de modelos do Google (Atualizado para Gemini 3.5 Flash conforme solicitado)
+  const modelsToTry = ["gemini-3.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
