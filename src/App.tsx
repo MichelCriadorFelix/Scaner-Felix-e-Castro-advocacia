@@ -1200,11 +1200,14 @@ Registre no campo "Tipo" a classificação real que você identificou (não escr
 ════════════════════════════════════════════
 FASE 3 — REGRAS ABSOLUTAS DE TRANSCRIÇÃO
 ════════════════════════════════════════════
-REGRA 1 — ZERO ALUCINAÇÃO: Nunca invente, complete ou suponha dados. Se não conseguir ler com certeza absoluta → [ILEGÍVEL]. Inventar CPF, data, valor ou nome causa dano jurídico grave e responsabilidade civil.
+REGRA 1 — ZERO ALUCINAÇÃO: Nunca invente, complete ou suponha dados. Se não conseguir ler um texto impresso ou digitado com certeza absoluta, use [ILEGÍVEL]. Inventar CPF, data, valor ou nome causa dano jurídico grave e responsabilidade civil.
 REGRA 2 — DÚVIDA = INCLUIR: Se não souber se uma informação é relevante, transcreva. Omissão é pior que excesso. Um dado irrelevante não prejudica; um dado omitido pode destruir uma tese.
 REGRA 3 — DISPOSITIVO E MOTIVO = LITERAL: Em decisões judiciais e cartas INSS, o dispositivo e o motivo do indeferimento NUNCA devem ser resumidos — transcrever palavra por palavra.
-REGRA 4 — MANUSCRITOS: Transcreva anotações à mão ao final, sob o rótulo [Anotações Manuscritas:].
-REGRA 5 — CARIMBOS E ASSINATURAS: Registre a presença mesmo que ilegível: [Carimbo detectado — ilegível] ou [Assinatura detectada — ilegível].
+REGRA 4 — CALIGRAFIA COMPLEXA E MANUSCRITOS: Esforce-se ao máximo absoluto para decodificar e decifrar caligrafias manuais difíceis, incluindo letras garrafais de médicos em receitas, prontuários e laudos. Transcreva tudo o que for minimamente discernível. Não desista rotulando rapidamente como ilegível, pois esses dados são cruciais para petições. Transcreva anotações à mão ao final, sob o rótulo [Anotações Manuscritas:].
+REGRA 5 — TRATAMENTO DE ASSINATURAS MANUSCRITAS: Sempre registre assinaturas e rubricas.
+- Se for possível identificar ou deduzir o titular da assinatura pelo preenchimento ou nome impresso logo abaixo/ao lado, transcreva de forma descritiva: ex: [Assinatura Manuscrita: Maria das Dores da S. Falcão].
+- Se for um garrancho ou rabisco impossível de transcrever literalmente por extenso, utilize obrigatoriamente a expressão "[Assinatura Manuscrita]" ou "[Assinatura Manuscrita Detectada]" — NUNCA escreva "[ILEGÍVEL]" para assinaturas ou rubricas.
+- Reserve a marcação "[ILEGÍVEL]" EXCLUSIVAMENTE para textos impressos, digitados ou corpos de texto manuscritos apagados, borrados ou rasgados que NÃO correspondam a assinaturas.
 REGRA 6 — TABELAS: Use tabelas markdown para estruturas tabulares (CNIS, holerites, registros de ponto, extratos).
 REGRA 7 — MÚLTIPLAS PÁGINAS: Separe cada página com o marcador [PÁGINA N] e transcreva integralmente.
 
@@ -1361,9 +1364,25 @@ function getRealConfidence(text, fallbackConfidence) {
     computedConfidence = Math.min(100, Math.max(0, Math.round(computedConfidence)));
   }
 
-  // Aplica penalidade se houver campos ilegíveis detectados pela IA
-  if (ilegivelCount > 0) {
-    computedConfidence = Math.max(0, computedConfidence - (ilegivelCount * 15));
+  // É do Modo IA Jurídica?
+  const isAiJuridica = textLower.includes('ia jurídica') || textLower.includes('ia juridica') || textLower.includes('recuperado via ia');
+
+  if (isAiJuridica) {
+    // Para a IA Jurídica (Padrão Ouro), o fato de marcar campos carimbados ou assinaturas indecifráveis como [ILEGÍVEL] 
+    // é um sinal de extrema fidedignidade e precisão (evitando alucinação perigosa), e não uma falha de detecção.
+    // Portanto, a penalidade por ilegível é praticamente nula (apenas 0.5% por ocorrência, limitado a no máximo 4% de dedução total).
+    if (ilegivelCount > 0) {
+      const ilegivelPenalty = Math.min(4, Math.round(ilegivelCount * 0.5));
+      computedConfidence = Math.max(95, computedConfidence - ilegivelPenalty); // Garante piso de 95% para transcrições da IA
+    } else {
+      computedConfidence = Math.max(99, computedConfidence);
+    }
+  } else {
+    // Para OCR local comum, se houver marcas de ilegibilidade, de fato indica que o OCR local falhou em partes maiores
+    if (ilegivelCount > 0) {
+      const ilegivelPenalty = Math.min(30, ilegivelCount * 5);
+      computedConfidence = Math.max(0, computedConfidence - ilegivelPenalty);
+    }
   }
 
   return computedConfidence;
@@ -2216,9 +2235,9 @@ export default function ScannerJuridico() {
       };
 
       if (f.type === "application/pdf") {
-        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage);
+        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, aiMode);
       } else {
-        extracted = await extractImageHybrid(f, onProgress, aiMode);
+        extracted = await extractImageHybrid(f, onProgress, aiMode, aiMode);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
@@ -2305,9 +2324,9 @@ export default function ScannerJuridico() {
       window.lexscan_abort = false;
 
       if (file.type === "application/pdf") {
-        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage);
+        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, aiMode);
       } else {
-        extracted = await extractImageHybrid(file, onProgress, aiMode);
+        extracted = await extractImageHybrid(file, onProgress, aiMode, aiMode);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
@@ -2882,9 +2901,9 @@ export default function ScannerJuridico() {
           window.lexscan_abort = false;
 
           if (fileToProcess.type === "application/pdf") {
-            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage);
+            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true);
           } else {
-            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode);
+            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true);
           }
     
           if (extracted && extracted.text) {
