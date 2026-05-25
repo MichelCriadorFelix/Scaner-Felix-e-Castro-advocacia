@@ -1661,6 +1661,7 @@ export default function ScannerJuridico() {
   const [preview, setPreview] = useState(null);
   const [drag, setDrag] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [isRecovering, setIsRecovering] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
   const [result, setResult] = useState(null);
@@ -2446,6 +2447,7 @@ export default function ScannerJuridico() {
     }
     
     setProcessing(true);
+    setIsRecovering(true);
     setProgress(0);
     setProgressMsg(`Iniciando recuperação de ${pagesToProcess.length} página(s) falha(s)...`);
     
@@ -2615,6 +2617,7 @@ export default function ScannerJuridico() {
       showToast(`Erro na recuperação de páginas: ${err.message}`, "error");
     } finally {
       setProcessing(false);
+      setIsRecovering(false);
     }
   };
 
@@ -3678,7 +3681,7 @@ export default function ScannerJuridico() {
               )}
 
               {/* Progress */}
-              {processing && (
+              {processing && !isRecovering && (
                 <div className="progress-wrap">
                   <div className="progress-label">
                     <span>{currentQueueIndex !== -1 ? `Processando Lote` : `Processando`}</span>
@@ -3827,45 +3830,90 @@ export default function ScannerJuridico() {
                           style={{
                             margin: '8px 0 16px 0',
                             padding: '12px 14px',
-                            background: 'rgba(239, 68, 68, 0.08)',
-                            border: '1px solid rgba(239, 68, 68, 0.25)',
+                            background: isRecovering ? 'rgba(212, 163, 89, 0.05)' : 'rgba(239, 68, 68, 0.08)',
+                            border: isRecovering ? '1px solid rgba(212, 163, 89, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)',
                             borderRadius: '12px',
                             display: 'flex',
                             flexDirection: 'column',
                             gap: '8px'
                           }}
                         >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#f87171', fontSize: '12px', fontWeight: 600 }}>
-                            <span style={{ fontSize: '16px' }}>⚠️</span>
-                            <span>Atenção: Página(s) com erro ou pulada(s) detectada(s)!</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isRecovering ? '#fbbf24' : '#f87171', fontSize: '12px', fontWeight: 600 }}>
+                            <span style={{ fontSize: '16px' }} className={isRecovering ? "animate-spin" : ""}>
+                              {isRecovering ? "⚙️" : "⚠️"}
+                            </span>
+                            <span>{isRecovering ? "Reparando Páginas Cirurgicamente..." : "Atenção: Página(s) com erro ou pulada(s) detectada(s)!"}</span>
                           </div>
                           <p style={{ fontSize: '11px', color: G.text, opacity: 0.85, lineHeight: '1.4' }}>
                             Página(s) afetada(s): <strong style={{ color: G.accent }}>{pagesToProcess.join(', ')}</strong>. 
-                            Você não precisa reprocessar o documento inteiro! Use nosso reparo cirúrgico "Padrão Ouro" para ler apenas essas páginas e inseri-las no local correto.
+                            {isRecovering 
+                              ? "O sistema está re-escanando cirurgicamente apenas estas páginas e as reposicionando no lugar exato do texto."
+                              : "Você não precisa reprocessar o documento inteiro! Use nosso reparo cirúrgico \"Padrão Ouro\" para ler apenas essas páginas e inseri-las no local correto."
+                            }
                           </p>
-                          <button
-                            onClick={() => recoverFailedPages(result)}
-                            disabled={processing}
-                            style={{
-                              alignSelf: 'flex-start',
-                              background: G.accent,
-                              color: '#0d0f14',
-                              border: 'none',
-                              borderRadius: '8px',
-                              padding: '6px 12px',
-                              fontSize: '11px',
-                              fontWeight: '700',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '6px',
-                              transition: 'all 0.2s',
-                            }}
-                            onMouseOver={(e) => { e.currentTarget.style.opacity = '0.9'; }}
-                            onMouseOut={(e) => { e.currentTarget.style.opacity = '1'; }}
-                          >
-                            <span>🪄</span> Recuperar Páginas Falhas / Puladas
-                          </button>
+
+                          {isRecovering ? (
+                            <div 
+                              style={{ 
+                                marginTop: '4px', 
+                                padding: '12px', 
+                                background: 'rgba(0, 0, 0, 0.2)', 
+                                border: `1px solid ${G.border}`, 
+                                borderRadius: '10px' 
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: '#fbbf24', marginBottom: '8px', fontWeight: 600 }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span className="animate-pulse" style={{ width: '8px', height: '8px', background: '#fbbf24', borderRadius: '50%', display: 'inline-block' }} />
+                                  Extraindo e Corrigindo no Supabase...
+                                </span>
+                                <span>{progress}%</span>
+                              </div>
+                              <div style={{ height: '8px', background: 'rgba(255, 255, 255, 0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+                                <div 
+                                  style={{ 
+                                    height: '100%', 
+                                    width: `${progress}%`, 
+                                    background: 'linear-gradient(90deg, #fbbf24, #f59e0b)', 
+                                    borderRadius: '4px',
+                                    transition: 'width 0.4s ease-out-in-out' 
+                                  }} 
+                                />
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', gap: '10px' }}>
+                                <span style={{ fontSize: '11px', color: G.text, opacity: 0.9, fontFamily: 'monospace', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                  {progressMsg}
+                                </span>
+                                <span style={{ fontSize: '10px', color: G.muted, flexShrink: 0 }}>
+                                  Não feche o sistema
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => recoverFailedPages(result)}
+                              disabled={processing}
+                              style={{
+                                alignSelf: 'flex-start',
+                                background: G.accent,
+                                color: '#0d0f14',
+                                border: 'none',
+                                borderRadius: '8px',
+                                padding: '6px 12px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                transition: 'all 0.2s',
+                              }}
+                              onMouseOver={(e) => { e.currentTarget.style.opacity = '0.9'; }}
+                              onMouseOut={(e) => { e.currentTarget.style.opacity = '1'; }}
+                            >
+                              <span>🪄</span> Recuperar Páginas Falhas / Puladas
+                            </button>
+                          )}
                         </div>
                       );
                     })()}
