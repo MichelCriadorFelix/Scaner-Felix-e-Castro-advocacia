@@ -2423,12 +2423,12 @@ export default function ScannerJuridico() {
     
     // Encontra todas as páginas falhas
     const failedPages = [];
-    const regex1 = /\[ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+    const regex1 = /ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
     let match;
     while ((match = regex1.exec(currentText)) !== null) {
       failedPages.push(parseInt(match[1], 10));
     }
-    const regex2 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s+\(FALHA\s+IA/gi;
+    const regex2 = /P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO/gi;
     while ((match = regex2.exec(currentText)) !== null) {
       failedPages.push(parseInt(match[1], 10));
     }
@@ -3743,12 +3743,12 @@ export default function ScannerJuridico() {
                     {(() => {
                       const failedPages = [];
                       const text = result.text || "";
-                      const regex1 = /\[ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+                      const regex1 = /ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
                       let match;
                       while ((match = regex1.exec(text)) !== null) {
                         failedPages.push(parseInt(match[1], 10));
                       }
-                      const regex2 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s+\(FALHA\s+IA/gi;
+                      const regex2 = /P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO/gi;
                       while ((match = regex2.exec(text)) !== null) {
                         failedPages.push(parseInt(match[1], 10));
                       }
@@ -4120,12 +4120,12 @@ export default function ScannerJuridico() {
                             {(() => {
                               const text = item.text || "";
                               const failedPages = [];
-                              const r1 = /\[ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+                              const r1 = /ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
                               let m;
                               while ((m = r1.exec(text)) !== null) {
                                 failedPages.push(parseInt(m[1], 10));
                               }
-                              const r2 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s+\(FALHA\s+IA/gi;
+                              const r2 = /P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO/gi;
                               while ((m = r2.exec(text)) !== null) {
                                 failedPages.push(parseInt(m[1], 10));
                               }
