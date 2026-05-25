@@ -802,265 +802,50 @@ async function extractPageWithGemini(blob, onProgress) {
     reader.readAsDataURL(blob);
   });
   
-  const prompt = `Você é o Assistente Jurídico de OCR do escritório Felix & Castro Advocacia (Previdenciário, Trabalhista, Consumidor e Cível).
+  const prompt = `Você é o Transcritor e Reconstituidor de Documentos Jurídicos Oficial de Elite (PADRÃO GOD / PADRÃO OURO) do escritório Felix & Castro Advocacia. Sua missão de altíssima relevância e responsabilidade é produzir uma transcrição 100% IDÊNTICA, VERBATIM E LITERAL de todas as páginas do documento fornecido.
 
-MISSÃO: Identificar o documento e extrair APENAS as informações que um advogado precisa para redigir uma peça processual. Ignore cabeçalhos institucionais, frases de praxe, endereços de cartório, URLs e textos decorativos sem valor jurídico. Aplique esta lógica em TODAS as páginas do documento.
+Nenhuma palavra, número, sigla, cabeçalho, rodapé, CNPJ, nota marginal, data ou elemento de tabela do documento original deve ser omitido, ignorado, filtrado ou resumido. Qualquer desvio ou omissão comprometerá a integridade do processo judicial.
 
-REGRA ABSOLUTA — DÚVIDA = INCLUIR: Se não tiver certeza se uma informação é relevante para uma petição, inclua (é melhor sobrar do que faltar). Nunca invente dados (zero alucinação). Para textos normais impressos/digitados incompreensíveis use [ILEGÍVEL], mas para assinaturas ou rubricas use [Assinatura Manuscrita Detectada] — nunca use [ILEGÍVEL] para assinaturas. Para caligrafias médicas complexas, esforce-se ao máximo absoluto para decifrá-las.
-
-══════════════════════════════════════════════════
-PASSO 1 — TÍTULO
-══════════════════════════════════════════════════
-Escreva o título exatamente como aparece no documento (ex: "CERTIDÃO DE ÓBITO", "PERFIL PROFISSIOGRÁFICO PREVIDENCIÁRIO", "TERMO DE RESCISÃO DO CONTRATO DE TRABALHO"). Se não houver título explícito, nomeie com precisão.
+Este documento será analisado por sistemas internos e pelo poder judiciário, portanto o texto gerado precisa ser EXATAMENTE igual ao PDF.
 
 ══════════════════════════════════════════════════
-PASSO 2 — EXTRAÇÃO JURÍDICA DIRECIONADA
+REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 ══════════════════════════════════════════════════
-Com base no tipo identificado, extraia os dados abaixo. Campo presente: transcreva. Campo ausente: omita. Campo ilegível: [ILEGÍVEL].
 
-► CNIS
-Dados pessoais: nome, CPF, NIT/PIS, data de nascimento, sexo
-Vínculos: empregador | CNPJ | tipo | início | fim | indicador especial (um por linha)
-Contribuições avulsas: competência | valor | código
-Benefícios: tipo | NB | DIB | DCB
-Lacunas: períodos sem contribuição (datas)
-Última atualização do extrato
+1. TRANSCRIÇÃO INTEGRAL E LITERAL: 
+   - Transcreva TODO e qualquer texto visível na imagem, exatamente na ordem em que aparece, de cima para baixo.
+   - NÃO ignore cabeçalhos institucionais, logotipos descritos por extenso, brasões, rodapés, números de página, notas marginais, selos, marcas d'água, assinaturas, certidões ou termos formais do Diário Oficial.
+   - Se o diário oficial ou documento contiver certidões, portarias de aposentadoria de terceiros, exonerações, atos ou decisões, transcreva TUDO do início ao fim da página sem omitir nada.
+   - NÃO faça resumos, sinopses ou simplificações ("extrair apenas o que o advogado precisa" está PROIBIDO). O advogado precisa do texto INTEGRAL exatamente como está no original.
 
-► PPP / LTCAT
-Trabalhador: nome, CPF, NIT, função, CBO
-Empresa: razão social, CNPJ, CNAE
-Períodos especiais: início | fim | setor | função
-Agentes nocivos: agente | CAS | intensidade | limite de tolerância | técnica
-EPI/EPC: tipo | CA | eficácia (neutraliza sim/não)
-Responsável técnico: nome, formação, registro (CRM/CREA/CRQ)
-LTCAT referenciado: data
-Conclusão sobre exposição (literal)
+2. PRESERVAÇÃO DE TABELAS E COLUNAS (DIÁRIO OFICIAL / CNIS / HOLERITES):
+   - Se o documento contiver dados tabulares (como listas de trâmites, tabelas financeiras, CNIS, holerites, faturas, folhas de ponto ou portarias de Diários Oficiais organizada em colunas):
+     - Reconstitua a tabela fielmente em tabelas Markdown para manter a estrutura original perfeitamente legível e idêntica para o judiciário.
+     - Se o documento tiver múltiplas colunas de texto (como em Diários Oficiais), leia as colunas na ordem lógica correta (coluna 1 completa, depois coluna 2, por exemplo, ou preserve a divisão lógica correta das portarias). Nunca misture o texto de colunas paralelas.
 
-► LAUDO MÉDICO / ATESTADO
-Paciente: nome, CPF, data de nascimento
-CIDs: todos os códigos e descrições
-Diagnóstico principal e secundários (literal)
-Limitações funcionais e restrições (literal)
-Capacidade laborativa: apto / inapto parcial / inapto total / temporário / permanente
-Data de início da incapacidade (DII)
-Tempo de afastamento estimado
-Médico: nome, CRM, especialidade, data do laudo
+3. ZERO OMISSÃO E ZERO ALUCINAÇÃO:
+   - Jamais invente ou modifique nomes, números, CPFs, datas ou valores.
+   - Para caracteres de fato ilegíveis por rasuras ou má qualidade extrema do scanner, use '[ILEGÍVEL]'.
+   - Para caligrafias médicas ou manuscritos complexos, esforce-se ao limite máximo para transcrever palavra por palavra com exatidão, deduzindo pelo contexto clínico quando possível, evitando o uso fácil de '[ILEGÍVEL]'.
 
-► CARTA INSS (Indeferimento ou Concessão)
-Segurado: nome, CPF, NB, protocolo, DER
-Espécie: código e descrição
-Decisão: CONCEDIDO ou INDEFERIDO
-Motivo do indeferimento (literal — é o argumento a refutar na peça)
-Base legal citada pelo INSS
-DIB / DIP / DCB / valor do benefício (se concedido)
-Prazo e forma de recurso (literal)
+4. TRATAMENTO DE ASSINATURAS E RUBRICAS:
+   - Nunca use [ILEGÍVEL] para assinaturas ou rubricas.
+   - Se houver assinatura visível:
+     - Se identificável pelo nome impresso ao lado ou contexto, transcreva como: [Assinatura Manuscrita: Nome do Titular] ou [Assinatura Digital Detectada de Nome do Titular].
+     - Se for um garrancho/rubrica não identificável por extenso, transcreva obrigatoriamente como: [Assinatura Manuscrita Detectada] ou [Rubrica Detectada].
 
-► SENTENÇA / DECISÃO / ACÓRDÃO — PREVIDENCIÁRIO
-Processo: número CNJ, vara/JEF/TRF/instância
-Partes: autor(a) e réu
-Objeto: espécie e código do benefício
-Dispositivo (literal e completo — nunca resumir)
-DIB, DIP, índice de correção, juros
-Honorários: percentual, base, responsável
-Prazo para recurso ou cumprimento
-Data e magistrado(a)
+5. ESTRUTURAÇÃO DE SAÍDA:
+   - No início de sua resposta, forneça os metadados identificados do documento para controle:
+     - TÍTULO: [Título principal exato, ex: PORTARIA Nº 198/2026-MD ou DIÁRIO OFICIAL DA CIDADE DE SÃO JOÃO DE MERITI]
+     - TIPO: [Classificação precisa do documento]
+     - ÁREA: [Previdenciário / Trabalhista / Consumidor / Cível / Múltiplas]
+     - OBS: [Observações importantes se houver, ou omita]
+   - Em seguida, insira obrigatoriamente uma linha divisória: ══════════════════════════════════════════════════
+   - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
+     (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-► CTPS
-Trabalhador: nome, CPF, PIS/NIS, data de nascimento
-Número e série da CTPS
-Registros: empresa | CNPJ | função | CBO | salário admissional | admissão | saída | motivo
-Anotações especiais: estabilidade, gestante, aprendiz, acidente
-
-► HOLERITE / CONTRACHEQUE
-Empregado: nome, CPF, matrícula, cargo
-Empresa: razão social, CNPJ
-Competência e data de pagamento
-Salário base
-Proventos: descrição | valor (todos)
-Descontos: descrição | valor (todos)
-Salário líquido
-Bases: INSS retido, FGTS depositado, IR retido
-
-► TRCT (Rescisão)
-Empregado: nome, CPF, PIS/NIS, cargo
-Empresa: razão social, CNPJ
-Admissão e demissão
-Tipo de rescisão
-Aviso prévio: trabalhado ou indenizado, dias
-Verbas rescisórias: descrição | valor (todas)
-Deduções: descrição | valor
-Líquido a receber
-FGTS: saldo, multa 40%, saque autorizado
-Homologação: data, local, sindicato se presente
-
-► SENTENÇA / DECISÃO / ACÓRDÃO — TRABALHISTA
-Processo: número CNJ, vara/TRT/TST
-Partes: reclamante e reclamada
-Pedidos: procedente / improcedente / parcial
-Dispositivo (literal e completo)
-Verbas deferidas: descrição | valor
-Índice de correção, juros, contribuições previdenciárias e IR
-Honorários advocatícios e sucumbenciais
-Prazo para cumprimento
-Data e magistrado(a)
-
-► CONTRATO BANCÁRIO / FINANCIAMENTO / CRÉDITO
-Partes: cliente (nome, CPF) e instituição (nome, CNPJ)
-Modalidade do crédito
-Valor financiado
-Taxa de juros mensal e anual (nominal e efetiva)
-CET (Custo Efetivo Total)
-Parcelas: quantidade, valor, datas de vencimento
-IOF e outros encargos
-Garantias
-Cláusulas de mora, multa e vencimento antecipado
-Cláusulas abusivas identificadas (destacar)
-Data de assinatura
-
-► CONTRATO DE SERVIÇOS (telefonia, internet, energia, água)
-Partes: contratante (nome, CPF) e prestadora (nome, CNPJ)
-Serviço e plano contratado
-Valor mensal
-Fidelidade: prazo e multa por rescisão antecipada
-Cláusulas de reajuste
-Cláusulas abusivas identificadas
-Data de assinatura
-
-► NOTIFICAÇÃO DE NEGATIVAÇÃO / COBRANÇA
-Devedor: nome, CPF/CNPJ
-Credor: nome, CNPJ
-Valor e data de origem da dívida
-Número do contrato
-Órgão de proteção (Serasa, SPC, etc.)
-Data da negativação
-Prazo para regularização
-
-► SENTENÇA / DECISÃO / ACÓRDÃO — CONSUMIDOR / JEC
-Processo: número CNJ, juizado/vara/turma recursal
-Partes
-Pedidos: dano moral, material, obrigação de fazer
-Dispositivo (literal e completo)
-Valores: dano moral (R$), dano material (R$), obrigação de fazer descrita
-Correção, juros, custas, honorários
-Prazo para cumprimento espontâneo
-Data e magistrado(a)
-
-► ESCRITURA PÚBLICA
-Tipo: compra/venda, doação, inventário, divórcio
-Partes: nome, CPF, estado civil de cada um
-Objeto: descrição do bem (imóvel com matrícula, veículo)
-Valor declarado
-Condições de pagamento
-Ônus e gravames sobre o bem
-Tabelião: nome e cartório
-Livro, folha, ato, data
-
-► MATRÍCULA / CERTIDÃO DE IMÓVEL
-Matrícula e circunscrição (CRI)
-Descrição do imóvel: área, localização, limites
-Proprietário(s) atual(is): nome, CPF, fração
-Histórico de transmissões relevantes
-Ônus e gravames: hipoteca | credor | valor | penhora | alienação fiduciária | usufruto
-Inscrição municipal (IPTU) se constar
-
-► SENTENÇA / ACORDO — DIVÓRCIO / ALIMENTOS / GUARDA
-Partes: nomes e CPFs
-Filhos: nome e data de nascimento (cada um)
-Guarda: unilateral (para quem) ou compartilhada
-Regime de visitas (literal)
-Alimentos: valor, periodicidade, forma de pagamento, indexador
-Partilha: bem | valor | destinado a quem
-Data de homologação
-
-► PROCURAÇÃO
-Outorgante: nome, CPF, estado civil
-Outorgado / Advogado: nome, CPF/OAB
-Poderes conferidos (literal)
-Poderes especiais: receber, transigir, dar quitação
-Substabelecimento: permitido ou vedado
-Data e validade
-
-► CERTIDÃO DE ÓBITO
-Falecido: nome, CPF
-Matrícula da certidão
-Data, hora e local do óbito
-Causa mortis (literal — todas as causas)
-Estado civil e nome do cônjuge sobrevivente
-Data de nascimento e naturalidade
-Filiação
-Médico atestante: nome e CRM/documento
-Existência de bens (sim/não)
-Filhos: nome e idade de cada um
-Anotações/Averbações (literal)
-Anotação de identidade (RG/DETRAN)
-Cartório: nome e CNS
-Livro, folha, termo
-Código do selo de autenticação
-
-► CERTIDÃO DE NASCIMENTO / CASAMENTO
-Tipo
-Titular(es): nome(s), data(s), local
-Filiação (para nascimento)
-Regime de bens (para casamento)
-Cartório: nome, livro, folha, termo
-Data do registro
-
-► RG / CNH / IDENTIDADE
-Nome, CPF, data de nascimento
-Número do documento e órgão expedidor
-Filiação
-Naturalidade
-Validade (CNH)
-Categorias e restrições (CNH)
-Data de expedição
-
-► EXTRATO BANCÁRIO
-Titular: nome, CPF, agência, conta, banco
-Período do extrato
-Saldo inicial e final
-Movimentações relevantes: data | descrição | valor | tipo (C/D)
-Entradas recorrentes que indicam renda
-
-► COMPROVANTE DE RESIDÊNCIA
-Titular: nome
-Endereço completo (rua, número, complemento, bairro, município, CEP)
-Tipo e empresa emissora
-Data de referência
-
-► DOCUMENTO NÃO MAPEADO
-1. Identifique o tipo real com precisão (nunca use "Documento Geral")
-2. Extraia: emissor, destinatário, data, número/protocolo, objeto
-3. Transcreva todos os valores, datas, nomes e números
-4. Sinalize o que pode ser juridicamente relevante
-
-══════════════════════════════════════════════════
-REGRAS DE TRANSCRIÇÃO
-══════════════════════════════════════════════════
-ZERO ALUCINAÇÃO: Nunca invente dados. Texto impresso de fato ilegível (apagado, borrado ou rasgado) → [ILEGÍVEL].
-CALIGRAFIA MÉDICA E COMPLEXA: Esforce-se ao máximo absoluto para decifrar e decodificar manuscritos difíceis, incluindo receitas, prontuários, laudos e atestados médicos com letras garrafais de médicos. Só use a marcação '[ILEGÍVEL]' em último caso, após esgotadas todas as tentativas analíticas de leitura de corpos de textos manuscritos.
-ASSINATURAS E RUBRICAS: Você é TERMINANTEMENTE PROIBIDO de utilizar a marcação '[ILEGÍVEL]' para assinaturas, rubricas, autorizações ou garras manuscritas.
-- Se for possível identificar ou deduzir o titular pelo nome impresso ao lado, abaixo ou no contexto, transcreva de forma descritiva: ex: [Assinatura Manuscrita: Nome do Titular].
-- Se for uma assinatura garrancho, rabisco ou rubrica indecifrável por extenso, transcreva obrigatoriamente como '[Assinatura Manuscrita Detectada]' ou '[Assinatura Manuscrita]' ou '[Rubrica Detectada]'.
-- Garanta que qualquer marcação de caneta indicando assinatura seja tratada dessa forma.
-DISPOSITIVOS E MOTIVOS INSS: Sempre literal, nunca resumir.
-TABELAS: Use markdown para dados tabulares (CNIS, holerite, ponto, extrato).
-MÚLTIPLAS PÁGINAS: Repita a extração jurídica para cada página — aplique o mesmo critério em todo o documento.
-
-══════════════════════════════════════════════════
-FORMATO DE SAÍDA
-══════════════════════════════════════════════════
-TÍTULO: [título exato do documento]
-TIPO: [classificação precisa]
-ÁREA: [Previdenciário / Trabalhista / Consumidor / Cível / Múltiplas]
-OBS: [só se relevante: ilegível, páginas faltando, sem assinatura, cópia simples — omitir se não houver]
-
-[Extração jurídica direta, campo a campo, sem blocos separadores.
-Formato: Campo: valor
-Campos ausentes: omitir.
-Dúvida sobre relevância: incluir.]`
-
-  // Lista de modelos do Google (Atualizado para Gemini 3.5 Flash conforme solicitado)
-  const modelsToTry = ["gemini-3.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"];
+  // Lista de modelos do Google (Seguindo a política estrita de usar Gemini 3.5 Flash e Gemini 3.1 Pro)
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-pro-preview"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -1886,10 +1671,21 @@ export default function ScannerJuridico() {
    * Otimiza o texto bruto do OCR sem usar IA (Lógica heurística)
    * Tenta reconstruir parágrafos, remover ruídos de leitura e normalizar espaços.
    */
-  const optimizeRawText = (text) => {
+  const optimizeRawText = (text, isAi = false) => {
     if (!text) return "";
     
-    // 1. Limpeza de ruído de borda e caracteres isolados estranhos
+    // Se o texto vier de IA (Padrão Ouro / GOD), NÃO faça limpeza de caracteres agressiva e nem reconstrua parágrafos.
+    // Isso evita remover colchetes [], asteriscos **, barras |, ou letras isoladas fundamentais em CPF/CNH e nomes.
+    const textLower = text.toLowerCase();
+    if (isAi || textLower.includes("ia jurídica") || textLower.includes("ia juridica") || textLower.includes("recuperado via ia")) {
+      return text
+        .replace(/\r/g, "")
+        .replace(/\n{3,}/g, '\n\n') // No máximo 2 quebras de linha seguidas
+        .replace(/ {2,}/g, ' ')     // Remove espaços duplos
+        .trim();
+    }
+    
+    // 1. Limpeza de ruído de borda e caracteres isolados estranhos (Apenas para OCR Local Tesseract)
     let cleaned = text.split('\n')
       .map(line => {
         // Remove caracteres que costumam ser "sujeira" de scanner (bordas de página)
@@ -2154,7 +1950,7 @@ export default function ScannerJuridico() {
 
       // Otimização Heurística para todos os casos (limpeza final)
       if (extracted && extracted.text) {
-        extracted.text = optimizeRawText(extracted.text);
+        extracted.text = optimizeRawText(extracted.text, aiMode);
       }
 
       onProgress(85, "Salvando na nuvem...");
@@ -2243,7 +2039,7 @@ export default function ScannerJuridico() {
 
       // Otimização Heurística para todos os casos (limpeza final)
       if (extracted && extracted.text) {
-        extracted.text = optimizeRawText(extracted.text);
+        extracted.text = optimizeRawText(extracted.text, aiMode);
       }
 
       onProgress(80, "Verificando nuvem...");
@@ -2567,7 +2363,7 @@ export default function ScannerJuridico() {
             setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
           });
           
-          const cleanAiText = optimizeRawText(aiText);
+          const cleanAiText = optimizeRawText(aiText, true);
           
           // Substituição cirúrgica no texto completo!
           updatedText = replacePageTextInDoc(updatedText, pageNum, cleanAiText);
@@ -2943,7 +2739,7 @@ export default function ScannerJuridico() {
       }
 
       if (extracted && extracted.text) {
-        extracted.text = optimizeRawText(extracted.text);
+        extracted.text = optimizeRawText(extracted.text, true);
       }
       
       onProgress(90, "Atualizando banco de dados...");
@@ -3022,7 +2818,7 @@ export default function ScannerJuridico() {
           }
     
           if (extracted && extracted.text) {
-            extracted.text = optimizeRawText(extracted.text);
+            extracted.text = optimizeRawText(extracted.text, true);
           }
           
           onProgress(90, "Atualizando banco de dados...");
