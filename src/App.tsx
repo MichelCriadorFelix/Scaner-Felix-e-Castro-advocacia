@@ -1214,8 +1214,8 @@ function getRealConfidence(text, fallbackConfidence) {
 
 // Substituição cirúrgica do texto de uma página específica
 function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string): string {
-  // RegExp construído por string escapando o colchete e caracteres especiais usando barras invertidas duplas corretas de string JS
-  const regexHeader = new RegExp('\\\\\\[(?:PÁGINA|PAGINA|ERRO\\\\s+CRÍTICO\\\\s+NA\\\\s+PÁGINA|ERRO\\\\s+CRITICO\\\\s+NA\\\\s+PAGINA)\\\\s+' + pageNum + '\\\\b', 'i');
+  // Regex abrangente que aceita marcas como [PÁGINA 5], **ERRO CRÍTICO NA PÁGINA 5 PÁGINA PULADA**, [ERRO CRÍTICO NA PÁGINA 5 - PÁGINA PULADA ...], ERRO CRÍTICO NA PÁGINA 5 etc.
+  const regexHeader = new RegExp(`(?:\\s|^|\\[|\\*\\*)(?:ERRO\\s+CR[ÍI]TICO\\s+NA\\s+|TEXTO\\s+DIGITAL\\s+NATIVO\\s+NA\\s+)?(?:P[ÁA]GINA|PAGINA)\\s+${pageNum}\\b[^\\n\\*]*?(?:\\]|\\*\\*|\\n|$)`, 'i');
   
   const match = regexHeader.exec(fullText);
   if (!match) {
@@ -1224,8 +1224,8 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   }
   
   const startIndex = match.index;
-  // Literal de RegExp correto para encontrar o início de uma próxima página ou erro
-  const nextHeaderRegex = /\[(?:PÁGINA|PAGINA|ERRO\s+CRÍTICO\s+NA\s+PÁGINA|ERRO\s+CRITICO\s+NA\s+PAGINA)\s+\d+\b/gi;
+  // Expressão regular para encontrar o início de uma PRÓXIMA página ou erro no texto todo, garantindo o limite de corte correto do bloco
+  const nextHeaderRegex = /(?:\[|\*\*|\n)(?:ERRO\s+CR[ÍI]TICO\s+NA\s+|TEXTO\s+DIGITAL\s+NATIVO\s+NA\s+)?(?:P[ÁA]GINA|PAGINA)\s+\d+\b/gi;
   nextHeaderRegex.lastIndex = startIndex + match[0].length;
   
   const nextMatch = nextHeaderRegex.exec(fullText);
