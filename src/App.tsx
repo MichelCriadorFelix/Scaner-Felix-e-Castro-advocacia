@@ -844,8 +844,8 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Lista de modelos do Google (Seguindo a política estrita de usar Gemini 3.5 Flash e Gemini 3.1 Pro)
-  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-pro-preview"];
+  // Lista de modelos do Google (Seguindo a política estrita de usar somente Gemini 3.5 Flash)
+  const modelsToTry = ["gemini-3.5-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -999,8 +999,11 @@ function getRealConfidence(text, fallbackConfidence) {
 
 // Substituição cirúrgica do texto de uma página específica
 function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string): string {
-  // Regex abrangente que aceita marcas como [PÁGINA 5], **ERRO CRÍTICO NA PÁGINA 5 PÁGINA PULADA**, [ERRO CRÍTICO NA PÁGINA 5 - PÁGINA PULADA ...], ERRO CRÍTICO NA PÁGINA 5 etc.
-  const regexHeader = new RegExp(`(?:\\s|^|\\[|\\*\\*)(?:ERRO\\s+CR[ÍI]TICO\\s+NA\\s+|TEXTO\\s+DIGITAL\\s+NATIVO\\s+NA\\s+)?(?:P[ÁA]GINA|PAGINA)\\s+${pageNum}\\b[^\\n\\*]*?(?:\\]|\\*\\*|\\n|$)`, 'i');
+  // Regex altamente precisa para encontrar somente marcadores de cabeçalho de página que comecem no início do texto ou de uma linha
+  const regexHeader = new RegExp(
+    "(?:^|\\r?\\n)(?:\\[|\\*\\*)?(?:ERRO\\s+CR[ÍI]TICO\\s+NA\\s+|TEXTO\\s+DIGITAL\\s+NATIVO\\s+NA\\s+|RECUPERADO\\s+VIA\\s+IA\\s+JUR[ÍI]DICA\\s+NA\\s+)?(?:P[ÁA]GINA|PAGINA)\\s+" + pageNum + "\\b[^\\n\\*]*?(?:\\]|\\*\\*)?(?:\\r?\\n|$)", 
+    "i"
+  );
   
   const match = regexHeader.exec(fullText);
   if (!match) {
@@ -1009,8 +1012,8 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   }
   
   const startIndex = match.index;
-  // Expressão regular para encontrar o início de uma PRÓXIMA página ou erro no texto todo, garantindo o limite de corte correto do bloco
-  const nextHeaderRegex = /(?:\[|\*\*|\n)(?:ERRO\s+CR[ÍI]TICO\s+NA\s+|TEXTO\s+DIGITAL\s+NATIVO\s+NA\s+)?(?:P[ÁA]GINA|PAGINA)\s+\d+\b/gi;
+  // Encontra o início da PRÓXIMA página real (começando no início da linha) para fixar o limite do corte, preservando completamente as demais páginas
+  const nextHeaderRegex = /(?:\r?\n)(?:\[|\*\*)?(?:ERRO\s+CR[ÍI]TICO\s+NA\s+|TEXTO\s+DIGITAL\s+NATIVO\s+NA\s+|RECUPERADO\s+VIA\s+IA\s+JURÍDICA\s+NA\s+)?(?:P[ÁA]GINA|PAGINA)\s+\d+\b/gi;
   nextHeaderRegex.lastIndex = startIndex + match[0].length;
   
   const nextMatch = nextHeaderRegex.exec(fullText);
@@ -1023,10 +1026,10 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   const after = fullText.substring(endIndex);
   
   const replacement = `[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n` + newPageText + "\n\n";
-  return before.trim() + "\n\n" + replacement + after.trim();
+  return (before.trim() ? before.trim() + "\n\n" : "") + replacement + (after.trim() ? after.trim() : "");
 }
 
-async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi = false) {
+async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi = false, goldStandard = true) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -1158,9 +1161,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
 
           if (useAi || forceAi) {
             let ocrRes = { text: "", confidence: 0 };
-            let shouldGoToAi = forceAi;
+            let shouldGoToAi = forceAi || goldStandard;
 
-            // OCR local como teste prévio (apenas se não estiver forçando IA diretamente)
+            // OCR local como teste prévio (apenas se não estiver forçando IA diretamente ou usando Padrão Ouro)
             if (!shouldGoToAi) {
               onProgress(
                 Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
@@ -1205,7 +1208,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               if (!originalColorBlob) throw new Error("Falha ao exportar imagem original colorida.");
               const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
               
-              const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
+              const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
               fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
               confidenceTotal += 99;
               pageSuccess = true;
@@ -1359,12 +1362,12 @@ async function convertSingleImageToPDF(file) {
   return new File([pdfBlob], file.name.replace(/\.[^/.]+$/, "") + ".pdf", { type: "application/pdf" });
 }
 
-async function extractImageHybrid(file, onProgress, useAi, forceAi = false) {
-  if (forceAi) {
-      onProgress(20, "Forçando extração via IA Jurídica...");
+async function extractImageHybrid(file, onProgress, useAi, forceAi = false, goldStandard = true) {
+  if (forceAi || goldStandard) {
+      onProgress(20, "Forçando extração via IA Jurídica (Padrão Ouro)...");
       try {
           const enhancedForAi = await enhanceImageForGemini(file);
-          const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
+          const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e) {
           let errMsg = e.message || "Erro desconhecido";
@@ -1470,6 +1473,7 @@ export default function ScannerJuridico() {
   const [stream, setStream] = useState(null);
 
   const [aiMode, setAiMode] = useState(true);
+  const [goldStandard, setGoldStandard] = useState(true);
   const [keyUsage, setKeyUsage] = useState(() => {
     try {
       const saved = localStorage.getItem('lexscan_key_usage');
@@ -1943,9 +1947,9 @@ export default function ScannerJuridico() {
       };
 
       if (f.type === "application/pdf") {
-        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, aiMode);
+        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, aiMode, goldStandard);
       } else {
-        extracted = await extractImageHybrid(f, onProgress, aiMode, aiMode);
+        extracted = await extractImageHybrid(f, onProgress, aiMode, aiMode, goldStandard);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
@@ -2032,9 +2036,9 @@ export default function ScannerJuridico() {
       window.lexscan_abort = false;
 
       if (file.type === "application/pdf") {
-        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, aiMode);
+        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, aiMode, goldStandard);
       } else {
-        extracted = await extractImageHybrid(file, onProgress, aiMode, aiMode);
+        extracted = await extractImageHybrid(file, onProgress, aiMode, aiMode, goldStandard);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
@@ -2733,9 +2737,9 @@ export default function ScannerJuridico() {
       window.lexscan_abort = false;
 
       if (fileToProcess.type === "application/pdf") {
-        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true);
+        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true, goldStandard);
       } else {
-        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true);
+        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true, goldStandard);
       }
 
       if (extracted && extracted.text) {
@@ -2812,9 +2816,9 @@ export default function ScannerJuridico() {
           window.lexscan_abort = false;
 
           if (fileToProcess.type === "application/pdf") {
-            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true);
+            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true, goldStandard);
           } else {
-            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true);
+            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true, goldStandard);
           }
     
           if (extracted && extracted.text) {
@@ -3540,21 +3544,39 @@ export default function ScannerJuridico() {
 
               {/* MODO DE EXTRAÇÃO (Comum para Único ou Lote) */}
               {(file || queue.length > 0) && !result && !processing && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px',
-                  background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}`
-                }}>
-                  <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
-                    style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
-                  <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
-                    <span style={{ fontWeight: 600, color: G.accent }}>
-                      Motor Híbrido Inteligente (Recomendado)
-                      <span style={{ background: '#2d3340', color: G.success, padding: '2px 8px', borderRadius: '12px', fontSize: '10px', marginLeft: '8px', border: `1px solid ${G.success}40` }}>
-                         🟢 {getAvailableGeminiKeys().length} {getAvailableGeminiKeys().length === 1 ? 'API Disponível' : 'APIs Disponíveis'}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '14px' }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '10px',
+                    background: G.surface, padding: '12px 14px', borderRadius: '12px', border: `1px solid ${G.border}`
+                  }}>
+                    <input type="checkbox" checked={aiMode} onChange={(e) => setAiMode(e.target.checked)} id="ai-mode" 
+                      style={{ accentColor: G.accent, width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
+                    <label htmlFor="ai-mode" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
+                      <span style={{ fontWeight: 600, color: G.accent }}>
+                        Motor Híbrido Inteligente (Recomendado)
+                        <span style={{ background: '#2d3340', color: G.success, padding: '2px 8px', borderRadius: '12px', fontSize: '10px', marginLeft: '8px', border: `1px solid ${G.success}40` }}>
+                           🟢 {getAvailableGeminiKeys().length} {getAvailableGeminiKeys().length === 1 ? 'API Disponível' : 'APIs Disponíveis'}
+                        </span>
                       </span>
-                    </span>
-                    <span style={{ fontSize: '11px', color: G.muted }}>Faz Roteamento Inteligente com Auto-Failover: Extrai texto perfeito e aciona as APIs ativas sequencialmente em manuscritos.</span>
-                  </label>
+                      <span style={{ fontSize: '11px', color: G.muted }}>Faz Roteamento Inteligente com Auto-Failover: Extrai texto perfeito e aciona as APIs ativas sequencialmente em manuscritos.</span>
+                    </label>
+                  </div>
+
+                  {aiMode && (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: '10px',
+                      background: 'rgba(212, 163, 89, 0.05)', padding: '12px 14px', borderRadius: '12px', border: `1px solid rgba(212, 163, 89, 0.22)`
+                    }}>
+                      <input type="checkbox" checked={goldStandard} onChange={(e) => setGoldStandard(e.target.checked)} id="gold-standard" 
+                        style={{ accentColor: '#fbbf24', width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }} />
+                      <label htmlFor="gold-standard" style={{ fontSize: '13px', color: G.text, cursor: 'pointer', display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
+                        <span style={{ fontWeight: 600, color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          ✨ Transcrição Padrão GOD / Ouro (Fidelidade Máxima)
+                        </span>
+                        <span style={{ fontSize: '11px', color: G.muted }}>Ignora completamente o OCR local de baixo desempenho, processa na nuvem via Gemini 3.5 Flash de forma prioritária, preservando colunas de diários oficiais, assinaturas e tabelas com exatidão máxima de 100%.</span>
+                      </label>
+                    </div>
+                  )}
                 </div>
               )}
 
