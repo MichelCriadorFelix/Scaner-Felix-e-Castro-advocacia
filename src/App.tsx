@@ -2418,7 +2418,11 @@ export default function ScannerJuridico() {
   };
 
   const recoverFailedPages = async (targetResult) => {
-    if (!targetResult) return;
+    if (!targetResult) {
+      console.warn("[Recuperar páginas] Nenhum targetResult fornecido.");
+      return;
+    }
+    console.log("[Recuperar páginas] Iniciando recuperação para o documento:", targetResult.name, targetResult.id);
     const currentText = targetResult.text || "";
     
     // Encontra todas as páginas falhas
@@ -2434,6 +2438,7 @@ export default function ScannerJuridico() {
     }
     
     const pagesToProcess = [...new Set(failedPages)].sort((a, b) => a - b);
+    console.log("[Recuperar páginas] Páginas detectadas para reparo:", pagesToProcess);
     
     if (pagesToProcess.length === 0) {
       showToast("Nenhuma página com falha ou erro crítico foi encontrada neste documento!", "info");
@@ -2445,41 +2450,90 @@ export default function ScannerJuridico() {
     setProgressMsg(`Iniciando recuperação de ${pagesToProcess.length} página(s) falha(s)...`);
     
     try {
+      console.log("[Recuperar páginas] Carregando biblioteca do PDFJS...");
       const pdfjsLib = await loadPDFJS();
+      console.log("[Recuperar páginas] PDFJS carregado com sucesso.");
       
       // Pegando arquivo original
-      let fileSource = file; 
+      let fileSource = null;
+      
+      // 1. Tentar ler do arquivo atualmente mantido no state do Scanner se o nome bater
+      if (file && file.name === targetResult.name) {
+        console.log("[Recuperar páginas] Utilizando o arquivo atualmente selecionado no state 'file'.");
+        fileSource = file; 
+      }
+      
+      // 2. Tentar ler do localBlobUrl
       if (!fileSource && targetResult.localBlobUrl) {
-        const res = await fetch(targetResult.localBlobUrl).catch(() => null);
+        console.log("[Recuperar páginas] Tentando obter o arquivo pelo blob local:", targetResult.localBlobUrl);
+        const res = await fetch(targetResult.localBlobUrl).catch((err) => {
+          console.warn("[Recuperar páginas] Falha ao dar fetch no localBlobUrl:", err);
+          return null;
+        });
         if (res) {
           fileSource = await res.blob();
         }
       }
+      
+      // 3. Tentar baixar diretamente do Supabase Storage usando o SDK (evita CORS do fetch público!)
+      if (!fileSource && targetResult.fileUrl && supabase) {
+        try {
+          console.log("[Recuperar páginas] Tentando download direto via SDK Supabase para evitar erros de CORS...");
+          const urlParts = targetResult.fileUrl.split('/ged-auditoria/');
+          const bucketPath = urlParts.length > 1 ? decodeURIComponent(urlParts[1]) : null;
+          if (bucketPath) {
+            setProgressMsg("Baixando PDF original do Supabase via SDK...");
+            const { data: fileBlob, error: downloadError } = await supabase.storage.from('ged-auditoria').download(bucketPath);
+            if (fileBlob && !downloadError) {
+              fileSource = fileBlob;
+              console.log("[Recuperar páginas] ✓ Download via SDK Supabase efetuado com absoluto sucesso.");
+            } else {
+              console.error("[Recuperar páginas] Erro de download no SDK do Supabase:", downloadError);
+            }
+          } else {
+            console.warn("[Recuperar páginas] Não foi possível parsear o bucketPath da URL:", targetResult.fileUrl);
+          }
+        } catch (sdkErr) {
+          console.error("[Recuperar páginas] Exceção ao rodar download via SDK:", sdkErr);
+        }
+      }
+      
+      // 4. Fallback final: fetch HTTP público
       if (!fileSource && targetResult.fileUrl) {
-        setProgressMsg("Baixando PDF original da nuvem...");
-        const res = await fetch(targetResult.fileUrl).catch(() => null);
+        console.log("[Recuperar páginas] Fallback: Tentando baixar PDF original via fetch HTTP tradicional de", targetResult.fileUrl);
+        setProgressMsg("Baixando PDF original da nuvem por link público...");
+        const res = await fetch(targetResult.fileUrl).catch((err) => {
+          console.error("[Recuperar páginas] Erro no fetch público:", err);
+          return null;
+        });
         if (res) {
           fileSource = await res.blob();
         }
       }
       
       if (!fileSource) {
-        throw new Error("Não foi possível acessar o PDF original para carregar as páginas.");
+        console.error("[Recuperar páginas] Erro: nenhuma das fontes de arquivo PDF pôde ser resolvida.");
+        throw new Error("Não foi possível acessar o PDF original para carregar as páginas. Certifique-se de que o arquivo está salvo e acessível.");
       }
       
+      console.log("[Recuperar páginas] Gerando ArrayBuffer para o PDF...");
       const arrayBuffer = await fileSource.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      console.log("[Recuperar páginas] PDF carregado na biblioteca. Total de páginas:", pdf.numPages);
       
       let updatedText = currentText;
       let successCount = 0;
       
-      // Carrega Tesseract de forma proativa se precisar
-      const Tesseract = await loadTesseract();
-      
       for (let step = 0; step < pagesToProcess.length; step++) {
         const pageNum = pagesToProcess[step];
+        if (pageNum > pdf.numPages) {
+          console.warn(`[Recuperar páginas] Página solicitada ${pageNum} excede número total de páginas do PDF (${pdf.numPages})`);
+          continue;
+        }
+        
         setProgressMsg(`[${step + 1}/${pagesToProcess.length}] Recuperando Pág ${pageNum}...`);
         setProgress(Math.round(((step + 1) / pagesToProcess.length) * 100));
+        console.log(`[Recuperar páginas] Processando página ${pageNum}/${pdf.numPages}...`);
         
         try {
           const page = await pdf.getPage(pageNum);
@@ -2488,13 +2542,22 @@ export default function ScannerJuridico() {
           canvas.width = viewport.width;
           canvas.height = viewport.height;
           let ctx = canvas.getContext("2d", { willReadFrequently: true });
-          if (!ctx) continue;
+          if (!ctx) {
+            console.error(`[Recuperar páginas] Erro ao obter Context 2D para a pág ${pageNum}`);
+            continue;
+          }
           
           await page.render({ canvasContext: ctx, viewport }).promise;
           
           const originalColorBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
-          const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
+          if (!originalColorBlob) {
+            console.error(`[Recuperar páginas] Erro ao converter canvas em blob para a pág ${pageNum}`);
+            continue;
+          }
           
+          const enhancedForAi = await enhanceImageForGemini(originalColorBlob as Blob);
+          
+          setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
           const aiText = await extractPageWithGemini(enhancedForAi, (p, msg) => {
             setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
           });
@@ -2507,8 +2570,9 @@ export default function ScannerJuridico() {
           // Limpar canvas
           canvas.width = 0; canvas.height = 0;
           successCount++;
+          console.log(`[Recuperar páginas] Página ${pageNum} recuperada e substituída com sucesso.`);
         } catch (pageErr) {
-          console.error(`Erro ao tentar recuperar página ${pageNum}:`, pageErr);
+          console.error(`[Recuperar páginas] Erro ao tentar recuperar página individual ${pageNum}:`, pageErr);
         }
       }
       
@@ -2535,7 +2599,9 @@ export default function ScannerJuridico() {
           .eq('id', targetResult.id);
           
         if (dbError) {
-          console.error("Erro ao persistir atualização do PDF recuperado:", dbError);
+          console.error("[Recuperar páginas] Erro ao persistir atualização do PDF recuperado no Supabase:", dbError);
+        } else {
+          console.log("[Recuperar páginas] Sincronização de dados feita no Supabase.");
         }
       }
       
@@ -2543,9 +2609,9 @@ export default function ScannerJuridico() {
       setHistory(prev => prev.map(item => item.id === targetResult.id ? updatedItem : item));
       setResult(updatedItem);
       
-      showToast(`✓ Sucesso! ${successCount} de ${pagesToProcess.length} páginas foram totalmente recuperadas e reinseridas!`, "success");
+      showToast(`✓ Sucesso! ${successCount} de ${pagesToProcess.length} páginas foram totalmente recuperadas e inseridas!`, "success");
     } catch (err) {
-      console.error(err);
+      console.error("[Recuperar páginas] Falha crítica no fluxo de recuperação:", err);
       showToast(`Erro na recuperação de páginas: ${err.message}`, "error");
     } finally {
       setProcessing(false);
