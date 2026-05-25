@@ -805,7 +805,7 @@ async function extractPageWithGemini(blob, onProgress) {
 
 MISSÃO: Identificar o documento e extrair APENAS as informações que um advogado precisa para redigir uma peça processual. Ignore cabeçalhos institucionais, frases de praxe, endereços de cartório, URLs e textos decorativos sem valor jurídico. Aplique esta lógica em TODAS as páginas do documento.
 
-REGRA ABSOLUTA — DÚVIDA = INCLUIR: Se não tiver certeza se uma informação é relevante para uma petição, inclua. É melhor sobrar do que faltar. Nunca invente dados — se ilegível, use [ILEGÍVEL].
+REGRA ABSOLUTA — DÚVIDA = INCLUIR: Se não tiver certeza se uma informação é relevante para uma petição, inclua (é melhor sobrar do que faltar). Nunca invente dados (zero alucinação). Para textos normais impressos/digitados incompreensíveis use [ILEGÍVEL], mas para assinaturas ou rubricas use [Assinatura Manuscrita Detectada] — nunca use [ILEGÍVEL] para assinaturas. Para caligrafias médicas complexas, esforce-se ao máximo absoluto para decifrá-las.
 
 ══════════════════════════════════════════════════
 PASSO 1 — TÍTULO
@@ -1035,9 +1035,12 @@ Data de referência
 ══════════════════════════════════════════════════
 REGRAS DE TRANSCRIÇÃO
 ══════════════════════════════════════════════════
-ZERO ALUCINAÇÃO: Nunca invente dados. Texto impresso ilegível → [ILEGÍVEL].
-CALIGRAFIA MÉDICA: Esforce-se ao máximo para decifrar manuscritos difíceis, especialmente letras de médicos em laudos e receitas. Só use [ILEGÍVEL] após esgotadas as tentativas de leitura.
-ASSINATURAS: Nunca use [ILEGÍVEL] para assinaturas. Se identificável pelo nome impresso abaixo → [Assinatura Manuscrita: Nome]. Se rabisco indecifráve → [Assinatura Manuscrita Detectada].
+ZERO ALUCINAÇÃO: Nunca invente dados. Texto impresso de fato ilegível (apagado, borrado ou rasgado) → [ILEGÍVEL].
+CALIGRAFIA MÉDICA E COMPLEXA: Esforce-se ao máximo absoluto para decifrar e decodificar manuscritos difíceis, incluindo receitas, prontuários, laudos e atestados médicos com letras garrafais de médicos. Só use a marcação '[ILEGÍVEL]' em último caso, após esgotadas todas as tentativas analíticas de leitura de corpos de textos manuscritos.
+ASSINATURAS E RUBRICAS: Você é TERMINANTEMENTE PROIBIDO de utilizar a marcação '[ILEGÍVEL]' para assinaturas, rubricas, autorizações ou garras manuscritas.
+- Se for possível identificar ou deduzir o titular pelo nome impresso ao lado, abaixo ou no contexto, transcreva de forma descritiva: ex: [Assinatura Manuscrita: Nome do Titular].
+- Se for uma assinatura garrancho, rabisco ou rubrica indecifrável por extenso, transcreva obrigatoriamente como '[Assinatura Manuscrita Detectada]' ou '[Assinatura Manuscrita]' ou '[Rubrica Detectada]'.
+- Garanta que qualquer marcação de caneta indicando assinatura seja tratada dessa forma.
 DISPOSITIVOS E MOTIVOS INSS: Sempre literal, nunca resumir.
 TABELAS: Use markdown para dados tabulares (CNIS, holerite, ponto, extrato).
 MÚLTIPLAS PÁGINAS: Repita a extração jurídica para cada página — aplique o mesmo critério em todo o documento.
@@ -1206,6 +1209,32 @@ function getRealConfidence(text, fallbackConfidence) {
   }
 
   return computedConfidence;
+}
+
+// Substituição cirúrgica do texto de uma página específica
+function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string): string {
+  const regexHeader = new RegExp(`\\[(?:PÁGINA|PAGINA|ERRO\\s+CRÍTICO\\s+NA\\s+PÁGINA|ERRO\\s+CRITICO\\s+NA\\s+PAGINA)\\s+${pageNum}\\b`, 'i');
+  
+  const match = regexHeader.exec(fullText);
+  if (!match) {
+    return fullText + `\n\n[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n` + newPageText;
+  }
+  
+  const startIndex = match.index;
+  const nextHeaderRegex = /\[(?:PÁGINA|PAGINA|ERRO\s+CRÍTICO\s+NA\s+PÁGINA|ERRO\\s+CRITICO\\s+NA\\s+PAGINA)\s+\d+\b/gi;
+  nextHeaderRegex.lastIndex = startIndex + match[0].length;
+  
+  const nextMatch = nextHeaderRegex.exec(fullText);
+  let endIndex = fullText.length;
+  if (nextMatch) {
+    endIndex = nextMatch.index;
+  }
+  
+  const before = fullText.substring(0, startIndex);
+  const after = fullText.substring(endIndex);
+  
+  const replacement = `[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n` + newPageText + "\n\n";
+  return before.trim() + "\n\n" + replacement + after.trim();
 }
 
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi = false) {
@@ -2324,6 +2353,141 @@ export default function ScannerJuridico() {
     } catch (err) {
       console.error(err);
       showToast(err.message || "Erro ao salvar arquivo", "error");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const recoverFailedPages = async (targetResult) => {
+    if (!targetResult) return;
+    const currentText = targetResult.text || "";
+    
+    // Encontra todas as páginas falhas
+    const failedPages = [];
+    const regex1 = /\[ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+    let match;
+    while ((match = regex1.exec(currentText)) !== null) {
+      failedPages.push(parseInt(match[1], 10));
+    }
+    const regex2 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s+\(FALHA\s+IA/gi;
+    while ((match = regex2.exec(currentText)) !== null) {
+      failedPages.push(parseInt(match[1], 10));
+    }
+    
+    const pagesToProcess = [...new Set(failedPages)].sort((a, b) => a - b);
+    
+    if (pagesToProcess.length === 0) {
+      showToast("Nenhuma página com falha ou erro crítico foi encontrada neste documento!", "info");
+      return;
+    }
+    
+    setProcessing(true);
+    setProgress(0);
+    setProgressMsg(`Iniciando recuperação de ${pagesToProcess.length} página(s) falha(s)...`);
+    
+    try {
+      const pdfjsLib = await loadPDFJS();
+      
+      // Pegando arquivo original
+      let fileSource = file; 
+      if (!fileSource && targetResult.localBlobUrl) {
+        const res = await fetch(targetResult.localBlobUrl).catch(() => null);
+        if (res) {
+          fileSource = await res.blob();
+        }
+      }
+      if (!fileSource && targetResult.fileUrl) {
+        setProgressMsg("Baixando PDF original da nuvem...");
+        const res = await fetch(targetResult.fileUrl).catch(() => null);
+        if (res) {
+          fileSource = await res.blob();
+        }
+      }
+      
+      if (!fileSource) {
+        throw new Error("Não foi possível acessar o PDF original para carregar as páginas.");
+      }
+      
+      const arrayBuffer = await fileSource.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
+      let updatedText = currentText;
+      let successCount = 0;
+      
+      // Carrega Tesseract de forma proativa se precisar
+      const Tesseract = await loadTesseract();
+      
+      for (let step = 0; step < pagesToProcess.length; step++) {
+        const pageNum = pagesToProcess[step];
+        setProgressMsg(`[${step + 1}/${pagesToProcess.length}] Recuperando Pág ${pageNum}...`);
+        setProgress(Math.round(((step + 1) / pagesToProcess.length) * 100));
+        
+        try {
+          const page = await pdf.getPage(pageNum);
+          let viewport = page.getViewport({ scale: 1.25 });
+          let canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          let ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) continue;
+          
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          
+          const originalColorBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
+          const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
+          
+          const aiText = await extractPageWithGemini(enhancedForAi, (p, msg) => {
+            setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
+          });
+          
+          const cleanAiText = optimizeRawText(aiText);
+          
+          // Substituição cirúrgica no texto completo!
+          updatedText = replacePageTextInDoc(updatedText, pageNum, cleanAiText);
+          
+          // Limpar canvas
+          canvas.width = 0; canvas.height = 0;
+          successCount++;
+        } catch (pageErr) {
+          console.error(`Erro ao tentar recuperar página ${pageNum}:`, pageErr);
+        }
+      }
+      
+      // Atualizar o resultado
+      const updatedItem = {
+        ...targetResult,
+        text: updatedText,
+        words: updatedText.split(/\s+/).filter(Boolean).length,
+        chars: updatedText.length,
+        confidence: Math.max(targetResult.confidence, 95) // Sobe a confiança já que recuperou páginas críticas!
+      };
+      
+      // Se estiver usando o Supabase, atualizar no banco local/remoto!
+      if (supabase && targetResult.id) {
+        setProgressMsg("Sincronizando atualização no banco de dados...");
+        const { error: dbError } = await supabase
+          .from('lexscan_documents')
+          .update({
+            extracted_text: updatedText,
+            confidence: updatedItem.confidence,
+            chars_count: updatedText.length,
+            words_count: updatedItem.words
+          })
+          .eq('id', targetResult.id);
+          
+        if (dbError) {
+          console.error("Erro ao persistir atualização do PDF recuperado:", dbError);
+        }
+      }
+      
+      // Atualizar no Histórico
+      setHistory(prev => prev.map(item => item.id === targetResult.id ? updatedItem : item));
+      setResult(updatedItem);
+      
+      showToast(`✓ Sucesso! ${successCount} de ${pagesToProcess.length} páginas foram totalmente recuperadas e reinseridas!`, "success");
+    } catch (err) {
+      console.error(err);
+      showToast(`Erro na recuperação de páginas: ${err.message}`, "error");
     } finally {
       setProcessing(false);
     }
@@ -3515,6 +3679,72 @@ export default function ScannerJuridico() {
                       <span className="result-title">Texto Extraído</span>
                       <span className="result-meta">{result.words} palavras · {result.chars} chars · Suporte Ilimitado (+500k)</span>
                     </div>
+
+                    {/* Alerta inteligente de páginas puladas ou com erro */}
+                    {(() => {
+                      const failedPages = [];
+                      const text = result.text || "";
+                      const regex1 = /\[ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+                      let match;
+                      while ((match = regex1.exec(text)) !== null) {
+                        failedPages.push(parseInt(match[1], 10));
+                      }
+                      const regex2 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s+\(FALHA\s+IA/gi;
+                      while ((match = regex2.exec(text)) !== null) {
+                        failedPages.push(parseInt(match[1], 10));
+                      }
+                      const pagesToProcess = [...new Set(failedPages)].sort((a, b) => a - b);
+                      
+                      if (pagesToProcess.length === 0) return null;
+                      
+                      return (
+                        <div 
+                          style={{
+                            margin: '8px 0 16px 0',
+                            padding: '12px 14px',
+                            background: 'rgba(239, 68, 68, 0.08)',
+                            border: '1px solid rgba(239, 68, 68, 0.25)',
+                            borderRadius: '12px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#f87171', fontSize: '12px', fontWeight: 600 }}>
+                            <span style={{ fontSize: '16px' }}>⚠️</span>
+                            <span>Atenção: Página(s) com erro ou pulada(s) detectada(s)!</span>
+                          </div>
+                          <p style={{ fontSize: '11px', color: G.text, opacity: 0.85, lineHeight: '1.4' }}>
+                            Página(s) afetada(s): <strong style={{ color: G.accent }}>{pagesToProcess.join(', ')}</strong>. 
+                            Você não precisa reprocessar o documento inteiro! Use nosso reparo cirúrgico "Padrão Ouro" para ler apenas essas páginas e inseri-las no local correto.
+                          </p>
+                          <button
+                            onClick={() => recoverFailedPages(result)}
+                            disabled={processing}
+                            style={{
+                              alignSelf: 'flex-start',
+                              background: G.accent,
+                              color: '#0d0f14',
+                              border: 'none',
+                              borderRadius: '8px',
+                              padding: '6px 12px',
+                              fontSize: '11px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              transition: 'all 0.2s',
+                            }}
+                            onMouseOver={(e) => { e.currentTarget.style.opacity = '0.9'; }}
+                            onMouseOut={(e) => { e.currentTarget.style.opacity = '1'; }}
+                          >
+                            <span>🪄</span> Recuperar Páginas Falhas / Puladas
+                          </button>
+                        </div>
+                      );
+                    })()}
+
                     <div className="result-text">{result.text || "(nenhum texto reconhecido)"}</div>
                     <div className="confidence-bar">
                       <span>Confiança OCR</span>
