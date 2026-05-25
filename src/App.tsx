@@ -1214,15 +1214,18 @@ function getRealConfidence(text, fallbackConfidence) {
 
 // Substituição cirúrgica do texto de uma página específica
 function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string): string {
-  const regexHeader = new RegExp(`\\[(?:PÁGINA|PAGINA|ERRO\\s+CRÍTICO\\s+NA\\s+PÁGINA|ERRO\\s+CRITICO\\s+NA\\s+PAGINA)\\s+${pageNum}\\b`, 'i');
+  // RegExp construído por string escapando o colchete e caracteres especiais usando barras invertidas duplas corretas de string JS
+  const regexHeader = new RegExp('\\\\\\[(?:PÁGINA|PAGINA|ERRO\\\\s+CRÍTICO\\\\s+NA\\\\s+PÁGINA|ERRO\\\\s+CRITICO\\\\s+NA\\\\s+PAGINA)\\\\s+' + pageNum + '\\\\b', 'i');
   
   const match = regexHeader.exec(fullText);
   if (!match) {
+    console.warn(`[Recuperar páginas] Cabeçalho original não encontrado para a pág ${pageNum}. Fazendo append.`);
     return fullText + `\n\n[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n` + newPageText;
   }
   
   const startIndex = match.index;
-  const nextHeaderRegex = /\[(?:PÁGINA|PAGINA|ERRO\s+CRÍTICO\s+NA\s+PÁGINA|ERRO\\s+CRITICO\\s+NA\\s+PAGINA)\s+\d+\b/gi;
+  // Literal de RegExp correto para encontrar o início de uma próxima página ou erro
+  const nextHeaderRegex = /\[(?:PÁGINA|PAGINA|ERRO\s+CRÍTICO\s+NA\s+PÁGINA|ERRO\s+CRITICO\s+NA\s+PAGINA)\s+\d+\b/gi;
   nextHeaderRegex.lastIndex = startIndex + match[0].length;
   
   const nextMatch = nextHeaderRegex.exec(fullText);
