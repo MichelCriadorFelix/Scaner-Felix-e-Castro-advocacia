@@ -393,9 +393,10 @@ const css = `
     border: 1px solid ${G.border};
     border-radius: 12px;
     overflow: hidden;
-    transition: border-color .2s;
+    transition: all .2s;
+    cursor: pointer;
   }
-  .hist-card:hover { border-color: ${G.accentDim}; }
+  .hist-card:hover { border-color: ${G.accent}; transform: translateY(-1px); background: rgba(255, 255, 255, 0.015); }
   .hist-header {
     padding: 12px 14px;
     display: flex;
@@ -4072,7 +4073,7 @@ export default function ScannerJuridico() {
                         return 0;
                       })
                       .map(item => (
-                      <div key={item.id} className="hist-card">
+                      <div key={item.id} className="hist-card" onClick={() => loadFromHistory(item)}>
                         <div className="hist-header">
                           {item.preview && item.type && item.type.startsWith("image/")
                             ? <img src={item.preview} alt="" className="hist-thumb" />
@@ -4114,6 +4115,75 @@ export default function ScannerJuridico() {
                             )}
                             <div className="hist-date">{formatDate(item.ts)}</div>
                             <div className="hist-chars">{item.words} palavras · {getRealConfidence(item.text, item.confidence)}% OCR</div>
+
+                            {/* Alerta inteligente de páginas puladas e botão de reparação automática */}
+                            {(() => {
+                              const text = item.text || "";
+                              const failedPages = [];
+                              const r1 = /\[ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+                              let m;
+                              while ((m = r1.exec(text)) !== null) {
+                                failedPages.push(parseInt(m[1], 10));
+                              }
+                              const r2 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s+\(FALHA\s+IA/gi;
+                              while ((m = r2.exec(text)) !== null) {
+                                failedPages.push(parseInt(m[1], 10));
+                              }
+                              const uniqFailed = [...new Set(failedPages)].sort((a, b) => a - b);
+                              if (uniqFailed.length > 0) {
+                                return (
+                                  <div 
+                                    style={{ 
+                                      display: 'flex', 
+                                      flexDirection: 'column',
+                                      gap: '5px',
+                                      marginTop: '8px', 
+                                      padding: '8px 10px', 
+                                      background: 'rgba(239, 68, 68, 0.08)', 
+                                      border: '1px solid rgba(239, 68, 68, 0.22)', 
+                                      borderRadius: '8px',
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#f87171', fontSize: '10px', fontWeight: 'bold' }}>
+                                      <span>⚠️</span> <span>Pág(s) pulada(s): {uniqFailed.join(', ')}</span>
+                                    </div>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        loadFromHistory(item);
+                                        // Executa a recuperação automática ao transicionar de aba!
+                                        setTimeout(() => {
+                                          const btn = document.querySelector(".result-card button"); 
+                                          if (btn) (btn as HTMLButtonElement).click();
+                                        }, 450);
+                                      }}
+                                      style={{
+                                        alignSelf: 'flex-start',
+                                        background: G.accent,
+                                        color: '#0d0f14',
+                                        border: 'none',
+                                        borderRadius: '6px',
+                                        padding: '4px 8px',
+                                        fontSize: '9px',
+                                        fontWeight: '800',
+                                        cursor: 'pointer',
+                                        marginTop: '2px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        transition: 'opacity 0.2s',
+                                      }}
+                                      onMouseOver={(ev) => { ev.currentTarget.style.opacity = '0.9'; }}
+                                      onMouseOut={(ev) => { ev.currentTarget.style.opacity = '1'; }}
+                                    >
+                                      <span>🪄</span> Reparar Páginas
+                                    </button>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                           <div className="hist-actions">
                             {item.type && item.type.startsWith('image/') && (
