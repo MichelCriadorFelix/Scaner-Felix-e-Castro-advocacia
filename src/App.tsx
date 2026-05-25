@@ -1113,7 +1113,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           let renderSuccess = false;
 
           // Escala adaptativa progressiva para economia de heap/buffers caso esteja falhando
-          const attemptScales = attempt === 1 ? [1.25, 1.0] : attempt === 2 ? [1.0, 0.85] : [0.75];
+          const attemptScales = attempt === 1 ? [2.0, 1.5] : attempt === 2 ? [1.25, 1.0] : [0.75];
           
           for (let scaleAttempt of attemptScales) {
             let canvas = document.createElement("canvas");
@@ -2338,7 +2338,7 @@ export default function ScannerJuridico() {
         
         try {
           const page = await pdf.getPage(pageNum);
-          let viewport = page.getViewport({ scale: 1.25 });
+          let viewport = page.getViewport({ scale: 2.0 });
           let canvas = document.createElement("canvas");
           canvas.width = viewport.width;
           canvas.height = viewport.height;
