@@ -1267,178 +1267,236 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         break;
     }
 
+    let pageSuccess = false;
     let pageText = "";
-    try {
-      onProgress(Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100), `Lendo pág ${i}/${endIdx}...`);
-      const page = await withTimeout(pdf.getPage(i), 15000, `Timeout ao obter a página ${i}`);
-      
-      const shouldBypassNative = forceAi;
+    let lastPageError = null;
+    const maxPageAttempts = 3;
 
-      if (!shouldBypassNative) {
-        // Tenta texto nativo primeiro (100% de confiança, 0 custo)
-        const textContent = await withTimeout(page.getTextContent(), 15000, `Timeout no texto nativo da pág ${i}`);
-        pageText = textContent.items.map(item => item.str).join(" ").trim();
-      }
+    for (let attempt = 1; attempt <= maxPageAttempts; attempt++) {
+      try {
+        if (attempt > 1) {
+          // Breve recuo exponencial/estratégico para limpar memória, conexões ou limites de taxa
+          const delayTime = 2500 * (attempt - 1);
+          onProgress(
+            Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+            `Pág ${i}/${endIdx}: Estabilizando conexões... Tentativa de reparo ${attempt}/${maxPageAttempts} em ${delayTime / 1000}s...`
+          );
+          await new Promise(r => setTimeout(r, delayTime));
+        }
 
-      if (!shouldBypassNative && pageText.length > 600) {
-        fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
-        confidenceTotal += 100;
-        pagesEvaluated++;
-      } else {
-        // É uma página escaneada ou imagem dentro do PDF
-        onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Imagem detectada. Extraindo imagem...`);
-        
-        let viewport = null;
-        let finalCanvasToUse = null;
-        let renderSuccess = false;
+        onProgress(
+          Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+          `Lendo pág ${i}/${endIdx} (Tentativa ${attempt}/${maxPageAttempts})...`
+        );
 
-        // Escalas adaptativas super otimizadas: inicia com 1.25 (balanço perfeito de leveza, nitidez e velocidade), decaindo para 1.0 se necessário
-        const scalesToTry = [1.25, 1.0];
-        for (let scaleAttempt of scalesToTry) {
-          let canvas = document.createElement("canvas");
-          let ctx = null;
-          let renderTask = null;
+        // Ajuste elástico de timeout de carregamento da página do PDF
+        const currentTimeout = 20000 * attempt;
+        const page = await withTimeout(pdf.getPage(i), currentTimeout, `Timeout ao carregar dados do PDF para a pág ${i}`);
+
+        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias)
+        const shouldBypassNative = forceAi;
+        if (!shouldBypassNative && attempt === 1) {
           try {
-            viewport = page.getViewport({ scale: scaleAttempt });
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            ctx = canvas.getContext("2d", { willReadFrequently: true });
-            if (!ctx) continue;
-            
-            renderTask = page.render({ canvasContext: ctx, viewport });
-            // Timeout expandido para 25s por segurança, mas renderização em 1.25 costuma ser instantânea
-            await withTimeout(renderTask.promise, 25000, `Timeout scale ${scaleAttempt}`);
-            finalCanvasToUse = canvas;
-            renderSuccess = true;
-            break;
-          } catch (renderErr) {
-            console.warn(`[Pág ${i}] Falha ao renderizar em escala ${scaleAttempt}, tentando próxima...`, renderErr);
-            if (renderTask) {
-              try {
-                renderTask.cancel();
-              } catch (cancelErr) {
-                console.warn("Erro ao cancelar renderTask do PDF:", cancelErr);
-              }
-            }
-            // Libera memória do canvas que falhou imediatamente
-            canvas.width = 0; canvas.height = 0;
+            const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout no texto nativo da pág ${i}`);
+            pageText = textContent.items.map(item => item.str).join(" ").trim();
+          } catch (nativeErr) {
+            console.warn(`[Pág ${i}] Não foi possível obter texto nativo (tentando OCR visual):`, nativeErr);
+            pageText = "";
           }
         }
 
-        if (!renderSuccess || !finalCanvasToUse) {
-          throw new Error(`Falha de memória ou timeout ao tentar renderizar a página ${i} visualmente.`);
-        }
+        if (!shouldBypassNative && pageText.length > 600) {
+          fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
+          confidenceTotal += 100;
+          pagesEvaluated++;
+          pageSuccess = true;
+          if (page && page.cleanup) page.cleanup();
+          break; // Sucesso com texto nativo, prossegue!
+        } else {
+          // Página escaneada, foto ou PDF complexo: Renderiza tela do canvas
+          onProgress(
+            Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+            `Pág ${i}: Renderizando imagem estrutural (Tentativa ${attempt})...`
+          );
 
-        // Filtro Profissional para melhorar OCR Local
-        const tempCanvas = document.createElement("canvas");
-        tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
-        const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
-        if (tempCtx) {
-           tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
-           tempCtx.drawImage(finalCanvasToUse, 0, 0);
-        }
+          let viewport = null;
+          let finalCanvasToUse = null;
+          let renderSuccess = false;
 
-        let blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
-        
-        if (useAi || forceAi) {
-          // Modo Híbrido: Testa OCR primeiro se não estiver forçando IA
-          let ocrRes = { text: "", confidence: 0 };
-          let shouldGoToAi = forceAi;
+          // Escala adaptativa progressiva para economia de heap/buffers caso esteja falhando
+          const attemptScales = attempt === 1 ? [1.25, 1.0] : attempt === 2 ? [1.0, 0.85] : [0.75];
+          
+          for (let scaleAttempt of attemptScales) {
+            let canvas = document.createElement("canvas");
+            let ctx = null;
+            let renderTask = null;
+            try {
+              viewport = page.getViewport({ scale: scaleAttempt });
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              ctx = canvas.getContext("2d", { willReadFrequently: true });
+              if (!ctx) continue;
 
-          if (!shouldGoToAi) {
-            onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Avaliando qualidade do OCR Local...`);
+              renderTask = page.render({ canvasContext: ctx, viewport });
+              await withTimeout(renderTask.promise, 35000, `Timeout na renderização com escala ${scaleAttempt}`);
+              finalCanvasToUse = canvas;
+              renderSuccess = true;
+              break;
+            } catch (renderErr) {
+              console.warn(`[Pág ${i}] Renderização falhou com escala ${scaleAttempt} na tentativa ${attempt}`, renderErr);
+              if (renderTask) {
+                try { renderTask.cancel(); } catch (cancelErr) {}
+              }
+              canvas.width = 0; canvas.height = 0;
+            }
+          }
+
+          if (!renderSuccess || !finalCanvasToUse) {
+            throw new Error(`Falha crítica ao tentar renderizar a página ${i} em tela.`);
+          }
+
+          // Filtro profissional para contraste do OCR local
+          const tempCanvas = document.createElement("canvas");
+          tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
+          const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
+          if (tempCtx) {
+             tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
+             tempCtx.drawImage(finalCanvasToUse, 0, 0);
+          }
+
+          let blob = await new Promise<Blob | null>(r => tempCanvas.toBlob(r, "image/png", 0.9));
+          if (!blob) throw new Error("Erro de buffer ao gerar canvas otimizado.");
+
+          if (useAi || forceAi) {
+            let ocrRes = { text: "", confidence: 0 };
+            let shouldGoToAi = forceAi;
+
+            // OCR local como teste prévio (apenas se não estiver forçando IA diretamente)
+            if (!shouldGoToAi) {
+              onProgress(
+                Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+                `Pág ${i}: Rodando validação de OCR Local (Tentativa ${attempt})...`
+              );
+              try {
+                if (!tesseractWorker) {
+                   tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
+                }
+                const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
+                ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
+              } catch (err) {
+                console.warn(`[Pág ${i}] Erro no Tesseract local, relegando fluxo...`, err);
+                ocrRes = { text: "", confidence: 0 };
+                if (tesseractWorker) {
+                  await tesseractWorker.terminate().catch(()=>null);
+                  tesseractWorker = null;
+                }
+              }
+              if (ocrRes.confidence >= 99) {
+                fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
+                confidenceTotal += 100;
+                pageSuccess = true;
+                
+                // Cleanup
+                finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
+                tempCanvas.width = 0; tempCanvas.height = 0;
+                if (page && page.cleanup) page.cleanup();
+                break;
+              } else {
+                shouldGoToAi = true;
+              }
+            }
+
+            if (shouldGoToAi) {
+              onProgress(
+                Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+                `Pág ${i}: Extraindo via IA Jurídica (Tentativa ${attempt})...`
+              );
+              
+              const originalColorBlob = await new Promise<Blob | null>(r => finalCanvasToUse.toBlob(r, "image/jpeg", 0.95));
+              if (!originalColorBlob) throw new Error("Falha ao exportar imagem original colorida.");
+              const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
+              
+              const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
+              fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
+              confidenceTotal += 99;
+              pageSuccess = true;
+
+              // Cleanup
+              finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
+              tempCanvas.width = 0; tempCanvas.height = 0;
+              if (page && page.cleanup) page.cleanup();
+              break;
+            }
+          } else {
+            // Apenas OCR local pura
+            onProgress(
+              Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+              `Pág ${i}: Executando OCR Local...`
+            );
+            let ocrRes = { text: "", confidence: 0 };
             try {
               if (!tesseractWorker) {
-                 tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-                   logger: () => {}
-                 });
+                 tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
               }
               const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
               ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
             } catch (err) {
-              console.warn(`Erro no Tesseract na página ${i}`, err);
-              ocrRes = { text: "[FALHA NO RECONHECIMENTO LOCAL - TESSERACT CRASH]", confidence: 0 };
-              if (tesseractWorker) await tesseractWorker.terminate().catch(()=>null);
-              tesseractWorker = null;
-            }
-            if (ocrRes.confidence >= 99) {
-                fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
-                confidenceTotal += 100;
-            } else {
-                shouldGoToAi = true;
-            }
-          }
-          
-          if (shouldGoToAi) {
-              onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Extraindo via IA Jurídica...`);
-              try {
-                  // Gera imagem colorida em alta qualidade do canvas original para a IA ler perfeitamente!
-                  const originalColorBlob = await new Promise(r => finalCanvasToUse.toBlob(r, "image/jpeg", 0.95));
-                  const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
-                  const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
-                  fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
-                  confidenceTotal += 99;
-              } catch (e) {
-                  let errMsg = e.message || "Erro desconhecido";
-                  // Se falhar a IA, marcamos como OCR BRUTO 0% para forçar reprocessamento depois
-                  fullText += `[PÁGINA ${i} - OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text + "\n\n";
-                  confidenceTotal += 0;
+              ocrRes = { text: "[PÁGINA PULADA]", confidence: 0 };
+              if (tesseractWorker) {
+                await tesseractWorker.terminate().catch(()=>null);
+                tesseractWorker = null;
               }
-          }
-        } else {
-          // Mesmo sem useAi explicitamente, usamos o Padrão Ouro se possível, senão marcamos como 0%
-          onProgress(Math.round((i / pdf.numPages) * 100), `Pág ${i}: Analisando página...`);
-          
-          let ocrRes = { text: "", confidence: 0 };
-          try {
-            if (!tesseractWorker) {
-               tesseractWorker = await Tesseract.createWorker("por+eng", 1, {
-                 logger: () => {}
-               });
             }
-            const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
-            ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
-          } catch (err) {
-            ocrRes = { text: "[PÁGINA PULADA]", confidence: 0 };
-          }
-          
-          if (ocrRes.confidence >= 99) {
+
+            if (ocrRes.confidence >= 99) {
               fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
               confidenceTotal += 100;
-          } else {
+            } else {
               fullText += `[PÁGINA ${i} - OCR BRUTO (${ocrRes.confidence}%)]\n` + ocrRes.text + "\n\n";
-              confidenceTotal += 0; // Força reprocessamento
+              confidenceTotal += 0;
+            }
+            pageSuccess = true;
+
+            // Cleanup
+            finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
+            tempCanvas.width = 0; tempCanvas.height = 0;
+            if (page && page.cleanup) page.cleanup();
+            break;
           }
+
+          // Active GC
+          if (finalCanvasToUse) { finalCanvasToUse.width = 0; finalCanvasToUse.height = 0; }
+          tempCanvas.width = 0; tempCanvas.height = 0;
+          blob = null;
         }
-        
-        // Cleanup to prevent memory leak on large PDFs (500+ pages)
-        if (finalCanvasToUse) {
-          finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
-        }
-        tempCanvas.width = 0; tempCanvas.height = 0;
-        blob = null;
-        
+
         pagesEvaluated++;
 
-        // Restart worker proactively to keep WASM memory clean
-        if (pagesEvaluated % 25 === 0 && tesseractWorker) {
+        // Restart worker periodicamente para manter cota e memoria Wasm limpa
+        if (pagesEvaluated % 20 === 0 && tesseractWorker) {
            await tesseractWorker.terminate().catch(()=>null);
            tesseractWorker = null;
-         }
-       }
-       
-       // Cleanup page to free pdf.js memory
-       if (page && page.cleanup) page.cleanup();
-     } catch (pageErr) {
-       console.error(`Erro crítico ao processar página ${i}:`, pageErr);
-       if (pageText && pageText.trim().length > 5) {
-         fullText += `\n\n[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n\n` + pageText + "\n\n";
-         confidenceTotal += 100;
-       } else {
-         fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA]\n\n`;
-       }
-       pagesEvaluated++;
-     }
+        }
+        
+        if (page && page.cleanup) page.cleanup();
+      } catch (pageErr) {
+        console.warn(`[Pág ${i}] Falha capturada na tentativa ${attempt}:`, pageErr);
+        lastPageError = pageErr;
+      }
+    }
+
+    if (!pageSuccess) {
+      console.error(`[Pág ${i}] Falha persistente após ${maxPageAttempts} tentativas.`);
+      const errorMsg = lastPageError ? lastPageError.message || "Erro de timeout/IA" : "Erro estrutural";
+      
+      if (pageText && pageText.trim().length > 5) {
+        fullText += `\n\n[PÁGINA ${i} - TEXTO DIGITAL NATIVO (REDUZIDO DE FALLBACK devido a falha: ${errorMsg})]\n\n` + pageText + "\n\n";
+        confidenceTotal += 100;
+      } else {
+        fullText += `\n\n[ERRO CRÍTICO NA PÁGINA ${i} - PÁGINA PULADA (Falha persistente: ${errorMsg})]\n\n`;
+      }
+      pagesEvaluated++;
+    }
   }
 
   if (tesseractWorker && tesseractWorker.terminate) {
