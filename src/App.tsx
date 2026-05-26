@@ -1484,17 +1484,17 @@ export default function ScannerJuridico() {
   const [authLoading, setAuthLoading] = useState(true);
   const [allowedEmails, setAllowedEmails] = useState(() => {
     try {
-      const saved = localStorage.getItem('lexscan_allowed_emails');
+      const saved = localStorage.getItem('lexscan_allowed_emails_v2');
       return saved ? JSON.parse(saved) : [
-        "michelgeminicriador@gmail.com",
-        "luanacadvogada@gmail.com",
-        "fabriciasousa2025@outlook.com"
+        "michel.advprev@gmail.com",
+        "suporte@felixcastro.com.br",
+        "contato@felixcastro.com.br"
       ];
     } catch(e) {
       return [
-        "michelgeminicriador@gmail.com",
-        "luanacadvogada@gmail.com",
-        "fabriciasousa2025@outlook.com"
+        "michel.advprev@gmail.com",
+        "suporte@felixcastro.com.br",
+        "contato@felixcastro.com.br"
       ];
     }
   });
@@ -3491,7 +3491,7 @@ for each row execute function check_allowed_emails();`}
                 style={{ flex: 1, padding: '12px' }} 
                 onClick={() => {
                   try {
-                    localStorage.setItem('lexscan_allowed_emails', JSON.stringify(allowedEmails));
+                    localStorage.setItem('lexscan_allowed_emails_v2', JSON.stringify(allowedEmails));
                     setIsAuthSettingsOpen(false);
                     showToast("✓ Configuração de acesso salva com sucesso!");
                   } catch(e) {
@@ -3507,7 +3507,7 @@ for each row execute function check_allowed_emails();`}
                 onClick={() => {
                   // Reverte ao salvo anterior
                   try {
-                    const saved = localStorage.getItem('lexscan_allowed_emails');
+                    const saved = localStorage.getItem('lexscan_allowed_emails_v2');
                     if (saved) setAllowedEmails(JSON.parse(saved));
                   } catch(e) {}
                   setIsAuthSettingsOpen(false);
