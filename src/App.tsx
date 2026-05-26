@@ -767,7 +767,7 @@ async function enhanceImageForGemini(imageBlob) {
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
-async function extractPageWithGemini(blob, onProgress) {
+async function extractPageWithGemini(blob, onProgress, goldStandard = true) {
   const allKeys = getAvailableGeminiKeys();
   let lastError = null;
 
@@ -861,7 +861,16 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         
         const responseStream = await ai.models.generateContentStream({
           model: modelName,
-          contents: { parts: [{ text: prompt }, { inlineData: { data: base64, mimeType: blob.type } }] }
+          contents: {
+            parts: [
+              { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+              { inlineData: { data: base64, mimeType: blob.type } }
+            ]
+          },
+          config: {
+            systemInstruction: prompt,
+            temperature: 0.1,
+          }
         });
 
         let fullText = "";
@@ -1086,7 +1095,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         const page = await withTimeout(pdf.getPage(i), currentTimeout, `Timeout ao carregar dados do PDF para a pág ${i}`);
 
         // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias)
-        const shouldBypassNative = forceAi;
+        const shouldBypassNative = forceAi || goldStandard;
         if (!shouldBypassNative && attempt === 1) {
           try {
             const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout no texto nativo da pág ${i}`);
@@ -1116,7 +1125,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           let renderSuccess = false;
 
           // Escala adaptativa progressiva para economia de heap/buffers caso esteja falhando
-          const attemptScales = attempt === 1 ? [2.0, 1.5] : attempt === 2 ? [1.25, 1.0] : [0.75];
+          const attemptScales = attempt === 1 ? (goldStandard ? [3.0, 2.0, 1.5] : [2.0, 1.5]) : attempt === 2 ? [1.25, 1.0] : [0.75];
           
           for (let scaleAttempt of attemptScales) {
             let canvas = document.createElement("canvas");
@@ -2342,7 +2351,7 @@ export default function ScannerJuridico() {
         
         try {
           const page = await pdf.getPage(pageNum);
-          let viewport = page.getViewport({ scale: 2.0 });
+          let viewport = page.getViewport({ scale: goldStandard ? 3.0 : 2.0 });
           let canvas = document.createElement("canvas");
           canvas.width = viewport.width;
           canvas.height = viewport.height;
@@ -2365,7 +2374,7 @@ export default function ScannerJuridico() {
           setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
           const aiText = await extractPageWithGemini(enhancedForAi, (p, msg) => {
             setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
-          });
+          }, goldStandard);
           
           const cleanAiText = optimizeRawText(aiText, true);
           
