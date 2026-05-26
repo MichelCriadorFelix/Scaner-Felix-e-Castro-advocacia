@@ -1478,6 +1478,76 @@ export default function ScannerJuridico() {
   const [sortOrder, setSortOrder] = useState("date-desc"); // "date-desc", "date-asc", "name-asc", "name-desc"
   
   const [toast, setToast] = useState(null);
+
+  // ── Controle de Acesso e Perímetro de Segurança do Escritório ──
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [allowedEmails, setAllowedEmails] = useState(() => {
+    try {
+      const saved = localStorage.getItem('lexscan_allowed_emails');
+      return saved ? JSON.parse(saved) : [
+        "michelgeminicriador@gmail.com",
+        "suporte@felixcastro.com.br",
+        "contato@felixcastro.com.br"
+      ];
+    } catch(e) {
+      return [
+        "michelgeminicriador@gmail.com",
+        "suporte@felixcastro.com.br",
+        "contato@felixcastro.com.br"
+      ];
+    }
+  });
+  const [isAuthSettingsOpen, setIsAuthSettingsOpen] = useState(false);
+
+  const isEmailAllowed = (emailStr) => {
+    if (!emailStr) return false;
+    return allowedEmails.map(e => e.trim().toLowerCase()).includes(emailStr.trim().toLowerCase());
+  };
+
+  // Monitora o estado de Autenticação e desloga automaticamente acessos não autorizados
+  useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      return;
+    }
+
+    // Carregar sessão recuperada inicial
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        const email = session.user?.email || "";
+        if (isEmailAllowed(email)) {
+          setUser(session.user);
+        } else {
+          supabase.auth.signOut();
+          setUser(null);
+          showToast("Este e-mail não pertence a um advogado autorizado do escritório Felix & Castro.", "error");
+        }
+      } else {
+        setUser(null);
+      }
+      setAuthLoading(false);
+    });
+
+    // Escutar alterações em tempo real de Login/Logout
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        const email = session.user?.email || "";
+        if (isEmailAllowed(email)) {
+          setUser(session.user);
+        } else {
+          supabase.auth.signOut();
+          setUser(null);
+          showToast("Este e-mail não pertence a um advogado autorizado do escritório Felix & Castro.", "error");
+        }
+      } else {
+        setUser(null);
+      }
+      setAuthLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [allowedEmails]);
   const [camera, setCamera] = useState(false);
   const [stream, setStream] = useState(null);
 
@@ -1639,12 +1709,14 @@ export default function ScannerJuridico() {
   }, []);
 
   useEffect(() => { 
-    loadData();
-  }, [loadData]);
+    if (user) {
+      loadData();
+    }
+  }, [loadData, user]);
 
   // Sincronização em Tempo Real (Realtime Sync) para multiplos usuários simultâneos
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase || !user) return;
 
     const clientsChannel = supabase
       .channel('realtime-clients')
@@ -1672,7 +1744,7 @@ export default function ScannerJuridico() {
       supabase.removeChannel(clientsChannel);
       supabase.removeChannel(docsChannel);
     };
-  }, [loadData]);
+  }, [loadData, user]);
 
   const confColor = (c) => {
     if (c >= 90) return G.success;
@@ -3085,6 +3157,61 @@ export default function ScannerJuridico() {
     }
   };
 
+  if (authLoading) {
+    return (
+      <>
+        <style>{css}</style>
+        <div style={{
+          background: G.bg,
+          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '20px',
+          color: G.text,
+          userSelect: 'none'
+        }}>
+          <div style={{
+            fontSize: '28px',
+            color: G.accent,
+            fontFamily: "'Playfair Display', serif",
+            letterSpacing: '1px',
+            textAlign: 'center',
+            fontWeight: 700
+          }}>
+            Félix & Castro
+            <span style={{ display: 'block', fontSize: '12px', fontFamily: "'DM Sans', sans-serif", color: G.muted, marginTop: '4px', letterSpacing: '4px', textTransform: 'uppercase' }}>Advocacia Especializada</span>
+          </div>
+          <div style={{
+            width: '32px',
+            height: '32px',
+            borderRadius: '50%',
+            border: `2px solid ${G.border}`,
+            borderTopColor: G.accent,
+            animation: 'spin 1s linear infinite'
+          }} />
+          <span style={{ fontSize: '13px', fontFamily: "'DM Sans', sans-serif", color: G.muted }}>Carregando credenciais de acesso...</span>
+        </div>
+      </>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <style>{css}</style>
+        <AuthScreen 
+          supabase={supabase} 
+          allowedEmails={allowedEmails} 
+          onAuthSuccess={(sessionUser) => setUser(sessionUser)} 
+          showToast={showToast}
+          toast={toast}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <style>{css}</style>
@@ -3303,6 +3430,96 @@ export default function ScannerJuridico() {
         </div>
       )}
 
+      {/* Modal de Gestão de Acesso (Configurações Supabase / Allowlist) */}
+      {isAuthSettingsOpen && (
+        <div className="modal-overlay" style={{ zIndex: 120 }}>
+          <div style={{ background: G.card, padding: '24px', borderRadius: '16px', width: '100%', maxWidth: '480px', border: `1px solid ${G.border}` }}>
+            <h3 style={{ marginBottom: 12, fontFamily: 'Playfair Display', color: G.accent, fontSize: '20px', textAlign: 'center' }}>
+              ⚙️ Controle de Vagas do Escritório
+            </h3>
+            <p style={{ fontSize: '12px', color: G.muted, textAlign: 'center', marginBottom: '20px', lineHeight: '1.5' }}>
+              O scanner está configurado para permitir que apenas 3 pessoas se cadastrem ou façam login. Você pode redefinir as 3 contas autorizadas abaixo:
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
+              {[0, 1, 2].map((idx) => (
+                <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '11px', color: G.accent, fontWeight: 600 }}>VAGA {idx + 1} DE CREDENCIAL:</label>
+                  <input 
+                    type="email" 
+                    value={allowedEmails[idx] || ""}
+                    placeholder={`advogado${idx+1}@felixcastro.com.br`}
+                    onChange={(e) => {
+                      const updated = [...allowedEmails];
+                      updated[idx] = e.target.value.trim();
+                      setAllowedEmails(updated);
+                    }}
+                    style={{ background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '10px 12px', color: G.text, borderRadius: '8px', fontSize: '13px', fontFamily: "'DM Mono', monospace" }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background: 'rgba(201, 168, 76, 0.04)', border: `1px solid rgba(201, 168, 76, 0.15)`, padding: '12px', borderRadius: '10px', fontSize: '11px', color: '#e0d5ba', lineHeight: '1.5', marginBottom: '20px', maxHeight: '180px', overflowY: 'auto' }}>
+              <strong>🔒 Como travar no Supabase (Nível de Banco):</strong><br />
+              Para impedir que qualquer outra pessoa tente burlar o frontend, execute o seguinte comando SQL no seu dashboard da **Supabase (SQL Editor)**:
+              <pre style={{ background: '#090a0f', padding: '8px', borderRadius: '6px', marginTop: '6px', overflowX: 'auto', fontSize: '10px', color: '#68d391', fontFamily: 'monospace' }}>
+{`create or replace function check_allowed_emails()
+returns trigger as $$
+begin
+  if new.email in (
+    '${allowedEmails[0] || ""}',
+    '${allowedEmails[1] || ""}',
+    '${allowedEmails[2] || ""}'
+  ) then
+    return new;
+  else
+    raise exception 'E-mail não cadastrado no sistema.';
+  end if;
+end;
+$$ language plpgsql;
+
+create or replace trigger check_auth_trigger
+before insert on auth.users
+for each row execute function check_allowed_emails();`}
+              </pre>
+            </div>
+
+            <div className="modal-actions" style={{ gap: '10px' }}>
+              <button 
+                className="modal-btn capture" 
+                style={{ flex: 1, padding: '12px' }} 
+                onClick={() => {
+                  try {
+                    localStorage.setItem('lexscan_allowed_emails', JSON.stringify(allowedEmails));
+                    setIsAuthSettingsOpen(false);
+                    showToast("✓ Configuração de acesso salva com sucesso!");
+                  } catch(e) {
+                    showToast("Erro ao salvar.", "error");
+                  }
+                }}
+              >
+                💾 Salvar e Aplicar
+              </button>
+              <button 
+                className="modal-btn cancel" 
+                style={{ flex: 1, padding: '12px' }} 
+                onClick={() => {
+                  // Reverte ao salvo anterior
+                  try {
+                    const saved = localStorage.getItem('lexscan_allowed_emails');
+                    if (saved) setAllowedEmails(JSON.parse(saved));
+                  } catch(e) {}
+                  setIsAuthSettingsOpen(false);
+                }}
+              >
+                Voltar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="app">
         {/* Header */}
         <div className="header">
@@ -3316,6 +3533,41 @@ export default function ScannerJuridico() {
               <span className="badge">PDF</span>
             </div>
           </div>
+
+          {/* Informações da sessão autenticada Dr(a). */}
+          {user && (
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "12px 16px 0 16px", padding: "10px 14px", background: "rgba(252, 252, 252, 0.02)", borderRadius: "10px", border: `1px solid ${G.border}`, justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden" }}>
+                <span style={{ fontSize: "14px" }}>⚖️</span>
+                <span style={{ fontSize: "11px", color: G.text, fontWeight: 500, fontFamily: "'DM Mono', monospace", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }} title={user.email}>
+                  Atendimento: <strong>{user.email}</strong>
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                <button 
+                  onClick={() => setIsAuthSettingsOpen(true)}
+                  title="Controle de Vagas do Escritório"
+                  style={{ border: `1px solid ${G.border}`, background: G.bg, color: G.accent, borderRadius: "6px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", width: "28px", height: "28px", fontSize: "12px" }}
+                >
+                  ⚙️
+                </button>
+                <button 
+                  onClick={async () => {
+                    if (supabase) {
+                      await supabase.auth.signOut();
+                      setUser(null);
+                      showToast("Sessão encerrada com sucesso.");
+                    }
+                  }}
+                  title="Sair do Sistema"
+                  style={{ border: `1px solid rgba(239, 68, 68, 0.3)`, background: "rgba(239, 68, 68, 0.05)", color: "#ef4444", borderRadius: "6px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", width: "28px", height: "28px", fontSize: "12px" }}
+                >
+                  🚪
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="tabs">
             <button className={`tab ${tab === "scanner" ? "active" : ""}`} onClick={() => setTab("scanner")}>
               <span className="tab-icon">📄</span>Scanner
@@ -4172,5 +4424,270 @@ export default function ScannerJuridico() {
         </div>
       </div>
     </>
+  );
+}
+
+// ── Tela de Autenticação do Portal Felix & Castro Advocacia ────────────────────
+function AuthScreen({ supabase, allowedEmails, onAuthSuccess, showToast, toast }) {
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [infoMsg, setInfoMsg] = useState("");
+
+  const isEmailAllowed = (emailStr) => {
+    if (!emailStr) return false;
+    return allowedEmails.map(e => e.trim().toLowerCase()).includes(emailStr.trim().toLowerCase());
+  };
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    if (!supabase) {
+      showToast("Supabase não configurado de modo correto nas variáveis de ambiente.", "error");
+      return;
+    }
+
+    if (!email.trim() || !password) {
+      showToast("Por favor, preencha todos os campos.", "error");
+      return;
+    }
+
+    // Validação preventiva no cliente do e-mail
+    if (!isEmailAllowed(email)) {
+      showToast("E-mail não autorizado para o uso no escritório Felix & Castro.", "error");
+      return;
+    }
+
+    setLoading(true);
+    setInfoMsg("");
+
+    try {
+      if (isSignUp) {
+        // Fluxo de Cadastro
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password: password,
+          options: {
+            emailRedirectTo: window.location.origin
+          }
+        });
+
+        if (error) throw error;
+
+        if (data?.user) {
+          if (data.session) {
+            onAuthSuccess(data.user);
+            showToast("✓ Conta criada e autenticada com sucesso!", "success");
+          } else {
+            setInfoMsg(`✓ Cadastro enviado! Um link de confirmação foi encaminhado ao e-mail ${email}. Ative seu cadastro por lá antes de entrar.`);
+            showToast("Verifique seu e-mail para ativar!", "info");
+          }
+        }
+      } else {
+        // Fluxo de Login
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password: password
+        });
+
+        if (error) {
+          if (error.message.toLowerCase().includes("email not confirmed") || error.message.toLowerCase().includes("confirm")) {
+            setInfoMsg(`⚠️ Por favor, confirme seu e-mail através do link de ativação enviado para ${email} antes de efetuar o login.`);
+            throw new Error("E-mail de cadastro ainda pendente de confirmação.");
+          }
+          throw error;
+        }
+
+        if (data?.user) {
+          if (isEmailAllowed(data.user.email)) {
+            onAuthSuccess(data.user);
+            showToast("✓ Bem-vindo de volta, Dr(a)!", "success");
+          } else {
+            await supabase.auth.signOut();
+            showToast("Este e-mail não pertence a um advogado autorizado.", "error");
+          }
+        }
+      }
+    } catch (err) {
+      showToast(err.message || "Erro de login involuntário.", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background: G.bg,
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '24px',
+      color: G.text,
+      position: 'relative',
+      overflow: 'hidden'
+    }}>
+      {/* Toast local em tela de Auth se houver e o pai as repassar */}
+      {toast && (
+        <div style={{
+          position: 'fixed', top: '24px', right: '24px', padding: '14px 20px', 
+          background: toast.type === 'error' ? 'rgba(239, 68, 68, 0.95)' : toast.type === 'info' ? 'rgba(59, 130, 246, 0.95)' : 'rgba(201, 168, 76, 0.95)',
+          color: toast.type === 'error' || toast.type === 'info' ? '#fff' : '#0d0f14',
+          borderRadius: '10px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', zIndex: 1000,
+          fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px'
+        }}>
+          <span>{toast.type === 'error' ? '❌' : toast.type === 'info' ? 'ℹ️' : '✓'}</span>
+          {toast.msg}
+        </div>
+      )}
+
+      {/* Background radial gold glow effect */}
+      <div style={{
+        position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+        width: '500px', height: '500px', borderRadius: '50%',
+        background: `radial-gradient(circle, rgba(201, 168, 76, 0.04) 0%, rgba(13, 15, 20, 0) 70%)`,
+        zIndex: 0, pointerEvents: 'none'
+      }} />
+
+      <div style={{
+        width: '100%', maxWidth: '440px', background: G.surface, borderRadius: '16px',
+        border: `1px solid ${G.border}`, padding: '40px 32px', zIndex: 10,
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)', position: 'relative'
+      }}>
+        {/* Logo/Brand */}
+        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+          <h1 style={{ fontFamily: "'Playfair Display', serif", color: G.accent, fontSize: '32px', fontWeight: 600, marginBottom: '6px', letterSpacing: '0.5px' }}>
+            Félix & Castro
+          </h1>
+          <p style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '3px', color: G.muted, fontWeight: 500 }}>
+            Advocacia Especializada — Portal de Gestão
+          </p>
+          <div style={{ width: '40px', height: '1px', background: G.accentDim, margin: '16px auto 0 auto' }} />
+        </div>
+
+        <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+          {isSignUp ? (
+            <div style={{ textAlign: 'center', margin: '-10px 0 10px 0' }}>
+              <span style={{ fontSize: '11px', background: 'rgba(201, 168, 76, 0.08)', color: G.accent, padding: '4px 12px', borderRadius: '12px', border: `1px solid rgba(201, 168, 76, 0.2)` }}>
+                🛡️ Novo Cadastro de Vaga
+              </span>
+            </div>
+          ) : null}
+
+          {infoMsg && (
+            <div style={{
+              background: 'rgba(59, 130, 246, 0.07)', border: `1px solid rgba(59, 130, 246, 0.2)`,
+              padding: '12px 14px', borderRadius: '10px', fontSize: '12px', color: '#adc8fc', lineHeight: '1.5'
+            }}>
+              {infoMsg}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '11px', color: G.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>E-mail Institucional:</label>
+            <input 
+              type="email" 
+              placeholder="exemplo@felixcastro.com.br"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              disabled={loading}
+              autoComplete="email"
+              style={{
+                background: G.bg, border: `1px solid ${G.border}`, outline: 'none',
+                padding: '12px 14px', color: G.text, borderRadius: '8px', fontSize: '14px',
+                transition: 'border-color 0.2s', width: '100%'
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }}>
+            <label style={{ fontSize: '11px', color: G.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Senha de Segurança:</label>
+            <div style={{ position: 'relative' }}>
+              <input 
+                type={showPassword ? "text" : "password"} 
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                disabled={loading}
+                autoComplete={isSignUp ? "new-password" : "current-password"}
+                style={{
+                  background: G.bg, border: `1px solid ${G.border}`, outline: 'none',
+                  padding: '12px 42px 12px 14px', color: G.text, borderRadius: '8px', fontSize: '14px',
+                  transition: 'border-color 0.2s', width: '100%'
+                }}
+              />
+              <button 
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                style={{
+                  position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer', color: G.muted, fontSize: '14px'
+                }}
+              >
+                {showPassword ? "👁️" : "🙈"}
+              </button>
+            </div>
+          </div>
+
+          <button 
+            type="submit" 
+            disabled={loading}
+            style={{
+              background: G.accent, color: '#0d0f14', fontWeight: 600, border: 'none',
+              padding: '14px', borderRadius: '8px', cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: '14px', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              marginTop: '8px', boxShadow: '0 4px 12px rgba(201, 168, 76, 0.15)'
+            }}
+          >
+            {loading ? (
+              <div style={{
+                width: '16px', height: '16px', borderRadius: '50%',
+                border: '2px solid #0d0f14', borderTopColor: 'transparent',
+                animation: 'spin 1s linear infinite'
+              }} />
+            ) : isSignUp ? "✓ Enviar Cadastro" : "🔑 Acessar Portal"}
+          </button>
+        </form>
+
+        <div style={{ marginTop: '24px', textAlign: 'center' }}>
+          <button 
+            onClick={() => {
+              setIsSignUp(!isSignUp);
+              setInfoMsg("");
+            }}
+            disabled={loading}
+            style={{
+              background: 'none', border: 'none', color: G.accent, fontSize: '12px',
+              cursor: 'pointer', textDecoration: 'underline'
+            }}
+          >
+            {isSignUp ? "Já possuo credencial — Fazer Login" : "Criar nova senha para minha vaga"}
+          </button>
+        </div>
+
+        {/* Info panel about the 3 authorized spaces */}
+        <div style={{
+          marginTop: '32px', paddingTop: '20px', borderTop: `1px solid ${G.border}`,
+          fontSize: '11px', color: G.muted, display: 'flex', flexDirection: 'column', gap: '8px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: G.text, marginBottom: '2px' }}>
+            <span>🔒</span> PORTAL RESTRITO A 3 ADVOGADOS
+          </div>
+          <p>O acesso exige que seu e-mail esteja cadastrado nas vagas do escritório. Configuração atual:</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: G.bg, padding: '10px 12px', borderRadius: '8px', border: `1px solid ${G.border}` }}>
+            {allowedEmails.map((emailStr, idx) => (
+              <div key={idx} style={{ display: 'flex', justifyStyle: 'between', alignItems: 'center', gap: '6px', color: emailStr.includes("@") ? G.text : G.muted }}>
+                <span style={{ color: G.accent }}>•</span> 
+                <span style={{ flex: 1, fontFamily: "'DM Mono', monospace", textOverflow: "ellipsis", overflow: "hidden" }}>{emailStr}</span>
+                <span style={{ fontSize: '9px', background: 'rgba(201, 168, 76, 0.08)', padding: '1px 6px', borderRadius: '6px', color: G.accent, border: `1px solid rgba(201, 168, 76, 0.15)`, flexShrink: 0 }}>
+                  Vaga {idx + 1}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
