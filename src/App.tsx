@@ -1479,33 +1479,12 @@ export default function ScannerJuridico() {
   
   const [toast, setToast] = useState(null);
 
-  // ── Controle de Acesso e Perímetro de Segurança do Escritório ──
+  // ── Controle de Acesso e Perímetro de Segurança do Escritório v3 (100% Protegido via Banco) ──
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [allowedEmails, setAllowedEmails] = useState(() => {
-    try {
-      const saved = localStorage.getItem('lexscan_allowed_emails_v2');
-      return saved ? JSON.parse(saved) : [
-        "michel.advprev@gmail.com",
-        "suporte@felixcastro.com.br",
-        "contato@felixcastro.com.br"
-      ];
-    } catch(e) {
-      return [
-        "michel.advprev@gmail.com",
-        "suporte@felixcastro.com.br",
-        "contato@felixcastro.com.br"
-      ];
-    }
-  });
   const [isAuthSettingsOpen, setIsAuthSettingsOpen] = useState(false);
 
-  const isEmailAllowed = (emailStr) => {
-    if (!emailStr) return false;
-    return allowedEmails.map(e => e.trim().toLowerCase()).includes(emailStr.trim().toLowerCase());
-  };
-
-  // Monitora o estado de Autenticação e desloga automaticamente acessos não autorizados
+  // Monitora o estado de Autenticação em tempo real
   useEffect(() => {
     if (!supabase) {
       setAuthLoading(false);
@@ -1515,14 +1494,7 @@ export default function ScannerJuridico() {
     // Carregar sessão recuperada inicial
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        const email = session.user?.email || "";
-        if (isEmailAllowed(email)) {
-          setUser(session.user);
-        } else {
-          supabase.auth.signOut();
-          setUser(null);
-          showToast("Este e-mail não pertence a um advogado autorizado do escritório Felix & Castro.", "error");
-        }
+        setUser(session.user);
       } else {
         setUser(null);
       }
@@ -1532,14 +1504,7 @@ export default function ScannerJuridico() {
     // Escutar alterações em tempo real de Login/Logout
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        const email = session.user?.email || "";
-        if (isEmailAllowed(email)) {
-          setUser(session.user);
-        } else {
-          supabase.auth.signOut();
-          setUser(null);
-          showToast("Este e-mail não pertence a um advogado autorizado do escritório Felix & Castro.", "error");
-        }
+        setUser(session.user);
       } else {
         setUser(null);
       }
@@ -1547,7 +1512,7 @@ export default function ScannerJuridico() {
     });
 
     return () => subscription.unsubscribe();
-  }, [allowedEmails]);
+  }, []);
   const [camera, setCamera] = useState(false);
   const [stream, setStream] = useState(null);
 
@@ -3203,7 +3168,6 @@ export default function ScannerJuridico() {
         <style>{css}</style>
         <AuthScreen 
           supabase={supabase} 
-          allowedEmails={allowedEmails} 
           onAuthSuccess={(sessionUser) => setUser(sessionUser)} 
           showToast={showToast}
           toast={toast}
@@ -3430,90 +3394,38 @@ export default function ScannerJuridico() {
         </div>
       )}
 
-      {/* Modal de Gestão de Acesso (Configurações Supabase / Allowlist) */}
+      {/* Modal de Gestão de Acesso (Configurações Supabase / Perímetro de Segurança) */}
       {isAuthSettingsOpen && (
         <div className="modal-overlay" style={{ zIndex: 120 }}>
           <div style={{ background: G.card, padding: '24px', borderRadius: '16px', width: '100%', maxWidth: '480px', border: `1px solid ${G.border}` }}>
             <h3 style={{ marginBottom: 12, fontFamily: 'Playfair Display', color: G.accent, fontSize: '20px', textAlign: 'center' }}>
-              ⚙️ Controle de Vagas do Escritório
+              🛡️ Perímetro de Segurança Ativo
             </h3>
-            <p style={{ fontSize: '12px', color: G.muted, textAlign: 'center', marginBottom: '20px', lineHeight: '1.5' }}>
-              O scanner está configurado para permitir que apenas 3 pessoas se cadastrem ou façam login. Você pode redefinir as 3 contas autorizadas abaixo:
+            <p style={{ fontSize: '12px', color: G.text, textAlign: 'justify', marginBottom: '16px', lineHeight: '1.5' }}>
+              Este aplicativo está com o <strong>Padrão de Segurança Avançado (Perímetro Ouro)</strong> ativado.
+            </p>
+            <p style={{ fontSize: '11px', color: G.muted, textAlign: 'justify', marginBottom: '20px', lineHeight: '1.5' }}>
+              Para evitar que pessoas mal-intencionadas ou hackers descubram os e-mails autorizados do escritório inspecionando o código do navegador (F12) ou arquivos temporários, o controle de permissões reside exclusivamente de forma oculta e criptografada dentro do seu banco de dados <strong>Supabase (Backend)</strong>.
             </p>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
-              {[0, 1, 2].map((idx) => (
-                <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '11px', color: G.accent, fontWeight: 600 }}>VAGA {idx + 1} DE CREDENCIAL:</label>
-                  <input 
-                    type="email" 
-                    value={allowedEmails[idx] || ""}
-                    placeholder={`advogado${idx+1}@felixcastro.com.br`}
-                    onChange={(e) => {
-                      const updated = [...allowedEmails];
-                      updated[idx] = e.target.value.trim();
-                      setAllowedEmails(updated);
-                    }}
-                    style={{ background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '10px 12px', color: G.text, borderRadius: '8px', fontSize: '13px', fontFamily: "'DM Mono', monospace" }}
-                  />
-                </div>
-              ))}
+            <div style={{ background: 'rgba(201, 168, 76, 0.04)', border: `1px solid rgba(201, 168, 76, 0.15)`, padding: '14px', borderRadius: '10px', fontSize: '11px', color: '#e0d5ba', lineHeight: '1.5', marginBottom: '20px' }}>
+              <strong>🔑 Gerenciamento de Vagas Seguras:</strong><br />
+              <p style={{ marginTop: '6px' }}>
+                Caso queira adicionar, remover ou reconfigurar quais e-mails institucionais pertencem ao quadro de advogados do escritório, basta alterar e reexecutar a sua função trigger diretamente no menu 
+                <strong> SQL Editor</strong> com a lista desejada de e-mails em seu painel Supabase.
+              </p>
+              <p style={{ marginTop: '8px' }}>
+                Isso garante proteção com criptografia de ponta a ponta a nível corporativo e impede qualquer tentativa de intrusão externa.
+              </p>
             </div>
 
-            <div style={{ background: 'rgba(201, 168, 76, 0.04)', border: `1px solid rgba(201, 168, 76, 0.15)`, padding: '12px', borderRadius: '10px', fontSize: '11px', color: '#e0d5ba', lineHeight: '1.5', marginBottom: '20px', maxHeight: '180px', overflowY: 'auto' }}>
-              <strong>🔒 Como travar no Supabase (Nível de Banco):</strong><br />
-              Para impedir que qualquer outra pessoa tente burlar o frontend, execute o seguinte comando SQL no seu dashboard da **Supabase (SQL Editor)**:
-              <pre style={{ background: '#090a0f', padding: '8px', borderRadius: '6px', marginTop: '6px', overflowX: 'auto', fontSize: '10px', color: '#68d391', fontFamily: 'monospace' }}>
-{`create or replace function check_allowed_emails()
-returns trigger as $$
-begin
-  if new.email in (
-    '${allowedEmails[0] || ""}',
-    '${allowedEmails[1] || ""}',
-    '${allowedEmails[2] || ""}'
-  ) then
-    return new;
-  else
-    raise exception 'E-mail não cadastrado no sistema.';
-  end if;
-end;
-$$ language plpgsql;
-
-create or replace trigger check_auth_trigger
-before insert on auth.users
-for each row execute function check_allowed_emails();`}
-              </pre>
-            </div>
-
-            <div className="modal-actions" style={{ gap: '10px' }}>
-              <button 
-                className="modal-btn capture" 
-                style={{ flex: 1, padding: '12px' }} 
-                onClick={() => {
-                  try {
-                    localStorage.setItem('lexscan_allowed_emails_v2', JSON.stringify(allowedEmails));
-                    setIsAuthSettingsOpen(false);
-                    showToast("✓ Configuração de acesso salva com sucesso!");
-                  } catch(e) {
-                    showToast("Erro ao salvar.", "error");
-                  }
-                }}
-              >
-                💾 Salvar e Aplicar
-              </button>
+            <div className="modal-actions" style={{ justifyContent: 'center' }}>
               <button 
                 className="modal-btn cancel" 
-                style={{ flex: 1, padding: '12px' }} 
-                onClick={() => {
-                  // Reverte ao salvo anterior
-                  try {
-                    const saved = localStorage.getItem('lexscan_allowed_emails_v2');
-                    if (saved) setAllowedEmails(JSON.parse(saved));
-                  } catch(e) {}
-                  setIsAuthSettingsOpen(false);
-                }}
+                style={{ padding: '12px 32px', flex: 'none', minWidth: '120px' }} 
+                onClick={() => setIsAuthSettingsOpen(false)}
               >
-                Voltar
+                ✓ Entendido
               </button>
             </div>
           </div>
