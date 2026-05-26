@@ -1487,14 +1487,14 @@ export default function ScannerJuridico() {
       const saved = localStorage.getItem('lexscan_allowed_emails');
       return saved ? JSON.parse(saved) : [
         "michelgeminicriador@gmail.com",
-        "suporte@felixcastro.com.br",
-        "contato@felixcastro.com.br"
+        "luanacadvogada@gmail.com",
+        "fabriciasousa2025@outlook.com"
       ];
     } catch(e) {
       return [
         "michelgeminicriador@gmail.com",
-        "suporte@felixcastro.com.br",
-        "contato@felixcastro.com.br"
+        "luanacadvogada@gmail.com",
+        "fabriciasousa2025@outlook.com"
       ];
     }
   });
