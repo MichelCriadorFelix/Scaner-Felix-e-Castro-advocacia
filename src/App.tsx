@@ -4428,18 +4428,13 @@ for each row execute function check_allowed_emails();`}
 }
 
 // ── Tela de Autenticação do Portal Felix & Castro Advocacia ────────────────────
-function AuthScreen({ supabase, allowedEmails, onAuthSuccess, showToast, toast }) {
+function AuthScreen({ supabase, onAuthSuccess, showToast, toast }) {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [infoMsg, setInfoMsg] = useState("");
-
-  const isEmailAllowed = (emailStr) => {
-    if (!emailStr) return false;
-    return allowedEmails.map(e => e.trim().toLowerCase()).includes(emailStr.trim().toLowerCase());
-  };
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -4453,18 +4448,12 @@ function AuthScreen({ supabase, allowedEmails, onAuthSuccess, showToast, toast }
       return;
     }
 
-    // Validação preventiva no cliente do e-mail
-    if (!isEmailAllowed(email)) {
-      showToast("E-mail não autorizado para o uso no escritório Felix & Castro.", "error");
-      return;
-    }
-
     setLoading(true);
     setInfoMsg("");
 
     try {
       if (isSignUp) {
-        // Fluxo de Cadastro
+        // Fluxo de Cadastro - Deixa o banco de dados invalidar se não for um e-mail permitido
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password: password,
@@ -4500,13 +4489,8 @@ function AuthScreen({ supabase, allowedEmails, onAuthSuccess, showToast, toast }
         }
 
         if (data?.user) {
-          if (isEmailAllowed(data.user.email)) {
-            onAuthSuccess(data.user);
-            showToast("✓ Bem-vindo de volta, Dr(a)!", "success");
-          } else {
-            await supabase.auth.signOut();
-            showToast("Este e-mail não pertence a um advogado autorizado.", "error");
-          }
+          onAuthSuccess(data.user);
+          showToast("✓ Bem-vindo de volta, Dr(a)!", "success");
         }
       }
     } catch (err) {
@@ -4666,26 +4650,19 @@ function AuthScreen({ supabase, allowedEmails, onAuthSuccess, showToast, toast }
           </button>
         </div>
 
-        {/* Info panel about the 3 authorized spaces */}
+        {/* Info panel about authorized spaces */}
         <div style={{
           marginTop: '32px', paddingTop: '20px', borderTop: `1px solid ${G.border}`,
-          fontSize: '11px', color: G.muted, display: 'flex', flexDirection: 'column', gap: '8px'
+          fontSize: '11px', color: G.muted, display: 'flex', flexDirection: 'column', gap: '8px',
+          textAlign: 'center'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: G.text, marginBottom: '2px' }}>
-            <span>🔒</span> PORTAL RESTRITO A 3 ADVOGADOS
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: G.text, justifyContent: 'center', marginBottom: '2px' }}>
+            <span>🔒</span> PORTAL DE ACESSO RESTRITO
           </div>
-          <p>O acesso exige que seu e-mail esteja cadastrado nas vagas do escritório. Configuração atual:</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: G.bg, padding: '10px 12px', borderRadius: '8px', border: `1px solid ${G.border}` }}>
-            {allowedEmails.map((emailStr, idx) => (
-              <div key={idx} style={{ display: 'flex', justifyStyle: 'between', alignItems: 'center', gap: '6px', color: emailStr.includes("@") ? G.text : G.muted }}>
-                <span style={{ color: G.accent }}>•</span> 
-                <span style={{ flex: 1, fontFamily: "'DM Mono', monospace", textOverflow: "ellipsis", overflow: "hidden" }}>{emailStr}</span>
-                <span style={{ fontSize: '9px', background: 'rgba(201, 168, 76, 0.08)', padding: '1px 6px', borderRadius: '6px', color: G.accent, border: `1px solid rgba(201, 168, 76, 0.15)`, flexShrink: 0 }}>
-                  Vaga {idx + 1}
-                </span>
-              </div>
-            ))}
-          </div>
+          <p style={{ lineHeight: '1.4' }}>
+            Este sistema possui controle de perímetro rígido integrado diretamente ao banco de dados Supabase. 
+            Apenas e-mails institucionais autorizados no quadro de profissionais possuem permissão para cadastro ou login.
+          </p>
         </div>
       </div>
     </div>
