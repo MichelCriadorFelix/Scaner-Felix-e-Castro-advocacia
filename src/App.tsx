@@ -1450,7 +1450,14 @@ async function runOCR(imageBlob, onProgress) {
 // ── Integração Bancos de Dados ────────────────────────────────────────────────
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || import.meta.env.SUPABASE_PUBLISHABLE_KEY || '';
-const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    storageKey: 'felix_castro_scanner_app_auth_session_v3',
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+}) : null;
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export default function ScannerJuridico() {
