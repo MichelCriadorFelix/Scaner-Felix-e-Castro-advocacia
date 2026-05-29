@@ -1482,7 +1482,7 @@ export default function ScannerJuridico() {
   const [movingItem, setMovingItem] = useState(null);
   const [renamingItem, setRenamingItem] = useState(null);
   const [newDocumentName, setNewDocumentName] = useState("");
-  const [sortOrder, setSortOrder] = useState("date-desc"); // "date-desc", "date-asc", "name-asc", "name-desc"
+  const [sortOrder, setSortOrder] = useState("name-asc"); // "date-desc", "date-asc", "name-asc", "name-desc"
   
   const [toast, setToast] = useState(null);
 
@@ -4204,17 +4204,18 @@ export default function ScannerJuridico() {
                           }
                           <div className="hist-info">
                             {renamingItem?.id === item.id ? (
-                              <div style={{ display: 'flex', gap: '8px', marginBottom: '4px', width: '100%' }}>
+                              <div style={{ display: 'flex', gap: '8px', marginBottom: '4px', width: '100%' }} onClick={(e) => e.stopPropagation()}>
                                 <input 
                                   autoFocus
                                   type="text" 
                                   value={newDocumentName}
                                   onChange={e => setNewDocumentName(e.target.value)}
                                   onKeyDown={e => e.key === 'Enter' && handleRenameDocument()}
+                                  onClick={(e) => e.stopPropagation()}
                                   style={{ background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '4px 8px', borderRadius: '4px', color: G.text, width: '100%', fontSize: '12px' }}
                                 />
-                                <button onClick={handleRenameDocument} style={{ background: G.success, border: 'none', borderRadius: '4px', padding: '4px 8px', color: '#fff', cursor: 'pointer', fontSize: '10px' }}>Salvar</button>
-                                <button onClick={() => setRenamingItem(null)} style={{ background: 'transparent', border: `1px solid ${G.border}`, borderRadius: '4px', padding: '4px 8px', color: G.text, cursor: 'pointer', fontSize: '10px' }}>Cancelar</button>
+                                <button onClick={(e) => { e.stopPropagation(); handleRenameDocument(); }} style={{ background: G.success, border: 'none', borderRadius: '4px', padding: '4px 8px', color: '#fff', cursor: 'pointer', fontSize: '10px' }}>Salvar</button>
+                                <button onClick={(e) => { e.stopPropagation(); setRenamingItem(null); }} style={{ background: 'transparent', border: `1px solid ${G.border}`, borderRadius: '4px', padding: '4px 8px', color: G.text, cursor: 'pointer', fontSize: '10px' }}>Cancelar</button>
                               </div>
                             ) : (
                               <div className="hist-name">
