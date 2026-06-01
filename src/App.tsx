@@ -1589,6 +1589,7 @@ export default function ScannerJuridico() {
   const fileRefImg = useRef();
   const fileRefPdf = useRef();
   const fileRefBatchImg = useRef();
+  const nativeCameraRef = useRef();
   const videoRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
@@ -2555,7 +2556,7 @@ export default function ScannerJuridico() {
         setIsCropping(false);
         setCameraPages(prev => [...prev, blob]);
         setIsBatchModalOpen(true);
-      }, "image/jpeg", 0.85);
+      }, "image/jpeg", 0.97);
     }
   };
 
@@ -2585,9 +2586,46 @@ export default function ScannerJuridico() {
   // Camera
   const openCamera = async () => {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
-      });
+      let s;
+      try {
+        // Tenta qualidade Ultra HD 4K ideal
+        s = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: { ideal: "environment" }, 
+            width: { ideal: 3840 }, 
+            height: { ideal: 2160 } 
+          }
+        });
+      } catch (err4k) {
+        console.warn("Nao suportou 4K, tentando Full HD 1080p", err4k);
+        try {
+          // Tenta qualidade Full HD 1080p ideal
+          s = await navigator.mediaDevices.getUserMedia({
+            video: { 
+              facingMode: { ideal: "environment" }, 
+              width: { ideal: 1920 }, 
+              height: { ideal: 1080 } 
+            }
+          });
+        } catch (err1080p) {
+          console.warn("Nao suportou Full HD, tentando HD 720p", err1080p);
+          try {
+            s = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: { ideal: "environment" }, 
+                width: { ideal: 1280 }, 
+                height: { ideal: 720 } 
+              }
+            });
+          } catch (err720p) {
+            console.warn("Tentando qualquer camera traseira", err720p);
+            // Tenta qualquer câmera traseira
+            s = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: "environment" }
+            });
+          }
+        }
+      }
       setStream(s);
       setCamera(true);
       setTimeout(() => { 
@@ -2608,7 +2646,7 @@ export default function ScannerJuridico() {
     
     ctx.drawImage(video, 0, 0);
 
-    // Converte para JPEG com compressão equilibrada (Alta Qualidade de OCR, baixo disco)
+    // Converte para JPEG com compressão super alta para clareza impressionante do OCR e fontes
     canvas.toBlob(blob => {
       if(!blob) return;
       // Salva arquivo temporário e pula pro corte
@@ -2619,12 +2657,24 @@ export default function ScannerJuridico() {
       // Sugere o corte
       setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
       setTimeout(() => setIsCropping(true), 150);
-    }, "image/jpeg", 0.85); // 0.85 é o "ponto doce" entre nitidez e tamanho de arquivo
+    }, "image/jpeg", 0.97); // 0.97 para altíssima nitidez de fontes e OCR
   };
 
   const closeCamera = () => {
     if (stream) stream.getTracks().forEach(t => t.stop());
     setStream(null); setCamera(false);
+  };
+
+  const handleNativeCameraCapture = (files) => {
+    if (!files || files.length === 0) return;
+    const f = files[0];
+    if (!f.type.startsWith("image/")) return;
+    
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+    setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+    setCompletedCrop(null);
+    setIsCropping(true);
   };
 
   const skipCropAndAddPage = () => {
@@ -2643,7 +2693,7 @@ export default function ScannerJuridico() {
           if (!blob) return;
           setCameraPages(prev => [...prev, blob]);
           setIsBatchModalOpen(true);
-        }, "image/jpeg", 0.85);
+        }, "image/jpeg", 0.97);
         return;
       }
     }
@@ -3816,10 +3866,16 @@ export default function ScannerJuridico() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={openCamera}>
-                      <div className="action-icon">📷</div>
-                      <div className="action-title">Escanear com Câmera</div>
-                      <div className="action-desc">Tire foto do documento</div>
+                    <button className="action-card" onClick={openCamera}>
+                      <div className="action-icon">📹</div>
+                      <div className="action-title">Câmera Rápida</div>
+                      <div className="action-desc">Escanear em tempo real</div>
+                    </button>
+
+                    <button className="action-card" onClick={() => nativeCameraRef.current.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                      <div className="action-icon" style={{ color: G.accent }}>📸</div>
+                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Pro (Foco)</div>
+                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Tratamento e Autofoco</div>
                     </button>
                   </div>
                 </div>
@@ -4153,10 +4209,12 @@ export default function ScannerJuridico() {
                 </>
               )}
 
-              <input ref={fileRefImg} type="file" accept="image/*" multiple style={{ display: "none" }}
+               <input ref={fileRefImg} type="file" accept="image/*" multiple style={{ display: "none" }}
                 onChange={e => handleFiles(e.target.files)} />
               <input ref={fileRefPdf} type="file" accept="application/pdf" multiple style={{ display: "none" }}
                 onChange={e => handleFiles(e.target.files)} />
+              <input ref={nativeCameraRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+                onChange={e => handleNativeCameraCapture(e.target.files)} />
             </div>
           )}
 
