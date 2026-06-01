@@ -1675,6 +1675,66 @@ export default function ScannerJuridico() {
     };
   }, []);
 
+  // ── Interceptador de Botão Voltar Físico (Celular / Gestos de Navegação) ──
+  useEffect(() => {
+    const handlePopState = (e) => {
+      let handled = false;
+
+      if (viewingBatchPage !== null) {
+        setViewingBatchPage(null);
+        handled = true;
+      } else if (isCropping) {
+        setIsCropping(false);
+        handled = true;
+      } else if (camera) {
+        closeCamera();
+        handled = true;
+      } else if (isBatchModalOpen) {
+        setIsBatchModalOpen(false);
+        handled = true;
+      } else if (isAuthSettingsOpen) {
+        setIsAuthSettingsOpen(false);
+        handled = true;
+      } else if (viewingClient !== null) {
+        setViewingClient(null);
+        handled = true;
+      } else if (tab !== "scanner") {
+        setTab("scanner");
+        handled = true;
+      }
+
+      if (handled) {
+        // Empurra de volta para manter o mesmo nível de blindagem ativa enquanto houver subview
+        window.history.pushState({ appActive: true }, "");
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [viewingBatchPage, isCropping, camera, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
+
+  // Garante uma entrada extra no histórico como escudo protetor se houver subview/modal ativa
+  useEffect(() => {
+    const hasActiveSubview = 
+      viewingBatchPage !== null || 
+      isCropping || 
+      camera || 
+      isBatchModalOpen || 
+      isAuthSettingsOpen || 
+      viewingClient !== null || 
+      tab !== "scanner";
+
+    if (hasActiveSubview) {
+      if (!window.history.state || !window.history.state.appActive) {
+        window.history.pushState({ appActive: true }, "");
+      }
+    } else {
+      if (window.history.state && window.history.state.appActive) {
+        window.history.back();
+      }
+    }
+  }, [viewingBatchPage, isCropping, camera, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
+
   const loadData = useCallback(async () => {
     if (supabase) {
       try {
