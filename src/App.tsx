@@ -2581,13 +2581,21 @@ export default function ScannerJuridico() {
     const scaleX = image.naturalWidth / image.width;
     const scaleY = image.naturalHeight / image.height;
 
-    const pixelRatio = window.devicePixelRatio;
-    canvas.width = Math.floor(completedCrop.width * scaleX * pixelRatio);
-    canvas.height = Math.floor(completedCrop.height * scaleY * pixelRatio);
+    let cropWidth = completedCrop.width * scaleX;
+    let cropHeight = completedCrop.height * scaleY;
+
+    // Limitar o tamanho final para não crashar a memória (max 2500px na maior dimensão) no celular
+    const MAX_DIM = 2500;
+    let scaleOutput = 1;
+    if (cropWidth > MAX_DIM || cropHeight > MAX_DIM) {
+      scaleOutput = Math.min(MAX_DIM / cropWidth, MAX_DIM / cropHeight);
+    }
+
+    canvas.width = Math.floor(cropWidth * scaleOutput);
+    canvas.height = Math.floor(cropHeight * scaleOutput);
 
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.scale(pixelRatio, pixelRatio);
       ctx.imageSmoothingQuality = 'high';
 
       // Aplicar filtros de processamento de imagem para otimizar contrastes e fontes
@@ -2595,8 +2603,6 @@ export default function ScannerJuridico() {
 
       const cropX = completedCrop.x * scaleX;
       const cropY = completedCrop.y * scaleY;
-      const cropWidth = completedCrop.width * scaleX;
-      const cropHeight = completedCrop.height * scaleY;
 
       ctx.drawImage(
         image,
@@ -2606,17 +2612,17 @@ export default function ScannerJuridico() {
         cropHeight,
         0,
         0,
-        cropWidth,
-        cropHeight
+        canvas.width,
+        canvas.height
       );
 
       canvas.toBlob(blob => {
+        canvas.width = 0; canvas.height = 0; // libera ram instantaneamente
         if (!blob) return;
-        const newFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_corte.jpg", { type: "image/jpeg" });
         setIsCropping(false);
         setCameraPages(prev => [...prev, blob]);
         setIsBatchModalOpen(true);
-      }, "image/jpeg", 0.97);
+      }, "image/jpeg", Math.min(0.97, scaleOutput < 1 ? 0.90 : 0.97));
     }
   };
 
@@ -2742,18 +2748,26 @@ export default function ScannerJuridico() {
     if (croppedImgRef.current) {
       const image = croppedImgRef.current;
       const canvas = document.createElement('canvas');
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
+      
+      const MAX_DIM = 2500;
+      let scaleOutput = 1;
+      if (image.naturalWidth > MAX_DIM || image.naturalHeight > MAX_DIM) {
+         scaleOutput = Math.min(MAX_DIM / image.naturalWidth, MAX_DIM / image.naturalHeight);
+      }
+
+      canvas.width = Math.floor(image.naturalWidth * scaleOutput);
+      canvas.height = Math.floor(image.naturalHeight * scaleOutput);
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.imageSmoothingQuality = 'high';
         ctx.filter = `contrast(${imageContrast}%) brightness(${imageBrightness}%) grayscale(${isGrayscale ? 100 : 0}%) saturate(${isGrayscale ? 0 : imageSaturation}%)`;
-        ctx.drawImage(image, 0, 0);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
         canvas.toBlob(blob => {
+          canvas.width = 0; canvas.height = 0; // Libera RAM
           if (!blob) return;
           setCameraPages(prev => [...prev, blob]);
           setIsBatchModalOpen(true);
-        }, "image/jpeg", 0.97);
+        }, "image/jpeg", Math.min(0.97, scaleOutput < 1 ? 0.90 : 0.97));
         return;
       }
     }
@@ -2860,6 +2874,10 @@ export default function ScannerJuridico() {
       const y = (pdfH - imgH) / 2;
 
       doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, pdfQuality === 'alta' ? 'SLOW' : 'FAST');
+      
+      // Libera ram explícito a cada página para evitar crash!
+      compCanvas.width = 0; compCanvas.height = 0; 
+      URL.revokeObjectURL(pageUrl);
     }
     
     setProgressMsg("Salvando PDF gerado...");
@@ -2885,6 +2903,7 @@ export default function ScannerJuridico() {
       } else {
          console.error("Storage Error:", uploadError);
          showToast("Erro ao fazer upload para a nuvem. O arquivo não foi salvo no DB.", "error");
+         setProcessing(false);
          return; // Aborta para evitar registros ocos
       }
       
@@ -2933,6 +2952,7 @@ export default function ScannerJuridico() {
 
     // Joga pra aba scanner novamente para recomeçar o fluxo direto
     setTab("scanner"); 
+    setProcessing(false);
     
     showToast("✓ Salvo! Scanner liberado para seu próximo documento.");
   };
