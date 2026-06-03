@@ -3599,10 +3599,10 @@ export default function ScannerJuridico() {
               <div style={{display: 'flex', gap: '8px'}}>
                 <button 
                   className="modal-btn" 
-                  style={{flex: 1, background: G.surface, color: G.text, border: `1px solid ${G.border}`, fontSize: '12px'}} 
-                  onClick={() => { setIsBatchModalOpen(false); openCamera(); }}
+                  style={{flex: 1, background: `${G.accent}12`, color: G.accent, border: `1px solid ${G.accent}`, fontSize: '12px', fontWeight: 'bold'}} 
+                  onClick={() => { setIsBatchModalOpen(false); nativeCameraRef.current.click(); }}
                 >
-                  📸 Câmera
+                  📸 Câmera Pro
                 </button>
                 <button 
                   className="modal-btn" 
