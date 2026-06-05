@@ -2024,7 +2024,7 @@ export default function ScannerJuridico() {
         if (supabase) {
           const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
           const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-          const fileName = `${Date.now()}_${rawName}.${ext}`;
+          const fileName = `${user?.id ? user.id + '/' : ''}${Date.now()}_${rawName}.${ext}`;
           
           const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
           if (uploadData) {
@@ -2116,7 +2116,7 @@ export default function ScannerJuridico() {
       if (supabase) {
         const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
         const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-        const fileName = `${Date.now()}_${rawName}.${ext}`;
+        const fileName = `${user?.id ? user.id + '/' : ''}${Date.now()}_${rawName}.${ext}`;
         
         const { data: uploadData } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
         if (uploadData) {
@@ -2206,7 +2206,7 @@ export default function ScannerJuridico() {
         
         const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
         const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-        const fileName = `${Date.now()}_${rawName}.${ext}`;
+        const fileName = `${user?.id ? user.id + '/' : ''}${Date.now()}_${rawName}.${ext}`;
         
         const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
         if (!uploadError) {
@@ -2298,7 +2298,7 @@ export default function ScannerJuridico() {
         
         const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
         const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-        const fileName = `${Date.now()}_${rawName}.${ext}`;
+        const fileName = `${user?.id ? user.id + '/' : ''}${Date.now()}_${rawName}.${ext}`;
         
         const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFileForUpload);
         if (!uploadError) {
@@ -2887,7 +2887,7 @@ export default function ScannerJuridico() {
     let finalId = Date.now().toString();
 
     if (supabase) {
-      const fileName = `${Date.now()}_${sanitizedName}.pdf`;
+      const fileName = `${user?.id ? user.id + '/' : ''}${Date.now()}_${sanitizedName}.pdf`;
       const { data: uploadData, error: uploadError } = await supabase.storage.from('ged-auditoria').upload(fileName, finalFile, {
         contentType: 'application/pdf'
       });
