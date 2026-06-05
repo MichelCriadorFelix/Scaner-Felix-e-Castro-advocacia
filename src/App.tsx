@@ -1543,8 +1543,6 @@ export default function ScannerJuridico() {
 
   // Flow State para Escaneamento em Lote (Multi-Páginas)
   const [cameraPages, setCameraPages] = useState([]);
-  const [camera, setCamera] = useState(false);
-  const [stream, setStream] = useState(null);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
@@ -1590,7 +1588,6 @@ export default function ScannerJuridico() {
   const fileRefPdf = useRef();
   const fileRefBatchImg = useRef();
   const nativeCameraRef = useRef();
-  const videoRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
   const [viewingBatchPage, setViewingBatchPage] = useState(null);
@@ -1686,10 +1683,6 @@ export default function ScannerJuridico() {
       } else if (isCropping) {
         setIsCropping(false);
         handled = true;
-      } else if (camera) {
-        if (stream) { stream.getTracks().forEach(t => t.stop()); }
-        setCamera(false);
-        handled = true;
       } else if (isBatchModalOpen) {
         setIsBatchModalOpen(false);
         handled = true;
@@ -1712,14 +1705,13 @@ export default function ScannerJuridico() {
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [viewingBatchPage, isCropping, camera, stream, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
+  }, [viewingBatchPage, isCropping, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
 
   // Garante uma entrada extra no histórico como escudo protetor se houver subview/modal ativa
   useEffect(() => {
     const hasActiveSubview = 
       viewingBatchPage !== null || 
       isCropping || 
-      camera ||
       isBatchModalOpen || 
       isAuthSettingsOpen || 
       viewingClient !== null || 
@@ -1734,7 +1726,7 @@ export default function ScannerJuridico() {
         window.history.back();
       }
     }
-  }, [viewingBatchPage, isCropping, camera, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
+  }, [viewingBatchPage, isCropping, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
 
   const loadData = useCallback(async () => {
     if (supabase) {
@@ -3377,16 +3369,7 @@ export default function ScannerJuridico() {
       {/* Câmera em tempo real escondida no canvas e renderização */}
       <canvas ref={canvasRef} style={{ display: "none" }} />
 
-      {/* Camera modal */}
-      {camera && (
-        <div className="modal-overlay" style={{zIndex: 100}}>
-          <video ref={videoRef} autoPlay playsInline className="modal-video" style={{ objectFit: 'cover' }} />
-          <div className="modal-actions" style={{ flexDirection: 'row', justifyContent: 'center' }}>
-            <button className="modal-btn cancel" onClick={closeCamera}>✕ Cancelar</button>
-            <button className="modal-btn capture" onClick={capture} style={{ fontSize: '16px', padding: '12px 24px' }}>📸 Capturar</button>
-          </div>
-        </div>
-      )}
+
 
       {/* Crop Modal */}
       {isCropping && preview && file && file.type.startsWith("image/") && (
@@ -3624,7 +3607,7 @@ export default function ScannerJuridico() {
                 <button 
                   className="modal-btn" 
                   style={{flex: 1, background: `${G.accent}12`, color: G.accent, border: `1px solid ${G.accent}`, fontSize: '12px', fontWeight: 'bold'}} 
-                  onClick={() => { setIsBatchModalOpen(false); openCamera(); }}
+                  onClick={() => { setIsBatchModalOpen(false); nativeCameraRef.current?.click(); }}
                 >
                   📸 Câmera
                 </button>
@@ -3950,7 +3933,7 @@ export default function ScannerJuridico() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={openCamera} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
                       <div className="action-icon" style={{ color: G.accent }}>📸</div>
                       <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Integrada do Relatório</div>
                       <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Alta Qualidade, Não trava o dispositivo</div>
