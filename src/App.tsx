@@ -1543,6 +1543,8 @@ export default function ScannerJuridico() {
 
   // Flow State para Escaneamento em Lote (Multi-Páginas)
   const [cameraPages, setCameraPages] = useState([]);
+  const [camera, setCamera] = useState(false);
+  const [stream, setStream] = useState(null);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
@@ -1588,6 +1590,8 @@ export default function ScannerJuridico() {
   const fileRefPdf = useRef();
   const fileRefBatchImg = useRef();
   const nativeCameraRef = useRef();
+  const videoRef = useRef();
+  const canvasRef = useRef();
   const croppedImgRef = useRef();
   const [viewingBatchPage, setViewingBatchPage] = useState(null);
 
@@ -1682,6 +1686,10 @@ export default function ScannerJuridico() {
       } else if (isCropping) {
         setIsCropping(false);
         handled = true;
+      } else if (camera) {
+        if (stream) { stream.getTracks().forEach(t => t.stop()); }
+        setCamera(false);
+        handled = true;
       } else if (isBatchModalOpen) {
         setIsBatchModalOpen(false);
         handled = true;
@@ -1704,13 +1712,14 @@ export default function ScannerJuridico() {
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [viewingBatchPage, isCropping, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
+  }, [viewingBatchPage, isCropping, camera, stream, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
 
   // Garante uma entrada extra no histórico como escudo protetor se houver subview/modal ativa
   useEffect(() => {
     const hasActiveSubview = 
       viewingBatchPage !== null || 
       isCropping || 
+      camera ||
       isBatchModalOpen || 
       isAuthSettingsOpen || 
       viewingClient !== null || 
@@ -1725,7 +1734,7 @@ export default function ScannerJuridico() {
         window.history.back();
       }
     }
-  }, [viewingBatchPage, isCropping, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
+  }, [viewingBatchPage, isCropping, camera, isBatchModalOpen, isAuthSettingsOpen, viewingClient, tab]);
 
   const loadData = useCallback(async () => {
     if (supabase) {
@@ -2641,6 +2650,94 @@ export default function ScannerJuridico() {
     }, file.type, 1.0);
   };
 
+  // Camera
+  const openCamera = async () => {
+    try {
+      let s;
+      try {
+        // Tenta qualidade Ultra HD 4K com continuous autofocus
+        s = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: { ideal: "environment" }, 
+            width: { ideal: 3840 }, 
+            height: { ideal: 2160 },
+            advanced: [{ focusMode: "continuous" }]
+          }
+        });
+      } catch (err4k) {
+        console.warn("Nao suportou 4K, tentando Full HD 1080p", err4k);
+        try {
+          s = await navigator.mediaDevices.getUserMedia({
+            video: { 
+              facingMode: { ideal: "environment" }, 
+              width: { ideal: 1920 }, 
+              height: { ideal: 1080 },
+              advanced: [{ focusMode: "continuous" }]
+            }
+          });
+        } catch (err1080p) {
+          console.warn("Nao suportou Full HD, tentando HD 720p", err1080p);
+          try {
+            s = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: { ideal: "environment" }, 
+                width: { ideal: 1280 }, 
+                height: { ideal: 720 },
+                advanced: [{ focusMode: "continuous" }]
+              }
+            });
+          } catch (err720p) {
+            console.warn("Tentando qualquer camera traseira", err720p);
+            s = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: "environment" }
+            });
+          }
+        }
+      }
+      setStream(s);
+      setCamera(true);
+      setTimeout(() => { 
+        if (videoRef.current) videoRef.current.srcObject = s; 
+      }, 100);
+    } catch { showToast("Câmera indisponível ou sem permissão", "error"); }
+  };
+
+  const capture = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    // Resolução Nativa do Stream
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    
+    // Filtro básico inicial para nitidez no OCR
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(video, 0, 0);
+
+    // Converte para JPEG com compressão super alta para clareza impressionante do OCR
+    canvas.toBlob(blob => {
+      canvas.width = 0; canvas.height = 0; // Limpa RAM imediatamente
+      if(!blob) return;
+      // Salva arquivo temporário e pula pro corte
+      const tempF = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
+      setFile(tempF);
+      setPreview(URL.createObjectURL(blob));
+      closeCamera();
+      // Sugere o corte
+      setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+      setTimeout(() => setIsCropping(true), 150);
+    }, "image/jpeg", 0.95); 
+  };
+
+  const closeCamera = () => {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    setStream(null); 
+    setCamera(false);
+  };
+
   // Camera and Image Capture functions
   const handleNativeCameraCapture = async (files) => {
     if (!files || files.length === 0) return;
@@ -3327,6 +3424,20 @@ export default function ScannerJuridico() {
     <>
       <style>{css}</style>
 
+      {/* Câmera em tempo real escondida no canvas e renderização */}
+      <canvas ref={canvasRef} style={{ display: "none" }} />
+
+      {/* Camera modal */}
+      {camera && (
+        <div className="modal-overlay" style={{zIndex: 100}}>
+          <video ref={videoRef} autoPlay playsInline className="modal-video" style={{ objectFit: 'cover' }} />
+          <div className="modal-actions" style={{ flexDirection: 'row', justifyContent: 'center' }}>
+            <button className="modal-btn cancel" onClick={closeCamera}>✕ Cancelar</button>
+            <button className="modal-btn capture" onClick={capture} style={{ fontSize: '16px', padding: '12px 24px' }}>📸 Capturar</button>
+          </div>
+        </div>
+      )}
+
       {/* Crop Modal */}
       {isCropping && preview && file && file.type.startsWith("image/") && (
         <div className="modal-overlay" style={{zIndex: 110}}>
@@ -3563,7 +3674,7 @@ export default function ScannerJuridico() {
                 <button 
                   className="modal-btn" 
                   style={{flex: 1, background: `${G.accent}12`, color: G.accent, border: `1px solid ${G.accent}`, fontSize: '12px', fontWeight: 'bold'}} 
-                  onClick={() => { setIsBatchModalOpen(false); nativeCameraRef.current.click(); }}
+                  onClick={() => { setIsBatchModalOpen(false); openCamera(); }}
                 >
                   📸 Câmera
                 </button>
@@ -3889,10 +4000,10 @@ export default function ScannerJuridico() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                    <button className="action-card action-card-full" onClick={openCamera} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
                       <div className="action-icon" style={{ color: G.accent }}>📸</div>
-                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera do Dispositivo</div>
-                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Alta Qualidade, Tratamento e Foco</div>
+                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Integrada do Relatório</div>
+                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Alta Qualidade, Não trava o dispositivo</div>
                     </button>
                   </div>
                 </div>
