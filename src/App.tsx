@@ -1554,11 +1554,11 @@ export default function ScannerJuridico() {
   const [completedCrop, setCompletedCrop] = useState(null);
 
   // Filtros de Processamento de Imagem para alta qualidade de OCR/Contraste de Fontes
-  const [imagePreset, setImagePreset] = useState("documento"); // "original", "documento", "nitido-cores", "alto-contraste", "personalizado"
-  const [imageContrast, setImageContrast] = useState(175); // % de contraste (padrão 175% para celular tipo A17)
-  const [imageBrightness, setImageBrightness] = useState(108); // % de brilho (padrão 108% para limpar sombras)
-  const [isGrayscale, setIsGrayscale] = useState(true); // Padrão escala de cinza para limpar ruídos cromáticos
-  const [imageSaturation, setImageSaturation] = useState(100); // Saturação se colorido
+  const [imagePreset, setImagePreset] = useState("nitido-cores"); // "original", "documento", "nitido-cores", "alto-contraste", "personalizado"
+  const [imageContrast, setImageContrast] = useState(145); // % de contraste (padrão 175% para celular tipo A17)
+  const [imageBrightness, setImageBrightness] = useState(105); // % de brilho (padrão 108% para limpar sombras)
+  const [isGrayscale, setIsGrayscale] = useState(false); // Padrão colorido
+  const [imageSaturation, setImageSaturation] = useState(140); // Saturação se colorido
   const [isFineTuningOpen, setIsFineTuningOpen] = useState(false); // Sanfona para controle fino
 
   const applyImagePreset = (preset) => {
@@ -2572,59 +2572,77 @@ export default function ScannerJuridico() {
     }
   };
 
-  const applyCrop = async () => {
+  const applyCrop = () => {
     if (!completedCrop || !croppedImgRef.current || !completedCrop.width || !completedCrop.height) {
       setIsCropping(false);
       return;
     }
-    const image = croppedImgRef.current;
-    const canvas = document.createElement('canvas');
-    const scaleX = image.naturalWidth / image.width;
-    const scaleY = image.naturalHeight / image.height;
+    
+    setProcessing(true);
+    setProgress(0);
+    setProgressMsg("Cortando imagem...");
 
-    let cropWidth = completedCrop.width * scaleX;
-    let cropHeight = completedCrop.height * scaleY;
+    setTimeout(() => {
+      try {
+        const image = croppedImgRef.current;
+        const canvas = document.createElement('canvas');
+        const scaleX = image.naturalWidth / image.width;
+        const scaleY = image.naturalHeight / image.height;
 
-    // Limitar o tamanho final para não crashar a memória (max 2500px na maior dimensão) no celular
-    const MAX_DIM = 2500;
-    let scaleOutput = 1;
-    if (cropWidth > MAX_DIM || cropHeight > MAX_DIM) {
-      scaleOutput = Math.min(MAX_DIM / cropWidth, MAX_DIM / cropHeight);
-    }
+        let cropWidth = completedCrop.width * scaleX;
+        let cropHeight = completedCrop.height * scaleY;
 
-    canvas.width = Math.floor(cropWidth * scaleOutput);
-    canvas.height = Math.floor(cropHeight * scaleOutput);
+        // Limitar o tamanho final para não crashar a memória (max 1800px na maior dimensão) no celular
+        const MAX_DIM = 1800;
+        let scaleOutput = 1;
+        if (cropWidth > MAX_DIM || cropHeight > MAX_DIM) {
+          scaleOutput = Math.min(MAX_DIM / cropWidth, MAX_DIM / cropHeight);
+        }
 
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.imageSmoothingQuality = 'high';
+        canvas.width = Math.floor(cropWidth * scaleOutput);
+        canvas.height = Math.floor(cropHeight * scaleOutput);
 
-      // Aplicar filtros de processamento de imagem para otimizar contrastes e fontes
-      ctx.filter = `contrast(${imageContrast}%) brightness(${imageBrightness}%) grayscale(${isGrayscale ? 100 : 0}%) saturate(${isGrayscale ? 0 : imageSaturation}%)`;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingQuality = 'high';
 
-      const cropX = completedCrop.x * scaleX;
-      const cropY = completedCrop.y * scaleY;
+          // Aplicar filtros de processamento de imagem para otimizar contrastes e fontes
+          ctx.filter = `contrast(${imageContrast}%) brightness(${imageBrightness}%) grayscale(${isGrayscale ? 100 : 0}%) saturate(${isGrayscale ? 0 : imageSaturation}%)`;
 
-      ctx.drawImage(
-        image,
-        cropX,
-        cropY,
-        cropWidth,
-        cropHeight,
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
+          const cropX = completedCrop.x * scaleX;
+          const cropY = completedCrop.y * scaleY;
 
-      canvas.toBlob(blob => {
-        canvas.width = 0; canvas.height = 0; // libera ram instantaneamente
-        if (!blob) return;
+          ctx.drawImage(
+            image,
+            cropX,
+            cropY,
+            cropWidth,
+            cropHeight,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+          );
+
+          canvas.toBlob(blob => {
+            canvas.width = 0; canvas.height = 0; // libera ram instantaneamente
+            setProcessing(false);
+            setProgressMsg("");
+            if (!blob) return;
+            setIsCropping(false);
+            setCameraPages(prev => [...prev, blob]);
+            setIsBatchModalOpen(true);
+          }, "image/jpeg", Math.min(0.95, scaleOutput < 1 ? 0.90 : 0.95));
+        } else {
+          setProcessing(false);
+          setIsCropping(false);
+        }
+      } catch (e) {
+        console.error(e);
+        setProcessing(false);
         setIsCropping(false);
-        setCameraPages(prev => [...prev, blob]);
-        setIsBatchModalOpen(true);
-      }, "image/jpeg", Math.min(0.97, scaleOutput < 1 ? 0.90 : 0.97));
-    }
+      }
+    }, 50);
   };
 
   const rotateImage90 = () => {
@@ -2650,94 +2668,6 @@ export default function ScannerJuridico() {
     }, file.type, 1.0);
   };
 
-  // Camera
-  const openCamera = async () => {
-    try {
-      let s;
-      try {
-        // Tenta qualidade Ultra HD 4K com continuous autofocus
-        s = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: { ideal: "environment" }, 
-            width: { ideal: 3840 }, 
-            height: { ideal: 2160 },
-            advanced: [{ focusMode: "continuous" }]
-          }
-        });
-      } catch (err4k) {
-        console.warn("Nao suportou 4K, tentando Full HD 1080p", err4k);
-        try {
-          s = await navigator.mediaDevices.getUserMedia({
-            video: { 
-              facingMode: { ideal: "environment" }, 
-              width: { ideal: 1920 }, 
-              height: { ideal: 1080 },
-              advanced: [{ focusMode: "continuous" }]
-            }
-          });
-        } catch (err1080p) {
-          console.warn("Nao suportou Full HD, tentando HD 720p", err1080p);
-          try {
-            s = await navigator.mediaDevices.getUserMedia({
-              video: { 
-                facingMode: { ideal: "environment" }, 
-                width: { ideal: 1280 }, 
-                height: { ideal: 720 },
-                advanced: [{ focusMode: "continuous" }]
-              }
-            });
-          } catch (err720p) {
-            console.warn("Tentando qualquer camera traseira", err720p);
-            s = await navigator.mediaDevices.getUserMedia({
-              video: { facingMode: "environment" }
-            });
-          }
-        }
-      }
-      setStream(s);
-      setCamera(true);
-      setTimeout(() => { 
-        if (videoRef.current) videoRef.current.srcObject = s; 
-      }, 100);
-    } catch { showToast("Câmera indisponível ou sem permissão", "error"); }
-  };
-
-  const capture = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    // Resolução Nativa do Stream
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    
-    // Filtro básico inicial para nitidez no OCR
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(video, 0, 0);
-
-    // Converte para JPEG com compressão super alta para clareza impressionante do OCR
-    canvas.toBlob(blob => {
-      canvas.width = 0; canvas.height = 0; // Limpa RAM imediatamente
-      if(!blob) return;
-      // Salva arquivo temporário e pula pro corte
-      const tempF = new File([blob], `scan_${Date.now()}.jpg`, { type: "image/jpeg" });
-      setFile(tempF);
-      setPreview(URL.createObjectURL(blob));
-      closeCamera();
-      // Sugere o corte
-      setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
-      setTimeout(() => setIsCropping(true), 150);
-    }, "image/jpeg", 0.95); 
-  };
-
-  const closeCamera = () => {
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    setStream(null); 
-    setCamera(false);
-  };
-
   // Camera and Image Capture functions
   const handleNativeCameraCapture = async (files) => {
     if (!files || files.length === 0) return;
@@ -2756,8 +2686,8 @@ export default function ScannerJuridico() {
         img.onerror = reject;
       });
 
-      // Se passou de 2500px, redimensionar agora antes de salvar o blob pra preview
-      const MAX_DIM = 2500;
+      // Se passou de 1800px, redimensionar agora antes de salvar o blob pra preview
+      const MAX_DIM = 1800;
       let scale = 1;
       if (img.width > MAX_DIM || img.height > MAX_DIM) {
         scale = Math.min(MAX_DIM / img.width, MAX_DIM / img.height);
@@ -2796,39 +2726,59 @@ export default function ScannerJuridico() {
   };
 
   const skipCropAndAddPage = () => {
-    setIsCropping(false);
-    if (croppedImgRef.current) {
-      const image = croppedImgRef.current;
-      const canvas = document.createElement('canvas');
-      
-      const MAX_DIM = 2500;
-      let scaleOutput = 1;
-      if (image.naturalWidth > MAX_DIM || image.naturalHeight > MAX_DIM) {
-         scaleOutput = Math.min(MAX_DIM / image.naturalWidth, MAX_DIM / image.naturalHeight);
+    if (!croppedImgRef.current) {
+      // Fallback se não tiver ref de crop mas tem preview
+      setIsCropping(false);
+      if (preview) {
+         fetch(preview).then(r => r.blob()).then(blob => {
+            setCameraPages(prev => [...prev, blob]);
+            setIsBatchModalOpen(true);
+         }).catch(e => console.error(e));
       }
-
-      canvas.width = Math.floor(image.naturalWidth * scaleOutput);
-      canvas.height = Math.floor(image.naturalHeight * scaleOutput);
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.imageSmoothingQuality = 'high';
-        ctx.filter = `contrast(${imageContrast}%) brightness(${imageBrightness}%) grayscale(${isGrayscale ? 100 : 0}%) saturate(${isGrayscale ? 0 : imageSaturation}%)`;
-        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(blob => {
-          canvas.width = 0; canvas.height = 0; // Libera RAM
-          if (!blob) return;
-          setCameraPages(prev => [...prev, blob]);
-          setIsBatchModalOpen(true);
-        }, "image/jpeg", Math.min(0.97, scaleOutput < 1 ? 0.90 : 0.97));
-        return;
-      }
+      return;
     }
     
-    // Fallback se não conseguir processar via canvas
-    fetch(preview).then(r => r.blob()).then(blob => {
-      setCameraPages(prev => [...prev, blob]);
-      setIsBatchModalOpen(true);
-    });
+    setProcessing(true);
+    setProgress(0);
+    setProgressMsg("Aplicando filtros em tela cheia...");
+
+    setTimeout(() => {
+      try {
+        const image = croppedImgRef.current;
+        const canvas = document.createElement('canvas');
+        
+        const MAX_DIM = 1800;
+        let scaleOutput = 1;
+        if (image.naturalWidth > MAX_DIM || image.naturalHeight > MAX_DIM) {
+           scaleOutput = Math.min(MAX_DIM / image.naturalWidth, MAX_DIM / image.naturalHeight);
+        }
+
+        canvas.width = Math.floor(image.naturalWidth * scaleOutput);
+        canvas.height = Math.floor(image.naturalHeight * scaleOutput);
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingQuality = 'high';
+          ctx.filter = `contrast(${imageContrast}%) brightness(${imageBrightness}%) grayscale(${isGrayscale ? 100 : 0}%) saturate(${isGrayscale ? 0 : imageSaturation}%)`;
+          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(blob => {
+            canvas.width = 0; canvas.height = 0; // Libera RAM
+            setProcessing(false);
+            setProgressMsg("");
+            if (!blob) return;
+            setIsCropping(false);
+            setCameraPages(prev => [...prev, blob]);
+            setIsBatchModalOpen(true);
+          }, "image/jpeg", Math.min(0.95, scaleOutput < 1 ? 0.90 : 0.95));
+        } else {
+          setProcessing(false);
+          setIsCropping(false);
+        }
+      } catch (e) {
+        console.error(e);
+        setProcessing(false);
+        setIsCropping(false);
+      }
+    }, 50);
   };
 
   const handleBatchImageAdd = (files) => {
