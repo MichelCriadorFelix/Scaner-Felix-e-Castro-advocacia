@@ -844,8 +844,8 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Lista de modelos do Google (Seguindo a política estrita de usar somente Gemini 3.5 Flash)
-  const modelsToTry = ["gemini-3.5-flash"];
+  // Lista de modelos do Google
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -907,10 +907,16 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           errorType = 'quota_exceeded';
         }
 
-        console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível (${errorType}). Alternando imediatamente!`);
+        console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível (${errorType}).`);
         if (window.setKeyError) window.setKeyError(keyHash, errorType);
         
-        break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave) para poupar precioso tempo!
+        // Se for 503 ou 500, o problema é no modelo, não na chave. Tentar próximo modelo.
+        if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("unavailable")) {
+          console.warn(`⏳ Tentando próximo modelo com a mesma chave...`);
+          continue; 
+        }
+
+        break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave)
       }
     }
   }
