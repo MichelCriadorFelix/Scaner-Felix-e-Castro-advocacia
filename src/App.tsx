@@ -1141,7 +1141,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               viewport = page.getViewport({ scale: scaleAttempt });
               canvas.width = viewport.width;
               canvas.height = viewport.height;
-              ctx = canvas.getContext("2d", { willReadFrequently: true });
+              ctx = canvas.getContext("2d");
               if (!ctx) continue;
 
               renderTask = page.render({ canvasContext: ctx, viewport });
@@ -1165,7 +1165,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           // Filtro profissional para contraste do OCR local
           const tempCanvas = document.createElement("canvas");
           tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
-          const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
+          const tempCtx = tempCanvas.getContext("2d");
           if (tempCtx) {
              tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
              tempCtx.drawImage(finalCanvasToUse, 0, 0);
@@ -2492,7 +2492,7 @@ export default function ScannerJuridico() {
           let canvas = document.createElement("canvas");
           canvas.width = viewport.width;
           canvas.height = viewport.height;
-          let ctx = canvas.getContext("2d", { willReadFrequently: true });
+          let ctx = canvas.getContext("2d");
           if (!ctx) {
             console.error(`[Recuperar páginas] Erro ao obter Context 2D para a pág ${pageNum}`);
             continue;
