@@ -356,6 +356,7 @@ const css = `
     border-top: 1px solid ${G.border};
     display: flex;
     gap: 8px;
+    flex-wrap: wrap;
   }
   .dl-btn {
     flex: 1;
@@ -1552,6 +1553,7 @@ export default function ScannerJuridico() {
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
+  const [appendingDoc, setAppendingDoc] = useState(null); // Documento original que está sendo expandido/continuado
 
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
@@ -2367,6 +2369,110 @@ export default function ScannerJuridico() {
     }
   };
 
+  const startAppendingPages = async (targetResult) => {
+    if (!targetResult) return;
+    setProcessing(true);
+    setProgress(5);
+    setProgressMsg("Buscando documento para continuação...");
+    
+    try {
+      const pdfjsLib = await loadPDFJS();
+      let fileSource = null;
+      
+      // 1. Tentar do local state 'file' se coincidir
+      if (file && file.name === targetResult.name) {
+        fileSource = file;
+      }
+      
+      // 2. Tentar local blob URL
+      if (!fileSource && targetResult.localBlobUrl) {
+         try {
+           const res = await fetch(targetResult.localBlobUrl);
+           if (res.ok) fileSource = await res.blob();
+         } catch (e) {
+           console.warn("Erro ao ler localBlobUrl:", e);
+         }
+      }
+      
+      // 3. Tentar baixar via Supabase Storage SDK download (evita CORS!)
+      if (!fileSource && targetResult.fileUrl && supabase) {
+        try {
+          const urlParts = targetResult.fileUrl.split('/ged-auditoria/');
+          const bucketPath = urlParts.length > 1 ? decodeURIComponent(urlParts[1]) : null;
+          if (bucketPath) {
+            setProgressMsg("Baixando PDF via Supabase...");
+            const { data: fileBlob, error: downloadError } = await supabase.storage.from('ged-auditoria').download(bucketPath);
+            if (fileBlob && !downloadError) {
+              fileSource = fileBlob;
+            } else {
+              console.warn("Falha no download via SDK:", downloadError);
+            }
+          }
+        } catch (sdkErr) {
+          console.error("Erro no download via SDK:", sdkErr);
+        }
+      }
+      
+      // 4. Fallback final: fetch HTTP público
+      if (!fileSource && targetResult.fileUrl) {
+        setProgressMsg("Baixando documento da nuvem...");
+        const res = await fetch(targetResult.fileUrl).catch(() => null);
+        if (res && res.ok) {
+          fileSource = await res.blob();
+        }
+      }
+      
+      if (!fileSource) {
+        throw new Error("Não foi possível carregar as páginas do arquivo original.");
+      }
+      
+      setProgress(20);
+      setProgressMsg("Carregando páginas no visualizador...");
+      const arrayBuffer = await fileSource.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
+      const loadedPages = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        setProgressMsg(`Importando página original ${i}/${pdf.numPages}...`);
+        setProgress(Math.round(20 + (i / pdf.numPages) * 75));
+        
+        const page = await pdf.getPage(i);
+        let viewport = page.getViewport({ scale: 1.5 });
+        let canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        let ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const imgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+        if (imgBlob) {
+          const fileObj = new File([imgBlob as Blob], `${targetResult.name.replace(/\.[^.]+$/, "")}_pag_${i}.jpg`, { type: "image/jpeg" });
+          loadedPages.push(fileObj);
+        }
+      }
+      
+      setCameraPages(loadedPages);
+      setAppendingDoc(targetResult);
+      setBatchDocName(targetResult.name.replace(/\.[^.]+$/, ""));
+      if (targetResult.clientId) {
+        setSelectedClient(targetResult.clientId);
+      } else {
+        setSelectedClient("unassigned");
+      }
+      
+      setIsBatchModalOpen(true);
+      showToast(`✓ Carregadas ${loadedPages.length} páginas do documento original. Pronto para continuar!`, "success");
+    } catch (err) {
+      console.error(err);
+      showToast("Erro ao abrir páginas: " + (err.message || "Erro desconhecido"), "error");
+    } finally {
+      setProcessing(false);
+      setProgress(0);
+      setProgressMsg("");
+    }
+  };
+
   const recoverFailedPages = async (targetResult) => {
     if (!targetResult) {
       console.warn("[Recuperar páginas] Nenhum targetResult fornecido.");
@@ -2890,7 +2996,7 @@ export default function ScannerJuridico() {
     showToast("PDF Otimizado e Gerado! Salvando na nuvem...");
     
     let fileUrl = null;
-    let finalId = Date.now().toString();
+    let finalId = appendingDoc ? appendingDoc.id : Date.now().toString();
 
     if (supabase) {
       const fileName = `${Date.now()}_${sanitizedName}.pdf`;
@@ -2918,8 +3024,13 @@ export default function ScannerJuridico() {
          words_count: 0
       };
 
-      const { data: dbData } = await supabase.from('lexscan_documents').insert([docRecord]).select();
-      if (dbData && dbData[0]) finalId = dbData[0].id;
+      if (appendingDoc) {
+        await supabase.from('lexscan_documents').update(docRecord).eq('id', appendingDoc.id);
+        finalId = appendingDoc.id;
+      } else {
+        const { data: dbData } = await supabase.from('lexscan_documents').insert([docRecord]).select();
+        if (dbData && dbData[0]) finalId = dbData[0].id;
+      }
     }
 
     const newItem = {
@@ -2937,24 +3048,29 @@ export default function ScannerJuridico() {
       localBlobUrl: URL.createObjectURL(pdfBlob)
     };
 
-    setHistory(prev => [newItem, ...prev]);
+    if (appendingDoc) {
+      setHistory(prev => prev.map(h => h.id === appendingDoc.id ? newItem : h));
+    } else {
+      setHistory(prev => [newItem, ...prev]);
+    }
     if (!supabase) addToHistory(newItem);
 
     setCameraPages([]);
     setIsBatchModalOpen(false);
     setBatchDocName("Documento_Escaneado"); // reset config
+    setAppendingDoc(null); // clean up
 
     // Limpar o state da foto anterior e da crop session
     setFile(null);
     setPreview(null);
-    setResult(null);
+    setResult(newItem); // Keep the updated/compiled document loaded in the result view!
     setCroppedImage(null);
 
     // Joga pra aba scanner novamente para recomeçar o fluxo direto
     setTab("scanner"); 
     setProcessing(false);
     
-    showToast("✓ Salvo! Scanner liberado para seu próximo documento.");
+    showToast(appendingDoc ? "✓ Documento atualizado com novas páginas!" : "✓ Salvo! Scanner liberado para seu próximo documento.");
   };
 
   const processHistoryItem = async (item) => {
@@ -3542,9 +3658,18 @@ export default function ScannerJuridico() {
       {isBatchModalOpen && (
         <div className="modal-overlay" style={{zIndex: 115}}>
           <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '100%', maxWidth: '440px'}}>
-            <h3 style={{marginBottom: 16, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center'}}>
-               📑 Documento: {cameraPages.length} página(s)
+            <h3 style={{marginBottom: 4, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center'}}>
+               {appendingDoc ? "➕ Adicionar Páginas" : "📑 Documento PDF"}
             </h3>
+            {appendingDoc ? (
+              <div style={{fontSize: '11px', color: G.accent, textAlign: 'center', marginBottom: 16}}>
+                Expandindo: <strong>{appendingDoc.name}</strong> ({cameraPages.length} pág.)
+              </div>
+            ) : (
+              <p style={{fontSize: '11.5px', color: G.muted, textAlign: 'center', marginBottom: 16}}>
+                {cameraPages.length} página(s) carregada(s)
+              </p>
+            )}
             
             <div style={{display: 'flex', gap: '8px', overflowX: 'auto', marginBottom: '20px', paddingBottom: '8px'}}>
                {cameraPages.map((p, i) => (
@@ -3626,6 +3751,18 @@ export default function ScannerJuridico() {
                 </button>
               </div>
               <button className="modal-btn capture" onClick={compileCameraBatch}>✅ Finalizar e Salvar para a Pasta</button>
+              <button 
+                className="modal-btn" 
+                style={{ background: 'transparent', border: `1px solid ${G.border}`, color: G.text, marginTop: '2px', fontSize: '12px' }} 
+                onClick={() => {
+                  setIsBatchModalOpen(false);
+                  setCameraPages([]);
+                  setAppendingDoc(null);
+                  showToast("Lote cancelado / descartado", "info");
+                }}
+              >
+                ❌ Cancelar e Descartar
+              </button>
             </div>
           </div>
           
@@ -4257,6 +4394,25 @@ export default function ScannerJuridico() {
                       <button className="dl-btn" onClick={() => setMovingItem(result)} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
                         📂 Mover Pasta
                       </button>
+                      {!processing && (
+                        <button 
+                          className="dl-btn" 
+                          onClick={() => startAppendingPages(result)} 
+                          style={{ background: 'rgba(212, 163, 89, 0.12)', border: `1px solid ${G.accent}`, color: G.accent }}
+                          title="Adicionar mais fotos ou páginas a este documento PDF"
+                        >
+                          ➕ Adicionar Páginas
+                        </button>
+                      )}
+                      {(!result.text || result.text.trim() === "") && !processing && (
+                        <button 
+                          className="dl-btn primary" 
+                          onClick={() => processHistoryItem(result)}
+                          title="Executar OCR completo do documento expandido"
+                        >
+                          🧠 Extrair Texto (OCR)
+                        </button>
+                      )}
                     </div>
 
                     {file && file.type.startsWith('image/') && (
