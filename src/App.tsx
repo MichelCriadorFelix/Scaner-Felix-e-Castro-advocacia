@@ -4,6 +4,7 @@ import ReactCrop from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import { createClient } from '@supabase/supabase-js';
 import JSZip from 'jszip';
+import { GoogleGenAI } from "@google/genai";
 
 // ── Paleta e estilos globais ──────────────────────────────────────────────────
 const G = {
@@ -857,7 +858,6 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       const modelName = modelsToTry[m];
       try {
         console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
-        const { GoogleGenAI } = await import("@google/genai");
         const ai = new GoogleGenAI({ apiKey });
         
         const responseStream = await ai.models.generateContentStream({
