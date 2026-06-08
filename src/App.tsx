@@ -2696,8 +2696,8 @@ export default function ScannerJuridico() {
         let cropWidth = completedCrop.width * scaleX;
         let cropHeight = completedCrop.height * scaleY;
 
-        // Limitar o tamanho final para não crashar a memória (max 1800px na maior dimensão) no celular
-        const MAX_DIM = 1800;
+        // Limitar o tamanho final para não crashar a memória (max 3000px na maior dimensão para altíssima qualidade) no celular
+        const MAX_DIM = 3000;
         let scaleOutput = 1;
         if (cropWidth > MAX_DIM || cropHeight > MAX_DIM) {
           scaleOutput = Math.min(MAX_DIM / cropWidth, MAX_DIM / cropHeight);
@@ -2790,8 +2790,8 @@ export default function ScannerJuridico() {
         img.onerror = reject;
       });
 
-      // Se passou de 1800px, redimensionar agora antes de salvar o blob pra preview
-      const MAX_DIM = 1800;
+      // Se passou de 3000px, redimensionar agora antes de salvar o blob pra preview
+      const MAX_DIM = 3000;
       let scale = 1;
       if (img.width > MAX_DIM || img.height > MAX_DIM) {
         scale = Math.min(MAX_DIM / img.width, MAX_DIM / img.height);
@@ -2851,7 +2851,7 @@ export default function ScannerJuridico() {
         const image = croppedImgRef.current;
         const canvas = document.createElement('canvas');
         
-        const MAX_DIM = 1800;
+        const MAX_DIM = 3000;
         let scaleOutput = 1;
         if (image.naturalWidth > MAX_DIM || image.naturalHeight > MAX_DIM) {
            scaleOutput = Math.min(MAX_DIM / image.naturalWidth, MAX_DIM / image.naturalHeight);
@@ -2949,12 +2949,12 @@ export default function ScannerJuridico() {
         image.src = pageUrl;
       });
       
-      // Aplicando compressão no nível do PDF para economizar MBs
+      // Aplicando compressão no nível do PDF com limites de qualidade aprimorados para evitar letras embaçadas
       let maxW; 
       let q;
-      if(pdfQuality === 'leve') { maxW = 800; q = 0.6; }
-      else if(pdfQuality === 'media') { maxW = 1200; q = 0.75; }
-      else { maxW = 1920; q = 0.9; } // Alta
+      if(pdfQuality === 'leve') { maxW = 1200; q = 0.75; }
+      else if(pdfQuality === 'media') { maxW = 2048; q = 0.88; }
+      else { maxW = 3200; q = 0.95; } // Alta - Extraordinariamente nítida
 
       let scaleCanvas = 1;
       if (img.width > maxW) scaleCanvas = maxW / img.width;
