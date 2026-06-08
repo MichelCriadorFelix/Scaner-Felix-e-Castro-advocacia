@@ -1561,10 +1561,10 @@ export default function ScannerJuridico() {
 
   // Filtros de Processamento de Imagem para alta qualidade de OCR/Contraste de Fontes
   const [imagePreset, setImagePreset] = useState("nitido-cores"); // "original", "documento", "nitido-cores", "alto-contraste", "personalizado"
-  const [imageContrast, setImageContrast] = useState(145); // % de contraste (padrão 175% para celular tipo A17)
-  const [imageBrightness, setImageBrightness] = useState(105); // % de brilho (padrão 108% para limpar sombras)
+  const [imageContrast, setImageContrast] = useState(115); // % de contraste (suave para não estourar documentos coloridos tipo RG/CNH)
+  const [imageBrightness, setImageBrightness] = useState(101); // % de brilho (quase natural de 101% para preservar fundos e fotos coloridas)
   const [isGrayscale, setIsGrayscale] = useState(false); // Padrão colorido
-  const [imageSaturation, setImageSaturation] = useState(140); // Saturação se colorido
+  const [imageSaturation, setImageSaturation] = useState(125); // Saturação suave (125%) para realçar a tinta das letras sem estourar as cores
   const [isFineTuningOpen, setIsFineTuningOpen] = useState(false); // Sanfona para controle fino
 
   const applyImagePreset = (preset) => {
@@ -1580,10 +1580,10 @@ export default function ScannerJuridico() {
       setIsGrayscale(true);
       setImageSaturation(0);
     } else if (preset === "nitido-cores") {
-      setImageContrast(145);
-      setImageBrightness(105);
+      setImageContrast(115);
+      setImageBrightness(101);
       setIsGrayscale(false);
-      setImageSaturation(140);
+      setImageSaturation(125);
     } else if (preset === "alto-contraste") {
       setImageContrast(225);
       setImageBrightness(112);
@@ -3529,7 +3529,7 @@ export default function ScannerJuridico() {
                 >
                   🔍 Forte (Letras Fracas)
                 </button>
-                <button 
+               <button 
                   onClick={() => applyImagePreset("nitido-cores")}
                   style={{
                     padding: '6px 8px', borderRadius: '6px', fontSize: '11px', border: 'none', cursor: 'pointer', transition: '0.2s',
@@ -3538,7 +3538,7 @@ export default function ScannerJuridico() {
                     fontWeight: imagePreset === "nitido-cores" ? 'bold' : 'normal'
                   }}
                 >
-                  🎨 Colorido Nítido
+                  🎨 Colorido Nítido (ID / CNH)
                 </button>
                 <button 
                   onClick={() => applyImagePreset("original")}
