@@ -860,31 +860,44 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
         const ai = new GoogleGenAI({ apiKey });
         
-        const responseStream = await ai.models.generateContentStream({
-          model: modelName,
-          contents: {
-            parts: [
-              { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-              { inlineData: { data: base64, mimeType: blob.type } }
-            ]
-          },
-          config: {
-            systemInstruction: prompt,
-            temperature: 0.1,
-          }
-        });
+        // 60-second timeout para não congelar o sistema quando o Gemini estiver fora do ar
+        const fetchPromise = (async () => {
+          const responseStream = await ai.models.generateContentStream({
+            model: modelName,
+            contents: {
+              parts: [
+                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { inlineData: { data: base64, mimeType: blob.type } }
+              ]
+            },
+            config: {
+              systemInstruction: prompt,
+              temperature: 0.1,
+            }
+          });
 
-        let fullText = "";
-        let chunksReceived = 0;
-        
-        for await (const chunk of responseStream) {
-          fullText += chunk.text;
-          chunksReceived++;
-          if (onProgress) {
-            // Fakes a smooth progression dynamically based on chunks
-            const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
-            onProgress(fakePercent, `IA Lendo e Transcrevendo... (Gerado ${chunksReceived} fragmentos)`);
+          let fullText = "";
+          let chunksReceived = 0;
+          
+          for await (const chunk of responseStream) {
+            fullText += chunk.text;
+            chunksReceived++;
+            if (onProgress) {
+              const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+              onProgress(fakePercent, `IA Lendo e Transcrevendo... (Gerado ${chunksReceived} fragmentos)`);
+            }
           }
+          return fullText;
+        })();
+
+        let fullText;
+        try {
+          fullText = await Promise.race([
+            fetchPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout: A API do Gemini demorou muito para responder (60s).")), 60000))
+          ]);
+        } catch (fetchErr) {
+          throw fetchErr;
         }
 
         // Registrar sucesso no uso da chave para o dashboard
