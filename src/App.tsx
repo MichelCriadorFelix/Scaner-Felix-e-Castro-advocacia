@@ -830,13 +830,17 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Para caracteres de fato ilegíveis por rasuras ou má qualidade extrema do scanner, use '[ILEGÍVEL]'.
    - Para caligrafias médicas ou manuscritos complexos, esforce-se ao limite máximo para transcrever palavra por palavra com exatidão, deduzindo pelo contexto clínico quando possível, evitando o uso fácil de '[ILEGÍVEL]'.
 
-4. TRATAMENTO DE ASSINATURAS E RUBRICAS:
+4. TRATAMENTO DE ASSINATURAS, RUBRICAS E ELEMENTOS VISUAIS:
    - Nunca use [ILEGÍVEL] para assinaturas ou rubricas.
-   - Se houver assinatura visível:
-     - Se identificável pelo nome impresso ao lado ou contexto, transcreva como: [Assinatura Manuscrita: Nome do Titular] ou [Assinatura Digital Detectada de Nome do Titular].
-     - Se for um garrancho/rubrica não identificável por extenso, transcreva obrigatoriamente como: [Assinatura Manuscrita Detectada] ou [Rubrica Detectada].
+   - Se houver assinatura visível, transcreva como: [Assinatura Manuscrita: Nome] ou [Assinatura Digital Detectada].
+   - Se houver fotos/selfies de validação biométrica, transcreva apenas como [Foto de Validação Biométrica]. Evite descrever pessoas ou cenários.
 
-5. ESTRUTURAÇÃO DE SAÍDA:
+5. PÁGINAS VAZIAS E ESPAÇOS EM BRANCO (CRÍTICO):
+   - NUNCA, em hipótese alguma, preencha espaços visuais vazios ou entrelinhas com "&nbsp;".
+   - NÃO tente "desenhar" a formatação visual do documento usando espaços e quebras de linha excessivas.
+   - Se uma página estiver em branco ou contiver apenas elementos gráficos decorativos e notas de rodapé, transcreva apenas o rodapé e encerre a página imediatamente. Jamais crie loops infinitos de textos vazios.
+
+6. ESTRUTURAÇÃO DE SAÍDA:
    - No início de sua resposta, forneça os metadados identificados do documento para controle:
      - TÍTULO: [Título principal exato, ex: PORTARIA Nº 198/2026-MD ou DIÁRIO OFICIAL DA CIDADE DE SÃO JOÃO DE MERITI]
      - TIPO: [Classificação precisa do documento]
@@ -1844,6 +1848,7 @@ export default function ScannerJuridico() {
     const textLower = text.toLowerCase();
     if (isAi || textLower.includes("ia jurídica") || textLower.includes("ia juridica") || textLower.includes("recuperado via ia")) {
       return text
+        .replace(/&nbsp;/gi, ' ')     // Remove &nbsp; gerados por alucinação visual em espaços brancos (bug do Gemini em páginas vazias da TramitaSign)
         .replace(/\r/g, "")
         .replace(/\n{3,}/g, '\n\n') // No máximo 2 quebras de linha seguidas
         .replace(/ {2,}/g, ' ')     // Remove espaços duplos
