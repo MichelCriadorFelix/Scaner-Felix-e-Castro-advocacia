@@ -589,10 +589,36 @@ function formatDate(ts) {
   });
 }
 
-async function forceDownload(url, filename) {
+async function forceDownload(url, filename, supabaseContext = null) {
   try {
+    // Interceptar URLs do Supabase (mesmo públicas) que podem estar retornando 404 por configurações de RLS
+    if (url.includes('.supabase.co/storage/v1/object/') && supabaseContext) {
+      const match = url.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+      if (match) {
+        const bucket = match[1];
+        const filePath = match[2].split('?')[0]; // Remover parâmetros de URL
+        
+        try {
+          const { data: fileBlob, error } = await supabaseContext.storage.from(bucket).download(decodeURIComponent(filePath));
+          if (fileBlob && !error) {
+            const blobUrl = URL.createObjectURL(fileBlob);
+            const a = document.createElement("a");
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+            return;
+          }
+        } catch(sdkErr) {
+          console.warn("Falha no download direto pelo SDK do Supabase, tentando fetch padrão", sdkErr);
+        }
+      }
+    }
+
     const response = await fetch(url);
-    if (!response.ok) throw new Error("Erro na requisição HTTP");
+    if (!response.ok) throw new Error("Erro na requisição HTTP " + response.status);
     const blob = await response.blob();
     const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -601,7 +627,7 @@ async function forceDownload(url, filename) {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(blobUrl);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
   } catch (e) {
     console.error("Erro ao forçar download via Blob, usando fallback:", e);
     // Fallback: usar parâmetro download do Supabase ou abrir nova aba
@@ -3409,9 +3435,28 @@ export default function ScannerJuridico() {
           const urlToFetch = doc.fileUrl || doc.localBlobUrl || doc.preview;
           if (!urlToFetch) continue;
 
-          const response = await fetch(urlToFetch);
-          if (!response.ok) throw new Error("Falha no fetch");
-          const blob = await response.blob();
+          let blob;
+          let sdkSuccess = false;
+
+          // Se for URL do Supabase público que pode estar privada (RLS limitando fetch normal)
+          if (urlToFetch.includes('.supabase.co/storage/v1/object/') && supabase) {
+            const match = urlToFetch.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+            if (match) {
+              const bucket = match[1];
+              const filePath = match[2].split('?')[0];
+              const { data: fileBlob, error } = await supabase.storage.from(bucket).download(decodeURIComponent(filePath));
+              if (fileBlob && !error) {
+                blob = fileBlob;
+                sdkSuccess = true;
+              }
+            }
+          }
+
+          if (!sdkSuccess) {
+            const response = await fetch(urlToFetch);
+            if (!response.ok) throw new Error("Falha no fetch HTTP");
+            blob = await response.blob();
+          }
           
           let entryName = doc.name;
           // Garantir extensão básica baseada no tipo se o nome não tiver
@@ -4402,7 +4447,7 @@ export default function ScannerJuridico() {
                       </button>
                       {(result.fileUrl || result.localBlobUrl) && (
                          <button 
-                           onClick={(e) => { e.preventDefault(); forceDownload(result.fileUrl || result.localBlobUrl, result.name); }}
+                           onClick={(e) => { e.preventDefault(); forceDownload(result.fileUrl || result.localBlobUrl, result.name, supabase); }}
                            className="dl-btn" 
                            style={{ background: G.success, color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                          >
@@ -4794,7 +4839,7 @@ export default function ScannerJuridico() {
                             )}
                             <button className="icon-btn" title="Mover Pasta" onClick={(e) => { e.stopPropagation(); setMovingItem(item); }}>📂</button>
                             {(item.fileUrl || item.localBlobUrl) && (
-                               <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
+                               <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name, supabase); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
                             )}
                             {/* Botão de Refazer OCR (Sempre disponível para correção manual) */}
                             <button 
