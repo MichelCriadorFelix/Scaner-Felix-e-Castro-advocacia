@@ -3352,7 +3352,7 @@ export default function ScannerJuridico() {
     // Maintain extension if not typed
     let finalExt = renamingItem.name.split('.').pop() || 'pdf';
     let rawInput = newDocumentName.trim();
-    if (!rawInput.includes('.')) {
+    if (!rawInput.match(/\.[a-zA-Z0-9]+$/)) {
        rawInput = `${rawInput}.${finalExt}`;
     }
 
@@ -3525,10 +3525,17 @@ export default function ScannerJuridico() {
           }
           
           let entryName = doc.name;
-          // Garantir extensão básica baseada no tipo se o nome não tiver
-          if (!entryName.includes('.')) {
-            if (blob.type === 'application/pdf') entryName += '.pdf';
-            else if (blob.type === 'image/jpeg') entryName += '.jpg';
+          // Garantir extensão baseada no tipo se o nome não tiver uma extensão válida no final
+          const isPdf = doc.type === 'application/pdf' || (blob && blob.type === 'application/pdf');
+          const isImage = (doc.type && doc.type.startsWith('image/')) || (blob && blob.type.startsWith('image/'));
+
+          if (isPdf && !entryName.toLowerCase().endsWith('.pdf')) {
+            entryName += '.pdf';
+          } else if (isImage && !entryName.match(/\.(jpg|jpeg|png)$/i)) {
+            entryName += '.jpg';
+          } else if (!entryName.match(/\.[a-zA-Z0-9]+$/)) {
+            // Em caso de dúvida e sem extensão clara no final, assumir PDF que é o formato mestre
+            entryName += '.pdf';
           }
           
           zip.file(entryName, blob);
