@@ -877,7 +877,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
   // Lista de modelos do Google
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"];
+  const modelsToTry = ["gemini-3.0-flash-preview", "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
