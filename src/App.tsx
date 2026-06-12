@@ -1959,8 +1959,29 @@ export default function ScannerJuridico() {
     try {
       // Se for imagem, conseguimos comprimir via canvas
       if (item.type.startsWith('image/')) {
-        const response = await fetch(item.fileUrl || item.preview);
-        const blob = await response.blob();
+        const urlToFetch = item.fileUrl || item.preview;
+        let blob;
+        let sdkSuccess = false;
+
+        if (urlToFetch.includes('.supabase.co/storage/v1/object/') && supabase) {
+          const match = urlToFetch.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+          if (match) {
+            const bucket = match[1];
+            const filePath = match[2].split('?')[0];
+            const { data: fileBlob, error } = await supabase.storage.from(bucket).download(decodeURIComponent(filePath));
+            if (fileBlob && !error) {
+              blob = fileBlob;
+              sdkSuccess = true;
+            }
+          }
+        }
+
+        if (!sdkSuccess) {
+          const response = await fetch(urlToFetch);
+          if (!response.ok) throw new Error("Falha no fetch HTTP");
+          blob = await response.blob();
+        }
+
         const compressedBlob = await compressFile(blob, level);
         const url = URL.createObjectURL(compressedBlob);
         const a = document.createElement("a");
@@ -2441,11 +2462,12 @@ export default function ScannerJuridico() {
       // 3. Tentar baixar via Supabase Storage SDK download (evita CORS!)
       if (!fileSource && targetResult.fileUrl && supabase) {
         try {
-          const urlParts = targetResult.fileUrl.split('/ged-auditoria/');
-          const bucketPath = urlParts.length > 1 ? decodeURIComponent(urlParts[1]) : null;
-          if (bucketPath) {
+          const match = targetResult.fileUrl.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+          if (match) {
+            const bucket = match[1];
+            const filePath = match[2].split('?')[0];
             setProgressMsg("Baixando PDF via Supabase...");
-            const { data: fileBlob, error: downloadError } = await supabase.storage.from('ged-auditoria').download(bucketPath);
+            const { data: fileBlob, error: downloadError } = await supabase.storage.from(bucket).download(decodeURIComponent(filePath));
             if (fileBlob && !downloadError) {
               fileSource = fileBlob;
             } else {
@@ -2580,11 +2602,12 @@ export default function ScannerJuridico() {
       if (!fileSource && targetResult.fileUrl && supabase) {
         try {
           console.log("[Recuperar páginas] Tentando download direto via SDK Supabase para evitar erros de CORS...");
-          const urlParts = targetResult.fileUrl.split('/ged-auditoria/');
-          const bucketPath = urlParts.length > 1 ? decodeURIComponent(urlParts[1]) : null;
-          if (bucketPath) {
+          const match = targetResult.fileUrl.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+          if (match) {
+            const bucket = match[1];
+            const filePath = match[2].split('?')[0];
             setProgressMsg("Baixando PDF original do Supabase via SDK...");
-            const { data: fileBlob, error: downloadError } = await supabase.storage.from('ged-auditoria').download(bucketPath);
+            const { data: fileBlob, error: downloadError } = await supabase.storage.from(bucket).download(decodeURIComponent(filePath));
             if (fileBlob && !downloadError) {
               fileSource = fileBlob;
               console.log("[Recuperar páginas] ✓ Download via SDK Supabase efetuado com absoluto sucesso.");
@@ -3125,8 +3148,30 @@ export default function ScannerJuridico() {
     
     try {
       const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
-      const res = await fetch(urlToFetch);
-      const blob = await res.blob();
+      
+      let blob;
+      let sdkSuccess = false;
+
+      // Se for URL do Supabase público que pode estar privada (RLS limitando fetch normal)
+      if (urlToFetch.includes('.supabase.co/storage/v1/object/') && supabase) {
+        const match = urlToFetch.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+        if (match) {
+          const bucket = match[1];
+          const filePath = match[2].split('?')[0];
+          const { data: fileBlob, error } = await supabase.storage.from(bucket).download(decodeURIComponent(filePath));
+          if (fileBlob && !error) {
+            blob = fileBlob;
+            sdkSuccess = true;
+          }
+        }
+      }
+
+      if (!sdkSuccess) {
+        const response = await fetch(urlToFetch);
+        if (!response.ok) throw new Error("Falha no fetch HTTP");
+        blob = await response.blob();
+      }
+
       const fileToProcess = new File([blob], item.name, { type: item.type });
 
       let extracted;
@@ -3201,8 +3246,29 @@ export default function ScannerJuridico() {
         
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
-          const res = await fetch(urlToFetch);
-          const blob = await res.blob();
+          
+          let blob;
+          let sdkSuccess = false;
+
+          if (urlToFetch.includes('.supabase.co/storage/v1/object/') && supabase) {
+            const match = urlToFetch.match(/\/storage\/v1\/object\/(?:public|sign)\/([^\/]+)\/(.+)$/);
+            if (match) {
+              const bucket = match[1];
+              const filePath = match[2].split('?')[0];
+              const { data: fileBlob, error } = await supabase.storage.from(bucket).download(decodeURIComponent(filePath));
+              if (fileBlob && !error) {
+                blob = fileBlob;
+                sdkSuccess = true;
+              }
+            }
+          }
+
+          if (!sdkSuccess) {
+            const res = await fetch(urlToFetch);
+            if (!res.ok) throw new Error("Falha no fetch HTTP");
+            blob = await res.blob();
+          }
+
           const fileToProcess = new File([blob], item.name, { type: item.type });
     
           let extracted;
