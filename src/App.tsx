@@ -877,7 +877,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
   // Lista de modelos do Google em ordem de preferência para o sistema jurídico
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash"];
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -949,13 +949,15 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           errorType = 'invalid';
         } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
           errorType = 'quota_exceeded';
+          // Espera 2 segundos se bater na cota antes de tentar a próxima chave/modelo
+          await new Promise(r => setTimeout(r, 2000)); 
         }
 
         console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível (${errorType}).`);
         if (window.setKeyError) window.setKeyError(keyHash, errorType);
         
-        // Se for 503 ou 500, o problema é no modelo, não na chave. Tentar próximo modelo.
-        if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("unavailable")) {
+        // Se for 503, 500, 404 ou 400 (model failure), o problema é no modelo, não necessariamente na chave. Tentar próximo modelo.
+        if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found")) {
           console.warn(`⏳ Tentando próximo modelo com a mesma chave...`);
           continue; 
         }
@@ -3244,6 +3246,9 @@ export default function ScannerJuridico() {
         setProgress(0);
         setProgressMsg(`[${i + 1}/${docs.length}] Analisando: ${item.name}...`);
         
+        // Pequena pausa entre itens para respeitar RPM (1.5s)
+        if (i > 0) await new Promise(r => setTimeout(r, 1500));
+
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
           
