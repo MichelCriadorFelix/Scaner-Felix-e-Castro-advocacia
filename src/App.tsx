@@ -825,9 +825,9 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true) {
     return { key, ...meta };
   });
 
-  // Filtra chaves que NÃO estão com erro (deve ter status 'ok' ou 'active' ou vazio)
+  // Filtra chaves que NÃO estão com erro (deve ter status 'ok' ou 'active', vazio, ou 'quota_exceeded' que é temporário)
   const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'quota_exceeded'
   );
   
   // Se TODAS as chaves estiverem marcadas com erro, usamos todas como fallback (reiniciando tentativa caso alguma tenha resetado)
@@ -958,27 +958,43 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         const errorStr = (e.message || "").toLowerCase();
         
         // Identificar tipo exato do erro para atualizar o dashboard
-        let errorType = 'error';
+        let errorType = null;
         if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden") || errorStr.includes("permission")) {
           errorType = 'blocked'; 
         } else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("key is invalid")) {
           errorType = 'invalid';
         } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
           errorType = 'quota_exceeded';
-          // Espera 2 segundos se bater na cota antes de tentar a próxima chave/modelo
-          await new Promise(r => setTimeout(r, 2000)); 
+          // Espera 5 segundos se bater na cota antes de tentar a próxima chave/modelo (RPM de 15 por min requer pausas)
+          console.warn(`⏳ Rate limit atingido. Pausando 5s para proteção...`);
+          await new Promise(r => setTimeout(r, 5000)); 
+        } else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found") || errorStr.includes("timeout")) {
+          errorType = 'server_error';
+        } else {
+          errorType = 'error';
         }
 
-        console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) indisponível (${errorType}).`);
-        if (window.setKeyError) window.setKeyError(keyHash, errorType);
+        console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}).`);
         
-        // Se for 503, 500, 404 ou 400 (model failure), o problema é no modelo, não necessariamente na chave. Tentar próximo modelo.
-        if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found")) {
-          console.warn(`⏳ Tentando próximo modelo com a mesma chave...`);
+        // MARCAMOS A CHAVE APENAS SE FOR ERRO PERMANENTE (Inválida ou Bloqueada) ou se estourar cota total repetidamente
+        // Para cota temporária ou erro 503 de servidor, não queremos "banir" a chave do dashboard para sempre.
+        if (errorType === 'blocked' || errorType === 'invalid' || errorType === 'error') {
+           if (window.setKeyError) window.setKeyError(keyHash, errorType);
+        } else if (errorType === 'quota_exceeded') {
+           // Marca visualmente como cota mas não banida no loop ativo (pode ser temporaria)
+           if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
+        } else if (errorType === 'server_error') {
+           // Erro nos servidores do Google, mantemos a chave ativa
+           if (window.setKeyError) window.setKeyError(keyHash, 'active');
+        }
+        
+        // Se for erro de servidor, pode ser apenas no "modelo" específico. Tentar o próximo modelo.
+        if (errorType === 'server_error') {
+          console.warn(`⏳ Falha temporária da API (503/Timeout). Tentando próximo modelo com a mesma chave...`);
           continue; 
         }
 
-        break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave)
+        break; // Sai do loop "m" (modelos) e vai pro loop "i" (próxima chave) para cota ou chave inválida
       }
     }
   }
