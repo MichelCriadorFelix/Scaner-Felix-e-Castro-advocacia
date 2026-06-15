@@ -825,9 +825,9 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true) {
     return { key, ...meta };
   });
 
-  // Filtra chaves que NÃO estão com erro (deve ter status 'ok' ou 'active', vazio, ou 'quota_exceeded' que é temporário)
+  // Filtra chaves que NÃO estão com erro (deve ter status 'ok' ou 'active' ou vazio)
   const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'quota_exceeded'
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
   );
   
   // Se TODAS as chaves estiverem marcadas com erro, usamos todas como fallback (reiniciando tentativa caso alguma tenha resetado)
