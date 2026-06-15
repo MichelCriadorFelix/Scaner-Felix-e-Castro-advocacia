@@ -1556,6 +1556,8 @@ export default function ScannerJuridico() {
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
   const [result, setResult] = useState(null);
+  const [isEditingText, setIsEditingText] = useState(false);
+  const [editedText, setEditedText] = useState("");
   const [startPage, setStartPage] = useState(1);
   const [history, setHistory] = useState([]);
   const [clients, setClients] = useState([]);
@@ -3363,6 +3365,45 @@ export default function ScannerJuridico() {
     if (processedCount > 0) setTab("history");
   };
 
+  const handleSaveManualEdit = async () => {
+    if (!result) return;
+    try {
+      const newText = editedText;
+      const newWords = newText.split(/\s+/).filter(Boolean).length;
+      const newChars = newText.length;
+      
+      const updatedItem = {
+        ...result,
+        text: newText,
+        words: newWords,
+        chars: newChars,
+      };
+
+      setResult(updatedItem);
+      setIsEditingText(false);
+      setHistory((prev) => prev.map((h) => (h.id === result.id ? updatedItem : h)));
+
+      if (supabase) {
+        await supabase
+          .from("lexscan_documents")
+          .update({
+            extracted_text: newText,
+            words_count: newWords,
+            chars_count: newChars,
+          })
+          .eq("id", result.id);
+      } else {
+        const localH = getHistory().map((h) => (h.id === result.id ? updatedItem : h));
+        localStorage.setItem("lexscan_history", JSON.stringify(localH));
+      }
+
+      showToast("Texto atualizado com sucesso!", "success");
+    } catch (e) {
+      console.error("Erro ao salvar edição:", e);
+      showToast("Erro ao salvar edição manual", "error");
+    }
+  };
+
   const loadFromHistory = (item) => {
     setResult(item);
     setTab("scanner");
@@ -4539,7 +4580,30 @@ export default function ScannerJuridico() {
                       );
                     })()}
 
-                    <div className="result-text">{result.text || "(nenhum texto reconhecido)"}</div>
+                    {isEditingText ? (
+                      <div style={{ padding: '0 16px', marginTop: '12px' }}>
+                        <textarea
+                          value={editedText}
+                          onChange={(e) => setEditedText(e.target.value)}
+                          style={{
+                            width: '100%',
+                            minHeight: '320px',
+                            background: 'rgba(0,0,0,0.3)',
+                            border: `1px solid ${G.border}`,
+                            color: G.text,
+                            fontFamily: "'DM Mono', monospace",
+                            fontSize: '12px',
+                            padding: '12px',
+                            lineHeight: '1.7',
+                            borderRadius: '8px',
+                            resize: 'vertical',
+                            outline: 'none'
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="result-text">{result.text || "(nenhum texto reconhecido)"}</div>
+                    )}
                     <div className="confidence-bar">
                       <span>Confiança OCR</span>
                       <div className="conf-fill">
@@ -4548,12 +4612,26 @@ export default function ScannerJuridico() {
                       <span style={{ color: confColor(getRealConfidence(result.text, result.confidence)) }}>{getRealConfidence(result.text, result.confidence)}%</span>
                     </div>
                     <div className="result-actions">
-                      <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
-                        📝 .TXT
-                      </button>
-                      <button className="dl-btn primary" onClick={() => downloadPDF(result.text, result.name.replace(/\.[^.]+$/, ""))}>
-                        📄 Exportar OCR (PDF)
-                      </button>
+                      {isEditingText ? (
+                        <>
+                          <button className="dl-btn primary" onClick={handleSaveManualEdit} style={{ background: G.success, border: 'none', color: '#fff' }}>
+                            💾 Salvar Edição
+                          </button>
+                          <button className="dl-btn" onClick={() => setIsEditingText(false)} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
+                            ❌ Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button className="dl-btn" onClick={() => { setIsEditingText(true); setEditedText(result.text || ""); }} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
+                            ✏️ Editar Texto
+                          </button>
+                          <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
+                            📝 .TXT
+                          </button>
+                          <button className="dl-btn primary" onClick={() => downloadPDF(result.text, result.name.replace(/\.[^.]+$/, ""))}>
+                            📄 Exportar OCR (PDF)
+                          </button>
                       {(result.fileUrl || result.localBlobUrl) && (
                          <button 
                            onClick={(e) => { e.preventDefault(); forceDownload(result.fileUrl || result.localBlobUrl, result.name, supabase); }}
@@ -4584,6 +4662,8 @@ export default function ScannerJuridico() {
                         >
                           🧠 Extrair Texto (OCR)
                         </button>
+                      )}
+                      </>
                       )}
                     </div>
 
