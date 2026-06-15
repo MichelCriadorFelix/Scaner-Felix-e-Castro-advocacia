@@ -773,19 +773,35 @@ async function enhanceImageForGemini(imageBlob) {
       const i = new Image();
       const url = URL.createObjectURL(imageBlob);
       i.onload = () => { URL.revokeObjectURL(url); res(i); };
-      i.onerror = () => { URL.revokeObjectURL(url); rej(); };
+      i.onerror = () => { URL.revokeObjectURL(url); res(null); };
       i.src = url;
     });
+    if (!img) return imageBlob;
+
     const canvas = document.createElement("canvas");
-    canvas.width = img.width; canvas.height = img.height;
+    let { width, height } = img;
+    
+    // Resize adaptativo para não explodir tokens e acelerar a base64 (Max 1600px na maior dimensão)
+    const MAX_DIMENSION = 1600;
+    if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+      if (width > height) {
+        height = Math.round((height * MAX_DIMENSION) / width);
+        width = MAX_DIMENSION;
+      } else {
+        width = Math.round((width * MAX_DIMENSION) / height);
+        height = MAX_DIMENSION;
+      }
+    }
+
+    canvas.width = width; 
+    canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (ctx) {
-      // Filtro profissional inteligente: Melhora contraste (+20%), brilho (+2%) e cores (+10%) sem binarizar.
-      // Isso é crucial para CNH e RG que possuem fundos verdes ou cinzas que somem sob binarização severa.
+      // Filtro profissional inteligente...
       ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, width, height);
     }
-    const resBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
+    const resBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85)); // 0.85 para mais velocidade sem perda grave de IA
     canvas.width = 0; canvas.height = 0;
     return resBlob || imageBlob;
   } catch (e) {
@@ -890,7 +906,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
         const ai = new GoogleGenAI({ apiKey });
         
-        // 60-second timeout para não congelar o sistema quando o Gemini estiver fora do ar
+        // 120-second timeout para modelos avançados que demoram mais para processar OCR de alta densidade
         const fetchPromise = (async () => {
           const responseStream = await ai.models.generateContentStream({
             model: modelName,
@@ -924,7 +940,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         try {
           fullText = await Promise.race([
             fetchPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout: A API do Gemini demorou muito para responder (60s).")), 60000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout: A API do Gemini demorou muito para responder (120s).")), 120000))
           ]);
         } catch (fetchErr) {
           throw fetchErr;
@@ -1177,7 +1193,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           let renderSuccess = false;
 
           // Escala adaptativa progressiva para economia de heap/buffers caso esteja falhando
-          const attemptScales = attempt === 1 ? (goldStandard ? [3.0, 2.0, 1.5] : [2.0, 1.5]) : attempt === 2 ? [1.25, 1.0] : [0.75];
+          const attemptScales = attempt === 1 ? (goldStandard ? [2.0, 1.5] : [1.5, 1.0]) : attempt === 2 ? [1.25, 1.0] : [0.75];
           
           for (let scaleAttempt of attemptScales) {
             let canvas = document.createElement("canvas");
@@ -2663,7 +2679,7 @@ export default function ScannerJuridico() {
         
         try {
           const page = await pdf.getPage(pageNum);
-          let viewport = page.getViewport({ scale: goldStandard ? 3.0 : 2.0 });
+          let viewport = page.getViewport({ scale: goldStandard ? 2.0 : 1.5 });
           let canvas = document.createElement("canvas");
           canvas.width = viewport.width;
           canvas.height = viewport.height;
