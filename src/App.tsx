@@ -876,8 +876,8 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Lista de modelos do Google
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+  // Lista de modelos do Google em ordem de preferência para o sistema jurídico
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -3242,7 +3242,7 @@ export default function ScannerJuridico() {
     for (let i = 0; i < docs.length; i++) {
         const item = docs[i];
         setProgress(0);
-        setProgressMsg(`[${i + 1}/${docs.length}] Processando: ${item.name}...`);
+        setProgressMsg(`[${i + 1}/${docs.length}] Analisando: ${item.name}...`);
         
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
@@ -3287,36 +3287,34 @@ export default function ScannerJuridico() {
     
           if (extracted && extracted.text) {
             extracted.text = optimizeRawText(extracted.text, true);
-          }
-          
-          onProgress(90, "Atualizando banco de dados...");
-          
-          if (supabase) {
-            await supabase.from("lexscan_documents").update({
-              extracted_text: extracted.text,
+            
+            if (supabase) {
+              await supabase.from("lexscan_documents").update({
+                extracted_text: extracted.text,
+                confidence: extracted.confidence,
+                words_count: extracted.text.split(/\s+/).filter(Boolean).length,
+                chars_count: extracted.text.length
+              }).eq("id", item.id);
+            }
+      
+            const updatedItem = {
+              ...item,
+              text: extracted.text,
               confidence: extracted.confidence,
-              words_count: extracted.text.split(/\s+/).filter(Boolean).length,
-              chars_count: extracted.text.length
-            }).eq("id", item.id);
+              words: extracted.text.split(/\s+/).filter(Boolean).length,
+              chars: extracted.text.length
+            };
+      
+            setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
+            if(!supabase) {
+               let localH = getHistory().map(h => h.id === item.id ? updatedItem : h);
+               localStorage.setItem("lexscan_history", JSON.stringify(localH));
+            }
+            processedCount++;
           }
-    
-          const updatedItem = {
-            ...item,
-            text: extracted.text,
-            confidence: extracted.confidence,
-            words: extracted.text.split(/\s+/).filter(Boolean).length,
-            chars: extracted.text.length
-          };
-    
-          setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
-          if(!supabase) {
-             let localH = getHistory().map(h => h.id === item.id ? updatedItem : h);
-             localStorage.setItem("lexscan_history", JSON.stringify(localH));
-          }
-          processedCount++;
-        } catch (e) {
-          console.error(`Error on file ${item.name}`, e);
-          showToast(`Erro ao processar ${item.name}: ${e.message || 'Falha Interna'}`, "error");
+        } catch (fileErr) {
+          console.error(`Erro no arquivo ${item.name}:`, fileErr);
+          if (window.lexscan_abort) break;
         }
     }
     
@@ -3324,7 +3322,8 @@ export default function ScannerJuridico() {
     setProgress(0);
     setProgressMsg("");
     setTab("history"); // Retorna para o histórico após processar todos
-    showToast(`✓ Lote de OCR concluído! ${processedCount} documentos processados.`, "success");
+    showToast(`✓ Lote concluído! ${processedCount} documentos processados.`, "success");
+    if (processedCount > 0) setTab("history");
   };
 
   const loadFromHistory = (item) => {
