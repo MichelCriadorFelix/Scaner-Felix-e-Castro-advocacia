@@ -877,7 +877,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
   // Lista de modelos do Google
-  const modelsToTry = ["gemini-3.0-flash-preview", "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"];
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -3525,17 +3525,17 @@ export default function ScannerJuridico() {
           }
           
           let entryName = doc.name;
-          // Garantir extensão baseada no tipo se o nome não tiver uma extensão válida no final
+          // Garantir extensão PDF para documentos, a menos que seja imagem explícita
           const isPdf = doc.type === 'application/pdf' || (blob && blob.type === 'application/pdf');
           const isImage = (doc.type && doc.type.startsWith('image/')) || (blob && blob.type.startsWith('image/'));
 
           if (isPdf && !entryName.toLowerCase().endsWith('.pdf')) {
-            entryName += '.pdf';
-          } else if (isImage && !entryName.match(/\.(jpg|jpeg|png)$/i)) {
-            entryName += '.jpg';
-          } else if (!entryName.match(/\.[a-zA-Z0-9]+$/)) {
-            // Em caso de dúvida e sem extensão clara no final, assumir PDF que é o formato mestre
-            entryName += '.pdf';
+            entryName = entryName.replace(/\.[^.]+$/, "") + ".pdf";
+          } else if (isImage && !entryName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+            entryName = entryName.replace(/\.[^.]+$/, "") + ".jpg";
+          } else if (!entryName.includes('.')) {
+            // Sem extensão e sem tipo claro? PDF é o padrão seguro do sistema
+            entryName += ".pdf";
           }
           
           zip.file(entryName, blob);
