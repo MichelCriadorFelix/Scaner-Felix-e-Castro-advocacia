@@ -3601,21 +3601,49 @@ export default function ScannerJuridico() {
             blob = await response.blob();
           }
           
-          let entryName = doc.name;
+          let entryName = doc.name || `Documento_${doc.id || i}`;
+          
           // Garantir extensão PDF para documentos, a menos que seja imagem explícita
           const isPdf = doc.type === 'application/pdf' || (blob && blob.type === 'application/pdf');
           const isImage = (doc.type && doc.type.startsWith('image/')) || (blob && blob.type.startsWith('image/'));
 
-          if (isPdf && !entryName.toLowerCase().endsWith('.pdf')) {
-            entryName = entryName.replace(/\.[^.]+$/, "") + ".pdf";
-          } else if (isImage && !entryName.match(/\.(jpg|jpeg|png|webp)$/i)) {
-            entryName = entryName.replace(/\.[^.]+$/, "") + ".jpg";
+          // Lógica aprimorada deextensão: Evita que "Doc. 8" vire "Doc.pdf"
+          const hasExtension = entryName.match(/\.[a-z0-9]{2,4}$/i);
+          
+          if (isPdf) {
+            if (!entryName.toLowerCase().endsWith('.pdf')) {
+              if (hasExtension) {
+                entryName = entryName.replace(/\.[^.]+$/, "") + ".pdf";
+              } else {
+                entryName += ".pdf";
+              }
+            }
+          } else if (isImage) {
+            if (!entryName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+              if (hasExtension) {
+                entryName = entryName.replace(/\.[^.]+$/, "") + ".jpg";
+              } else {
+                entryName += ".jpg";
+              }
+            }
           } else if (!entryName.includes('.')) {
-            // Sem extensão e sem tipo claro? PDF é o padrão seguro do sistema
             entryName += ".pdf";
           }
           
-          zip.file(entryName, blob);
+          // Prevenção de duplicatas no ZIP (Collision detection)
+          let finalEntryName = entryName;
+          let counter = 1;
+          while (zip.file(finalEntryName)) {
+            const lastDotIndex = entryName.lastIndexOf('.');
+            if (lastDotIndex !== -1) {
+              finalEntryName = `${entryName.substring(0, lastDotIndex)} (${counter})${entryName.substring(lastDotIndex)}`;
+            } else {
+              finalEntryName = `${entryName} (${counter})`;
+            }
+            counter++;
+          }
+
+          zip.file(finalEntryName, blob);
         } catch (err) {
           console.error("Erro no ZIP item:", doc.name, err);
         }
