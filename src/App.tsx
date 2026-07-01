@@ -1035,7 +1035,7 @@ function getRealConfidence(text, fallbackConfidence) {
     const trimmed = line.trim();
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       // Detecção de erro crítico na página
-      const errMatch = trimmed.match(/\[(?:ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA|ERRO\s+CR[ÍI]TICO\s+NA\s+PAGINA)\s+(\d+)\]/i);
+      const errMatch = trimmed.match(/\[(?:ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA|ERRO\s+CR[ÍI]TICO\s+NA\s+PAGINA)\s+(\d+)\b[^\]]*\]/i);
       if (errMatch) {
         const pageNum = parseInt(errMatch[1], 10);
         pageConfidences[pageNum] = 0;
@@ -1211,9 +1211,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         const currentTimeout = 20000 * attempt;
         const page = await withTimeout(pdf.getPage(i), currentTimeout, `Timeout ao carregar dados do PDF para a pág ${i}`);
 
-        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias e se não forçar IA explicitamente)
+        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias)
         let isDigital = false;
-        if (!forceAi && attempt === 1) {
+        if (attempt === 1) {
           try {
             const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout no texto nativo da pág ${i}`);
             pageText = textContent.items.map(item => item.str).join(" ").trim();
