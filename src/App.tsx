@@ -3216,49 +3216,22 @@ export default function ScannerJuridico() {
     
     setProcessing(true);
     setProgress(0);
-    setProgressMsg("Otimizando imagem para edição...");
+    setProgressMsg("Carregando foto...");
 
     try {
-      const img = new Image();
-      img.src = URL.createObjectURL(f);
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-      });
-
-      // Se passou de 3000px, redimensionar agora antes de salvar o blob pra preview
-      const MAX_DIM = 3000;
-      let scale = 1;
-      if (img.width > MAX_DIM || img.height > MAX_DIM) {
-        scale = Math.min(MAX_DIM / img.width, MAX_DIM / img.height);
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(img.width * scale);
-      canvas.height = Math.floor(img.height * scale);
-      const ctx = canvas.getContext("2d");
-      
-      // Desenha imagem original escalonada para RAM mais leve
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
-      
-      // Libera ram pesada 
-      canvas.width = 0; canvas.height = 0;
-      URL.revokeObjectURL(img.src);
-      img.src = "";
-
-      const optimizedFile = new File([blob], f.name ? f.name : "captura.jpg", { type: "image/jpeg" });
-      setFile(optimizedFile);
-      setPreview(URL.createObjectURL(blob));
+      // Cria a URL de preview diretamente sobre o arquivo original enviado pela câmera nativa do celular.
+      // SEM decodificar em Canvas gigante e SEM alocar buffers pesados em RAM!
+      // Isso evita de forma absoluta que o Chrome/Android sofra travamento de falta de memória (OutOfMemory) e reinicie o app.
+      const objectUrl = URL.createObjectURL(f);
+      setFile(f);
+      setPreview(objectUrl);
       setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
       setCompletedCrop(null);
       setIsCropping(true);
-
+      showToast("Foto da câmera nativa carregada com sucesso!", "success");
     } catch (e) {
       console.error(e);
-      showToast("Erro ao carregar e otimizar foto.", "error");
+      showToast("Erro ao carregar a foto do celular.", "error");
     } finally {
       setProcessing(false);
       setProgressMsg("");
@@ -3327,14 +3300,12 @@ export default function ScannerJuridico() {
     if (files.length === 1) {
        const f = files[0];
        setIsBatchModalOpen(false);
-       const reader = new FileReader();
-       reader.onload = (e) => {
-          setPreview(e.target.result); 
-          setFile(f);
-          setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
-          setTimeout(() => setIsCropping(true), 150);
-       };
-       reader.readAsDataURL(f);
+       const objectUrl = URL.createObjectURL(f);
+       setPreview(objectUrl); 
+       setFile(f);
+       setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+       setCompletedCrop(null);
+       setTimeout(() => setIsCropping(true), 150);
     } else {
        const valid = Array.from(files).filter(f => f.type.startsWith('image/'));
        setCameraPages(prev => [...prev, ...valid]);
@@ -4862,16 +4833,16 @@ export default function ScannerJuridico() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={() => startWebcam("environment")} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}16` }}>
-                      <div className="action-icon" style={{ color: G.accent }}>📸</div>
-                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Direta do App</div>
-                      <div className="action-desc" style={{ color: G.text, opacity: 0.95 }}>Recomendado: Rápido e evita erros de memória / fechar o app</div>
+                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                      <div className="action-icon" style={{ color: G.accent }}>📷</div>
+                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera do Celular (Recomendado)</div>
+                      <div className="action-desc" style={{ color: G.text, opacity: 0.95 }}>Alta Definição e Foco Perfeito. Otimizado para não reiniciar o app</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1px solid ${G.border}`, background: 'transparent', padding: '12px 10px' }}>
-                      <div className="action-icon" style={{ fontSize: '18px' }}>📷</div>
-                      <div className="action-title" style={{ fontSize: '13px', fontWeight: 'normal' }}>Câmera Externa do Celular</div>
-                      <div className="action-desc" style={{ fontSize: '11px', color: G.muted }}>Usar aplicativo de câmera do próprio aparelho</div>
+                    <button className="action-card action-card-full" onClick={() => startWebcam("environment")} style={{ border: `1px solid ${G.border}`, background: 'transparent', padding: '12px 10px' }}>
+                      <div className="action-icon" style={{ fontSize: '18px' }}>📸</div>
+                      <div className="action-title" style={{ fontSize: '13px', fontWeight: 'normal' }}>Câmera Interna do App (Alternativa)</div>
+                      <div className="action-desc" style={{ fontSize: '11px', color: G.muted }}>Usar webcam interna diretamente no navegador</div>
                     </button>
                   </div>
                 </div>
