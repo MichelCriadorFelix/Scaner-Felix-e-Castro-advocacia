@@ -1709,6 +1709,8 @@ export default function ScannerJuridico() {
 
   const [isWebcamOpen, setIsWebcamOpen] = useState(false);
   const [webcamFacingMode, setWebcamFacingMode] = useState("environment");
+  const [webcamDevices, setWebcamDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
 
   // Filtros de Processamento de Imagem para alta qualidade de OCR/Contraste de Fontes
   const [imagePreset, setImagePreset] = useState("nitido-cores"); // "original", "documento", "nitido-cores", "alto-contraste", "personalizado"
@@ -2980,17 +2982,46 @@ export default function ScannerJuridico() {
     }
   };
 
-  const startWebcam = async (facing = "environment") => {
+  const startWebcam = async (facing = "environment", deviceId = "") => {
     setIsWebcamOpen(true);
     setWebcamFacingMode(facing);
     
+    // Buscar dispositivos de câmera disponíveis para preencher o dropdown
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevs = devices.filter(d => d.kind === 'videoinput');
+      setWebcamDevices(videoDevs);
+      
+      if (deviceId) {
+        setSelectedDeviceId(deviceId);
+      } else if (videoDevs.length > 0) {
+        if (!selectedDeviceId) {
+          // tentar encontrar o primeiro que bate com o facingMode
+          const matching = videoDevs.find(d => d.label.toLowerCase().includes(facing === 'environment' ? 'back' : 'front'));
+          if (matching) {
+            setSelectedDeviceId(matching.deviceId);
+          } else {
+            setSelectedDeviceId(videoDevs[0].deviceId);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Erro ao listar câmeras:", e);
+    }
+
     setTimeout(async () => {
       try {
+        stopWebcam(); // Liberar qualquer stream anterior
+        
+        const activeDeviceId = deviceId || selectedDeviceId;
+        
+        // Solicitar alta definição de verdade (4K ou 1080p ideal) para focar as letras perfeitamente
         let constraints = {
           video: {
-            facingMode: facing,
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
+            deviceId: activeDeviceId ? { exact: activeDeviceId } : undefined,
+            facingMode: activeDeviceId ? undefined : facing,
+            width: { ideal: 4096, max: 4096 },
+            height: { ideal: 3072, max: 3072 }
           },
           audio: false
         };
@@ -2999,14 +3030,29 @@ export default function ScannerJuridico() {
         try {
           stream = await navigator.mediaDevices.getUserMedia(constraints);
         } catch (err) {
-          console.warn("Falha ao abrir com restricoes ideais, tentando generico...", err);
+          console.warn("Falha ao abrir com resolução máxima, tentando Full HD...", err);
           constraints = {
             video: {
-              facingMode: facing
+              deviceId: activeDeviceId ? { exact: activeDeviceId } : undefined,
+              facingMode: activeDeviceId ? undefined : facing,
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
             },
             audio: false
           };
-          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+          } catch (err2) {
+            console.warn("Falha ao abrir com Full HD, tentando resolução básica...", err2);
+            constraints = {
+              video: {
+                deviceId: activeDeviceId ? { exact: activeDeviceId } : undefined,
+                facingMode: activeDeviceId ? undefined : facing
+              },
+              audio: false
+            };
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+          }
         }
         
         if (webcamVideoRef.current) {
@@ -3015,31 +3061,124 @@ export default function ScannerJuridico() {
           try {
             await webcamVideoRef.current.play();
           } catch (e) {
-            console.warn("Erro ao iniciar reproducao:", e);
+            console.warn("Erro ao reproduzir vídeo:", e);
+          }
+          
+          // Tentar configurar autofoco contínuo nas capacidades do hardware
+          const track = stream.getVideoTracks()[0];
+          if (track && track.getCapabilities) {
+            try {
+              const capabilities = track.getCapabilities();
+              const advancedConstraints = {};
+              
+              if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+                advancedConstraints.focusMode = 'continuous';
+              }
+              if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('continuous')) {
+                advancedConstraints.whiteBalanceMode = 'continuous';
+              }
+              if (capabilities.exposureMode && capabilities.exposureMode.includes('continuous')) {
+                advancedConstraints.exposureMode = 'continuous';
+              }
+              
+              if (Object.keys(advancedConstraints).length > 0) {
+                await track.applyConstraints({
+                  advanced: [advancedConstraints]
+                });
+                console.log("Foco contínuo e balanceamento ativados:", advancedConstraints);
+              }
+            } catch (capErr) {
+              console.warn("Não foi possível configurar foco contínuo:", capErr);
+            }
           }
         }
       } catch (err) {
         console.error("Erro ao iniciar webcam:", err);
-        showToast("Não foi possível acessar a câmera do aparelho.", "error");
+        showToast("Não foi possível acessar a câmera de alta definição.", "error");
         setIsWebcamOpen(false);
       }
-    }, 100);
+    }, 150);
   };
 
   const toggleWebcamFacing = () => {
     const nextFacing = webcamFacingMode === "environment" ? "user" : "environment";
     setWebcamFacingMode(nextFacing);
-    startWebcam(nextFacing);
+    setSelectedDeviceId(""); // reset para buscar o outro lado
+    startWebcam(nextFacing, "");
   };
 
-  const captureWebcamPhoto = () => {
-    if (!webcamVideoRef.current) return;
+  const triggerManualFocus = async () => {
+    if (!webcamVideoRef.current || !webcamVideoRef.current.srcObject) return;
+    const stream = webcamVideoRef.current.srcObject;
+    const track = stream.getVideoTracks()[0];
+    if (track && track.getCapabilities) {
+      try {
+        const capabilities = track.getCapabilities();
+        if (capabilities.focusMode && capabilities.focusMode.includes('single-shot')) {
+          showToast("Ajustando foco das lentes...", "info");
+          await track.applyConstraints({
+            advanced: [{ focusMode: 'single-shot' }]
+          });
+          setTimeout(async () => {
+            if (capabilities.focusMode.includes('continuous')) {
+              await track.applyConstraints({
+                advanced: [{ focusMode: 'continuous' }]
+              });
+            }
+          }, 1000);
+        } else {
+          showToast("Otimizando foco automático...", "info");
+          if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+            await track.applyConstraints({
+              advanced: [{ focusMode: 'continuous' }]
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Erro ao forçar foco:", e);
+      }
+    } else {
+      showToast("Foco automático gerenciado pelo celular", "info");
+    }
+  };
+
+  const captureWebcamPhoto = async () => {
+    if (!webcamVideoRef.current || !webcamVideoRef.current.srcObject) return;
     
+    const stream = webcamVideoRef.current.srcObject;
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    
+    showToast("Capturando foto em alta definição...", "info");
+    
+    // Tenta usar a ImageCapture API (recurso nativo do Chrome Android que tira foto real no sensor, idêntico à câmera do sistema)
+    if (window.ImageCapture) {
+      try {
+        const imageCapture = new window.ImageCapture(track);
+        const blob = await imageCapture.takePhoto();
+        
+        stopWebcam();
+        setIsWebcamOpen(false);
+        
+        const f = new File([blob], "camera_hw_" + Date.now() + ".jpg", { type: "image/jpeg" });
+        setFile(f);
+        setPreview(URL.createObjectURL(blob));
+        setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+        setCompletedCrop(null);
+        setIsCropping(true);
+        showToast("Foto capturada em alta definição nativa!", "success");
+        return;
+      } catch (err) {
+        console.warn("Falha ao usar ImageCapture, usando fallback de alta resolução:", err);
+      }
+    }
+    
+    // Fallback: Captura via canvas de alta resolução
     const video = webcamVideoRef.current;
     const canvas = document.createElement("canvas");
     
-    const width = video.videoWidth || video.clientWidth || 1280;
-    const height = video.videoHeight || video.clientHeight || 720;
+    const width = video.videoWidth || video.clientWidth || 1920;
+    const height = video.videoHeight || video.clientHeight || 1080;
     
     canvas.width = width;
     canvas.height = height;
@@ -3063,6 +3202,7 @@ export default function ScannerJuridico() {
         setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
         setCompletedCrop(null);
         setIsCropping(true);
+        showToast("Captura realizada com sucesso!", "success");
       }, "image/jpeg", 0.95);
     } else {
       showToast("Erro ao criar contexto de renderização.", "error");
@@ -3975,7 +4115,7 @@ export default function ScannerJuridico() {
             padding: '20px',
             borderRadius: '16px',
             width: '100%',
-            maxWidth: '440px',
+            maxWidth: '460px',
             border: `1px solid ${G.border}`,
             boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
             display: 'flex',
@@ -3983,13 +4123,73 @@ export default function ScannerJuridico() {
             alignItems: 'center'
           }}>
             <h3 style={{ marginBottom: 12, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-              📸 Câmera Direta do App
+              📸 Câmera HD Ultra-Foco
             </h3>
-            <p style={{ fontSize: '12px', color: G.muted, textAlign: 'center', marginBottom: '16px', lineHeight: '1.4' }}>
-              Captura fotos direto na página, sem abrir o aplicativo de câmera externo, <strong>evitando travamentos por falta de memória em celulares como Motorola e aparelhos antigos</strong>.
+            <p style={{ fontSize: '11px', color: G.muted, textAlign: 'center', marginBottom: '14px', lineHeight: '1.4' }}>
+              Usa captura de hardware nativa de alta definição com foco automático. <strong>Se as letras estiverem embaçadas, mude a câmera abaixo ou toque no vídeo para focar.</strong>
             </p>
+
+            {/* Seletor de Câmera (Multi-Lentes Traseiras) */}
+            {webcamDevices.length > 1 && (
+              <div style={{ width: '100%', marginBottom: '12px' }}>
+                <label style={{ fontSize: '11px', color: G.muted, display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>
+                  🎥 Selecione a Câmera:
+                </label>
+                <select 
+                  value={selectedDeviceId}
+                  onChange={(e) => {
+                    const devId = e.target.value;
+                    setSelectedDeviceId(devId);
+                    startWebcam(webcamFacingMode, devId);
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    background: G.bg,
+                    color: G.text,
+                    border: `1px solid ${G.border}`,
+                    fontSize: '12px',
+                    outline: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {webcamDevices.map((dev, idx) => {
+                    let name = dev.label || `Câmera ${idx + 1}`;
+                    if (name.toLowerCase().includes('back') || name.toLowerCase().includes('traseira') || name.toLowerCase().includes('facing back')) {
+                      name = `📷 Câmera Traseira - Lente ${idx + 1} (${name.replace(/facing back/gi, '')})`;
+                    } else if (name.toLowerCase().includes('front') || name.toLowerCase().includes('frontal') || name.toLowerCase().includes('facing front')) {
+                      name = `🤳 Câmera Frontal (${name})`;
+                    } else {
+                      name = `🎥 Câmera ${idx + 1} - ${name}`;
+                    }
+                    return (
+                      <option key={dev.deviceId || idx} value={dev.deviceId}>
+                        {name}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            )}
             
-            <div style={{ position: 'relative', width: '100%', borderRadius: '12px', overflow: 'hidden', background: '#000', aspectRatio: '3/4', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div 
+              onClick={triggerManualFocus}
+              style={{ 
+                position: 'relative', 
+                width: '100%', 
+                borderRadius: '12px', 
+                overflow: 'hidden', 
+                background: '#000', 
+                aspectRatio: '3/4', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                cursor: 'pointer',
+                border: `2px solid ${G.border}`
+              }}
+              title="Toque para focar"
+            >
               <video 
                 ref={webcamVideoRef} 
                 className="modal-video" 
@@ -3998,24 +4198,50 @@ export default function ScannerJuridico() {
                 autoPlay
                 muted
               />
+              <div style={{
+                position: 'absolute',
+                bottom: '10px',
+                right: '10px',
+                background: 'rgba(0,0,0,0.6)',
+                color: '#fff',
+                fontSize: '10px',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                pointerEvents: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                zIndex: 10
+              }}>
+                🎯 Toque para Focar
+              </div>
             </div>
             
             <div className="modal-actions" style={{ width: '100%', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', marginTop: '16px' }}>
+              <button 
+                onClick={triggerManualFocus} 
+                className="modal-btn cancel" 
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 14px', flex: 1, justifyContent: 'center', minWidth: '130px', margin: 0, fontSize: '12px' }}
+                title="Ajustar o foco da câmera manualmente"
+              >
+                🎯 Forçar Foco
+              </button>
+
               <button 
                 onClick={toggleWebcamFacing} 
                 className="modal-btn cancel" 
                 style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 14px', flex: 1, justifyContent: 'center', minWidth: '130px', margin: 0, fontSize: '12px' }}
                 title="Alternar entre câmera frontal e traseira"
               >
-                🔄 Inverter Câmera
+                🔄 Inverter Lado
               </button>
               
               <button 
                 onClick={captureWebcamPhoto} 
                 className="modal-btn capture" 
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', background: G.accent, color: '#000', fontWeight: 'bold', padding: '10px 20px', flex: 1, justifyContent: 'center', minWidth: '130px', margin: 0, fontSize: '12px' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', background: G.accent, color: '#000', fontWeight: 'bold', padding: '12px 20px', flex: '1 1 100%', justifyContent: 'center', margin: '4px 0 0 0', fontSize: '13px' }}
               >
-                📸 Bater Foto
+                📸 Bater Foto HD
               </button>
               
               <button 
