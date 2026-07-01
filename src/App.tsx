@@ -1191,6 +1191,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
     const maxPageAttempts = 3;
 
     for (let attempt = 1; attempt <= maxPageAttempts; attempt++) {
+      let finalCanvasToUse: any = null;
+      let tempCanvas: any = null;
       try {
         if (attempt > 1) {
           // Breve recuo exponencial/estratégico para limpar memória, conexões ou limites de taxa
@@ -1245,7 +1247,6 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           );
 
           let viewport = null;
-          let finalCanvasToUse = null;
           let renderSuccess = false;
 
           // Escala adaptativa progressiva para economia de heap/buffers caso esteja falhando
@@ -1280,24 +1281,32 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             throw new Error(`Falha crítica ao tentar renderizar a página ${i} em tela.`);
           }
 
-          // Filtro profissional para contraste do OCR local
-          const tempCanvas = document.createElement("canvas");
-          tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
-          const tempCtx = tempCanvas.getContext("2d");
-          if (tempCtx) {
-             tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
-             tempCtx.drawImage(finalCanvasToUse, 0, 0);
-          }
+          // Decide previamente se vai direto para a IA (como Padrão Ouro)
+          let shouldGoToAi = (useAi || forceAi) && (forceAi || goldStandard);
+          let blob: Blob | null = null;
 
-          let blob = await new Promise<Blob | null>(r => tempCanvas.toBlob(r, "image/png", 0.9));
-          if (!blob) throw new Error("Erro de buffer ao gerar canvas otimizado.");
+          if (!shouldGoToAi) {
+            // Só gera a imagem contrastada pesada (tempCanvas e blob PNG) se for rodar o OCR local
+            tempCanvas = document.createElement("canvas");
+            tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
+            const tempCtx = tempCanvas.getContext("2d");
+            if (tempCtx) {
+               tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
+               tempCtx.drawImage(finalCanvasToUse, 0, 0);
+            }
+
+            blob = await new Promise<Blob | null>(r => tempCanvas.toBlob(r, "image/png", 0.9));
+            // Destrói o tempCanvas IMEDIATAMENTE após gerar o blob do OCR local para liberar RAM
+            tempCanvas.width = 0; tempCanvas.height = 0;
+            tempCanvas = null;
+            if (!blob) throw new Error("Erro de buffer ao gerar canvas otimizado para o OCR Local.");
+          }
 
           if (useAi || forceAi) {
             let ocrRes = { text: "", confidence: 0 };
-            let shouldGoToAi = forceAi || goldStandard;
 
             // OCR local como teste prévio (apenas se não estiver forçando IA diretamente ou usando Padrão Ouro)
-            if (!shouldGoToAi) {
+            if (!shouldGoToAi && blob) {
               onProgress(
                 Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
                 `Pág ${i}: Rodando validação de OCR Local (Tentativa ${attempt})...`
@@ -1323,7 +1332,6 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
                 
                 // Cleanup
                 finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
-                tempCanvas.width = 0; tempCanvas.height = 0;
                 if (page && page.cleanup) page.cleanup();
                 break;
               } else {
@@ -1338,6 +1346,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               );
               
               const originalColorBlob = await new Promise<Blob | null>(r => finalCanvasToUse.toBlob(r, "image/jpeg", 0.95));
+              // IMPORTANTE: Destruímos finalCanvasToUse IMEDIATAMENTE para liberar a RAM mais pesada antes de iniciar a chamada de rede à API do Gemini!
+              finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
+
               if (!originalColorBlob) throw new Error("Falha ao exportar imagem original colorida.");
               const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
               
@@ -1347,8 +1358,6 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               pageSuccess = true;
 
               // Cleanup
-              finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
-              tempCanvas.width = 0; tempCanvas.height = 0;
               if (page && page.cleanup) page.cleanup();
               break;
             }
@@ -1363,7 +1372,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               if (!tesseractWorker) {
                  tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
               }
-              const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
+              const res = await withTimeout(tesseractWorker.recognize(blob!), 60000, `Timeout OCR local na página ${i}`);
               ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
             } catch (err) {
               ocrRes = { text: "[PÁGINA PULADA]", confidence: 0 };
@@ -1372,6 +1381,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
                 tesseractWorker = null;
               }
             }
+
+            // Cleanup
+            finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
 
             if (ocrRes.confidence >= 99) {
               fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
@@ -1382,16 +1394,12 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             }
             pageSuccess = true;
 
-            // Cleanup
-            finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
-            tempCanvas.width = 0; tempCanvas.height = 0;
             if (page && page.cleanup) page.cleanup();
             break;
           }
 
           // Active GC
           if (finalCanvasToUse) { finalCanvasToUse.width = 0; finalCanvasToUse.height = 0; }
-          tempCanvas.width = 0; tempCanvas.height = 0;
           blob = null;
         }
 
@@ -1407,6 +1415,12 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       } catch (pageErr) {
         console.warn(`[Pág ${i}] Falha capturada na tentativa ${attempt}:`, pageErr);
         lastPageError = pageErr;
+        if (finalCanvasToUse) {
+          try { finalCanvasToUse.width = 0; finalCanvasToUse.height = 0; } catch (e) {}
+        }
+        if (tempCanvas) {
+          try { tempCanvas.width = 0; tempCanvas.height = 0; } catch (e) {}
+        }
       }
     }
 
