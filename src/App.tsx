@@ -1570,6 +1570,21 @@ export default function ScannerJuridico() {
   const [newDocumentName, setNewDocumentName] = useState("");
   const [sortOrder, setSortOrder] = useState("name-asc"); // "date-desc", "date-asc", "name-asc", "name-desc"
   
+  // Novas variáveis de estado para busca de clientes e documentos (para fácil navegação com o crescimento do app)
+  const [moveSearch, setMoveSearch] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
+  const [docSearch, setDocSearch] = useState("");
+
+  useEffect(() => {
+    if (!movingItem) {
+      setMoveSearch("");
+    }
+  }, [movingItem]);
+
+  useEffect(() => {
+    setDocSearch("");
+  }, [viewingClient]);
+
   const [toast, setToast] = useState(null);
 
   // ── Controle de Acesso e Perímetro de Segurança do Escritório v3 (100% Protegido via Banco) ──
@@ -4054,6 +4069,25 @@ export default function ScannerJuridico() {
               Selecione o novo destino para: <br/> <strong>{movingItem.name}</strong>
             </p>
             
+            <div style={{ marginBottom: '12px' }}>
+              <input
+                type="text"
+                placeholder="🔍 Pesquisar cliente..."
+                value={moveSearch}
+                onChange={e => setMoveSearch(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  border: `1px solid ${G.border}`,
+                  background: G.bg,
+                  color: G.text,
+                  fontSize: '13px',
+                  outline: 'none',
+                }}
+              />
+            </div>
+
             <div style={{maxHeight: '40vh', overflowY: 'auto', display: 'grid', gap: '8px', marginBottom: '20px'}}>
               <button 
                 onClick={() => moveDocumentHandler(movingItem.id, 'unassigned')}
@@ -4064,25 +4098,27 @@ export default function ScannerJuridico() {
               >
                 📁 Geral (Sem pasta)
               </button>
-              {clients.map(c => (
-                <button 
-                  key={c.id}
-                  onClick={() => moveDocumentHandler(movingItem.id, c.id)}
-                  style={{
-                    padding: '12px', 
-                    paddingLeft: c.parentId ? '32px' : '12px',
-                    borderRadius: '10px', 
-                    background: movingItem.clientId === c.id ? G.accent : G.surface, 
-                    color: movingItem.clientId === c.id ? '#000' : G.text, 
-                    border: `1px solid ${G.border}`, 
-                    cursor: 'pointer', 
-                    textAlign: 'left', 
-                    fontSize: '13px'
-                  }}
-                >
-                  {c.parentId ? '↳ 📂' : '📂'} {c.name}
-                </button>
-              ))}
+              {clients
+                .filter(c => c.name.toLowerCase().includes(moveSearch.toLowerCase()))
+                .map(c => (
+                  <button 
+                    key={c.id}
+                    onClick={() => moveDocumentHandler(movingItem.id, c.id)}
+                    style={{
+                      padding: '12px', 
+                      paddingLeft: c.parentId ? '32px' : '12px',
+                      borderRadius: '10px', 
+                      background: movingItem.clientId === c.id ? G.accent : G.surface, 
+                      color: movingItem.clientId === c.id ? '#000' : G.text, 
+                      border: `1px solid ${G.border}`, 
+                      cursor: 'pointer', 
+                      textAlign: 'left', 
+                      fontSize: '13px'
+                    }}
+                  >
+                    {c.parentId ? '↳ 📂' : '📂'} {c.name}
+                  </button>
+                ))}
             </div>
 
             <button className="modal-btn cancel" style={{width: '100%'}} onClick={() => setMovingItem(null)}>Cancelar</button>
@@ -4134,7 +4170,7 @@ export default function ScannerJuridico() {
           <div className="header-top">
             <div className="logo">
               Scaner Felix e Castro
-              <span>ADVOCACIA ESPECIALIZADA v1.0</span>
+              <span>ADVOCACIA ESPECIALIZADA v1.0.1</span>
             </div>
             <div style={{ display: "flex", gap: "6px" }}>
               <span className="badge accent">OCR PT</span>
@@ -4755,23 +4791,50 @@ export default function ScannerJuridico() {
                     </div>
                   )}
 
-                  <div className="folders-grid" style={{ display: 'grid', gap: '12px' }}>
-                    <div 
-                      className="folder-card"
-                      onClick={() => setViewingClient('unassigned')}
-                      style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
-                    >
-                      <div style={{ fontSize: '24px' }}>📁</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 500, color: G.text }}>Geral (Sem pasta)</div>
-                        <div style={{ fontSize: '12px', color: G.muted }}>{history.filter(h => h.clientId === 'unassigned' || !h.clientId).length} documentos</div>
-                      </div>
-                      <div style={{ color: G.muted }}>→</div>
-                    </div>
+                  {/* Campo de Busca de Clientes */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <input
+                      type="text"
+                      placeholder="🔍 Pesquisar pasta de cliente..."
+                      value={clientSearch}
+                      onChange={e => setClientSearch(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '11px 14px',
+                        borderRadius: '12px',
+                        border: `1px solid ${G.border}`,
+                        background: G.card,
+                        color: G.text,
+                        fontSize: '14px',
+                        outline: 'none',
+                        transition: 'border-color 0.2s',
+                      }}
+                    />
+                  </div>
 
-                    {clients.filter(c => !c.parentId).map(c => {
+                  <div className="folders-grid" style={{ display: 'grid', gap: '12px' }}>
+                    {clientSearch.trim() === "" && (
+                      <div 
+                        className="folder-card"
+                        onClick={() => setViewingClient('unassigned')}
+                        style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
+                      >
+                        <div style={{ fontSize: '24px' }}>📁</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 500, color: G.text }}>Geral (Sem pasta)</div>
+                          <div style={{ fontSize: '12px', color: G.muted }}>{history.filter(h => h.clientId === 'unassigned' || !h.clientId).length} documentos</div>
+                        </div>
+                        <div style={{ color: G.muted }}>→</div>
+                      </div>
+                    )}
+
+                    {(clientSearch.trim() === "" 
+                      ? clients.filter(c => !c.parentId)
+                      : clients.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
+                    ).map(c => {
                       const docsCount = history.filter(h => h.clientId === c.id).length;
                       const subfoldersCount = clients.filter(sub => sub.parentId === c.id).length;
+                      const parent = c.parentId ? clients.find(p => p.id === c.parentId) : null;
                       return (
                         <div 
                           key={c.id}
@@ -4782,7 +4845,12 @@ export default function ScannerJuridico() {
                           <div style={{ fontSize: '24px' }}>📂</div>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontWeight: 500, color: G.text }}>{c.name}</div>
-                            <div style={{ fontSize: '12px', color: G.muted }}>
+                            {parent && (
+                              <div style={{ fontSize: '11px', color: G.accent, marginTop: '2px' }}>
+                                ↳ Subpasta de: {parent.name}
+                              </div>
+                            )}
+                            <div style={{ fontSize: '12px', color: G.muted, marginTop: '2px' }}>
                               {docsCount} documentos {subfoldersCount > 0 ? `• ${subfoldersCount} subpasta${subfoldersCount>1?'s':''}` : ''}
                             </div>
                           </div>
@@ -4840,6 +4908,25 @@ export default function ScannerJuridico() {
                         </div>
                       </div>
                     )}
+
+                    <div style={{ marginBottom: '12px' }}>
+                      <input
+                        type="text"
+                        placeholder="🔍 Pesquisar documento..."
+                        value={docSearch}
+                        onChange={e => setDocSearch(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          border: `1px solid ${G.border}`,
+                          background: G.bg,
+                          color: G.text,
+                          fontSize: '13px',
+                          outline: 'none',
+                        }}
+                      />
+                    </div>
                     
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                       <div style={{ flex: 1 }}>
@@ -4921,14 +5008,29 @@ export default function ScannerJuridico() {
                     </div>
                   )}
 
-                  {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length === 0 ? (
-                    <div className="history-empty">
-                      <div className="history-empty-icon">📭</div>
-                      <p>{clients.filter(c => c.parentId === viewingClient).length > 0 ? "Pasta não possui arquivos (apenas subpastas)." : "Pasta vazia."}</p>
-                    </div>
-                  ) : (
-                    history
-                      .filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient))
+                  {(() => {
+                    const folderDocs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
+                    const filteredDocs = folderDocs.filter(h => h.name.toLowerCase().includes(docSearch.toLowerCase()));
+
+                    if (folderDocs.length === 0) {
+                      return (
+                        <div className="history-empty">
+                          <div className="history-empty-icon">📭</div>
+                          <p>{clients.filter(c => c.parentId === viewingClient).length > 0 ? "Pasta não possui arquivos (apenas subpastas)." : "Pasta vazia."}</p>
+                        </div>
+                      );
+                    }
+
+                    if (filteredDocs.length === 0) {
+                      return (
+                        <div className="history-empty" style={{ padding: '24px 16px' }}>
+                          <div className="history-empty-icon">🔍</div>
+                          <p>Nenhum documento encontrado para "{docSearch}".</p>
+                        </div>
+                      );
+                    }
+
+                    return filteredDocs
                       .sort((a, b) => {
                         if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
                         if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
@@ -5084,8 +5186,8 @@ export default function ScannerJuridico() {
                         </div>
                         <div className="hist-preview">{item.text.slice(0, 120)}...</div>
                       </div>
-                    ))
-                  )}
+                    ));
+                  })()}
                 </div>
               )}
             </div>
