@@ -1706,6 +1706,7 @@ export default function ScannerJuridico() {
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
   const [completedCrop, setCompletedCrop] = useState(null);
+  const [croppingPageIndex, setCroppingPageIndex] = useState(null);
 
   // Filtros de Processamento de Imagem para alta qualidade de OCR/Contraste de Fontes
   const [imagePreset, setImagePreset] = useState("nitido-cores"); // "original", "documento", "nitido-cores", "alto-contraste", "personalizado"
@@ -2928,7 +2929,12 @@ export default function ScannerJuridico() {
             setProgressMsg("");
             if (!blob) return;
             setIsCropping(false);
-            setCameraPages(prev => [...prev, blob]);
+            if (croppingPageIndex !== null) {
+              setCameraPages(prev => prev.map((p, idx) => idx === croppingPageIndex ? blob : p));
+              setCroppingPageIndex(null);
+            } else {
+              setCameraPages(prev => [...prev, blob]);
+            }
             setIsBatchModalOpen(true);
           }, "image/jpeg", Math.min(0.95, scaleOutput < 1 ? 0.90 : 0.95));
         } else {
@@ -3003,7 +3009,12 @@ export default function ScannerJuridico() {
       setIsCropping(false);
       if (preview) {
          fetch(preview).then(r => r.blob()).then(blob => {
-            setCameraPages(prev => [...prev, blob]);
+            if (croppingPageIndex !== null) {
+              setCameraPages(prev => prev.map((p, idx) => idx === croppingPageIndex ? blob : p));
+              setCroppingPageIndex(null);
+            } else {
+              setCameraPages(prev => [...prev, blob]);
+            }
             setIsBatchModalOpen(true);
          }).catch(e => console.error(e));
       }
@@ -3038,7 +3049,12 @@ export default function ScannerJuridico() {
             setProgressMsg("");
             if (!blob) return;
             setIsCropping(false);
-            setCameraPages(prev => [...prev, blob]);
+            if (croppingPageIndex !== null) {
+              setCameraPages(prev => prev.map((p, idx) => idx === croppingPageIndex ? blob : p));
+              setCroppingPageIndex(null);
+            } else {
+              setCameraPages(prev => [...prev, blob]);
+            }
             setIsBatchModalOpen(true);
           }, "image/jpeg", Math.min(0.95, scaleOutput < 1 ? 0.90 : 0.95));
         } else {
@@ -3051,6 +3067,18 @@ export default function ScannerJuridico() {
         setIsCropping(false);
       }
     }, 50);
+  };
+
+  const handleEditPage = (index) => {
+    const pageBlob = cameraPages[index];
+    setCroppingPageIndex(index);
+    setFile(pageBlob);
+    setPreview(URL.createObjectURL(pageBlob));
+    setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+    setCompletedCrop(null);
+    setIsBatchModalOpen(false);
+    setViewingBatchPage(null);
+    setIsCropping(true);
   };
 
   const handleBatchImageAdd = (files) => {
@@ -3994,9 +4022,31 @@ export default function ScannerJuridico() {
               </ReactCrop>
             </div>
             
-            <div className="modal-actions" style={{marginTop: 16, display: 'flex', gap: '10px'}}>
-              <button className="modal-btn cancel" style={{flex: 1, padding: '10px 8px', fontSize: '12px'}} onClick={skipCropAndAddPage}>Utilizar Sem Cortar (Aplica Filtro)</button>
-              <button className="modal-btn capture" style={{flex: 1, padding: '10px 8px', fontSize: '12px'}} onClick={applyCrop}>Confirmar e Salvar Página</button>
+            <div className="modal-actions" style={{marginTop: 16, display: 'flex', flexDirection: 'column', gap: '8px'}}>
+              <div style={{display: 'flex', gap: '10px', width: '100%'}}>
+                <button className="modal-btn cancel" style={{flex: 1, padding: '10px 8px', fontSize: '12px'}} onClick={skipCropAndAddPage}>Utilizar Sem Cortar (Aplica Filtro)</button>
+                <button className="modal-btn capture" style={{flex: 1, padding: '10px 8px', fontSize: '12px'}} onClick={applyCrop}>Confirmar e Salvar Página</button>
+              </div>
+              <button 
+                className="modal-btn" 
+                style={{
+                  background: 'transparent', 
+                  border: `1px solid ${G.border}`, 
+                  color: G.text, 
+                  fontSize: '11px', 
+                  padding: '8px', 
+                  width: '100%',
+                  cursor: 'pointer',
+                  borderRadius: '8px'
+                }}
+                onClick={() => {
+                  setIsCropping(false);
+                  setCroppingPageIndex(null);
+                  setIsBatchModalOpen(true);
+                }}
+              >
+                ← Voltar sem Salvar Alterações
+              </button>
             </div>
           </div>
         </div>
@@ -4127,21 +4177,48 @@ export default function ScannerJuridico() {
                    if (cameraPages.length === 1) setIsBatchModalOpen(false); // fechar se for a última
                  }} style={{background: G.error, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer'}}>🗑️ Excluir Página</button>
               </div>
-              <div style={{flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden', position: 'relative'}}>
-                 <img src={URL.createObjectURL(cameraPages[viewingBatchPage])} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '8px'}} />
+              <div style={{flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden', position: 'relative'}}>
+                 <img 
+                    src={URL.createObjectURL(cameraPages[viewingBatchPage])} 
+                    style={{maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${G.border}`}} 
+                    onClick={() => handleEditPage(viewingBatchPage)}
+                    title="Clique na imagem para recortar/tratar"
+                 />
                  
-                 {/* Setinhas dentro do modal de visualização individual */}
-                 <div style={{position: 'absolute', bottom: '30px', display: 'flex', gap: '30px'}}>
+                 <div style={{ marginTop: '16px', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
                      <button 
-                        disabled={viewingBatchPage === 0} 
-                        onClick={() => { movePage(viewingBatchPage, -1); setViewingBatchPage(viewingBatchPage - 1); }}
-                        style={{background: viewingBatchPage === 0 ? '#444' : G.accent, color: '#000', padding: '12px 18px', borderRadius: '50%', border: 'none', cursor: viewingBatchPage === 0 ? 'not-allowed' : 'pointer', opacity: viewingBatchPage === 0 ? 0.4 : 1, fontSize: '20px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)'}}
-                     >◀</button>
-                     <button 
-                        disabled={viewingBatchPage === cameraPages.length - 1} 
-                        onClick={() => { movePage(viewingBatchPage, 1); setViewingBatchPage(viewingBatchPage + 1); }}
-                        style={{background: viewingBatchPage === cameraPages.length - 1 ? '#444' : G.accent, color: '#000', padding: '12px 18px', borderRadius: '50%', border: 'none', cursor: viewingBatchPage === cameraPages.length - 1 ? 'not-allowed' : 'pointer', opacity: viewingBatchPage === cameraPages.length - 1 ? 0.4 : 1, fontSize: '20px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)'}}
-                     >▶</button>
+                        onClick={() => handleEditPage(viewingBatchPage)}
+                        style={{
+                          background: G.accent,
+                          color: '#000',
+                          border: 'none',
+                          padding: '10px 24px',
+                          borderRadius: '8px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontSize: '13px',
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
+                        }}
+                     >
+                        ✂️ Recortar / Ajustar Imagem
+                     </button>
+                     
+                     {/* Setinhas dentro do modal de visualização individual */}
+                     <div style={{display: 'flex', gap: '30px'}}>
+                         <button 
+                            disabled={viewingBatchPage === 0} 
+                            onClick={() => { movePage(viewingBatchPage, -1); setViewingBatchPage(viewingBatchPage - 1); }}
+                            style={{background: viewingBatchPage === 0 ? '#444' : G.accent, color: '#000', padding: '10px 16px', borderRadius: '50%', border: 'none', cursor: viewingBatchPage === 0 ? 'not-allowed' : 'pointer', opacity: viewingBatchPage === 0 ? 0.4 : 1, fontSize: '18px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)'}}
+                         >◀</button>
+                         <button 
+                            disabled={viewingBatchPage === cameraPages.length - 1} 
+                            onClick={() => { movePage(viewingBatchPage, 1); setViewingBatchPage(viewingBatchPage + 1); }}
+                            style={{background: viewingBatchPage === cameraPages.length - 1 ? '#444' : G.accent, color: '#000', padding: '10px 16px', borderRadius: '50%', border: 'none', cursor: viewingBatchPage === cameraPages.length - 1 ? 'not-allowed' : 'pointer', opacity: viewingBatchPage === cameraPages.length - 1 ? 0.4 : 1, fontSize: '18px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)'}}
+                         >▶</button>
+                     </div>
                  </div>
               </div>
             </div>
