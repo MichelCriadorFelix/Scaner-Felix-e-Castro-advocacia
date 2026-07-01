@@ -1901,7 +1901,7 @@ export default function ScannerJuridico() {
           }));
         }
         
-        const { data: dData } = await supabase.from('lexscan_documents').select('*').order('created_at', { ascending: false });
+        const { data: dData } = await supabase.from('lexscan_documents').select('id, client_id, name, file_type, file_url, confidence, chars_count, words_count, created_at').order('created_at', { ascending: false });
         if (dData) {
           setHistory(dData.map(d => ({
             id: d.id,
@@ -1910,7 +1910,7 @@ export default function ScannerJuridico() {
             type: d.file_type || '',
             preview: d.file_url || null,
             fileUrl: d.file_url || null,
-            text: d.extracted_text,
+            text: undefined, // Carregado sob demanda
             confidence: d.confidence,
             chars: d.chars_count,
             words: d.words_count,
@@ -3350,10 +3350,15 @@ export default function ScannerJuridico() {
   };
 
   const processFolderOCR = async () => {
-    const docs = history.filter(h => 
-       (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)
-       && (!h.text || h.text.trim() === '' || getRealConfidence(h.text, h.confidence) <= 98)
-    );
+    const docs = history.filter(h => {
+       const isFolderItem = viewingClient === 'unassigned' 
+         ? (!h.clientId || h.clientId === 'unassigned') 
+         : h.clientId === viewingClient;
+       
+       const alreadyHasOcr = (h.words > 0 || h.chars > 0 || (h.text && h.text.trim() !== '')) && getRealConfidence(h.text, h.confidence) > 98;
+       
+       return isFolderItem && !alreadyHasOcr;
+    });
     
     if (docs.length === 0) {
        showToast("Todos os documentos já possuem OCR extraído ou confiança real >= 99%.", "info");
@@ -3494,10 +3499,45 @@ export default function ScannerJuridico() {
     }
   };
 
-  const loadFromHistory = (item) => {
-    setResult(item);
+  const fetchItemTextIfNeeded = async (item) => {
+    if (!item.text || item.text.trim() === "") {
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('lexscan_documents')
+            .select('extracted_text')
+            .eq('id', item.id)
+            .single();
+          if (error) throw error;
+          if (data && data.extracted_text) {
+            const updated = { ...item, text: data.extracted_text };
+            setHistory(prev => prev.map(h => h.id === item.id ? updated : h));
+            return updated;
+          }
+        } catch (err) {
+          console.error("Erro ao buscar texto do documento sob demanda:", err);
+          showToast("Erro ao buscar conteúdo do documento", "error");
+        }
+      }
+    }
+    return item;
+  };
+
+  const loadFromHistory = async (item) => {
+    showToast("Carregando documento...", "info");
+    const loaded = await fetchItemTextIfNeeded(item);
+    setResult(loaded);
     setTab("scanner");
-    showToast("Documento carregado do histórico");
+  };
+
+  const handleDownloadTXTFromHistory = async (item) => {
+    showToast("Carregando texto para download...", "info");
+    const loaded = await fetchItemTextIfNeeded(item);
+    if (loaded && loaded.text) {
+      downloadTXT(loaded.text, loaded.name.replace(/\.[^.]+$/, ""));
+    } else {
+      showToast("Não foi possível carregar o texto para download", "error");
+    }
   };
 
   const deleteFromHistory = async (id) => {
@@ -5227,39 +5267,48 @@ export default function ScannerJuridico() {
                               return null;
                             })()}
                           </div>
-                          <div className="hist-actions">
-                            {item.type && item.type.startsWith('image/') && (
-                               <button className="icon-btn" title="Comprimir (Média)" onClick={(e) => { e.stopPropagation(); handleCompressAndDownload(item, 'Média'); }}>📉</button>
-                            )}
-                            <button className="icon-btn" title="Mover Pasta" onClick={(e) => { e.stopPropagation(); setMovingItem(item); }}>📂</button>
-                            {(item.fileUrl || item.localBlobUrl) && (
-                               <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name, supabase); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
-                            )}
-                            {/* Botão de Refazer OCR (Sempre disponível para correção manual) */}
-                            <button 
-                              className="icon-btn" 
-                              style={{
-                                background: (!item.text || getRealConfidence(item.text, item.confidence) === 0) ? G.accent : 'transparent', 
-                                color: (!item.text || getRealConfidence(item.text, item.confidence) === 0) ? '#000' : G.muted,
-                                border: (!item.text || getRealConfidence(item.text, item.confidence) === 0) ? 'none' : `1px solid ${G.border}`,
-                                fontWeight: 'bold'
-                              }} 
-                              title="Refazer OCR via IA Jurídica (Correção)" 
-                              onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}
-                            >
-                              {(!item.text || getRealConfidence(item.text, item.confidence) === 0) ? '🔍 OCR' : '🔄'}
-                            </button>
+                          {(() => {
+                            const hasOcr = item.words > 0 || item.chars > 0 || item.confidence > 0 || (item.text && item.text.trim().length > 0);
+                            return (
+                              <div className="hist-actions">
+                                {item.type && item.type.startsWith('image/') && (
+                                   <button className="icon-btn" title="Comprimir (Média)" onClick={(e) => { e.stopPropagation(); handleCompressAndDownload(item, 'Média'); }}>📉</button>
+                                )}
+                                <button className="icon-btn" title="Mover Pasta" onClick={(e) => { e.stopPropagation(); setMovingItem(item); }}>📂</button>
+                                {(item.fileUrl || item.localBlobUrl) && (
+                                   <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name, supabase); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
+                                )}
+                                {/* Botão de Refazer OCR (Sempre disponível para correção manual) */}
+                                <button 
+                                  className="icon-btn" 
+                                  style={{
+                                    background: !hasOcr ? G.accent : 'transparent', 
+                                    color: !hasOcr ? '#000' : G.muted,
+                                    border: !hasOcr ? 'none' : `1px solid ${G.border}`,
+                                    fontWeight: 'bold'
+                                  }} 
+                                  title="Refazer OCR via IA Jurídica (Correção)" 
+                                  onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}
+                                >
+                                  {!hasOcr ? '🔍 OCR' : '🔄'}
+                                </button>
 
-                            {item.text && (
-                               <>
-                                 <button className="icon-btn" title="Abrir Extração" onClick={() => loadFromHistory(item)}>↗</button>
-                                 <button className="icon-btn" title="Baixar TXT" onClick={() => downloadTXT(item.text, item.name.replace(/\.[^.]+$/, ""))}>📝</button>
-                               </>
-                            )}
-                            <button className="icon-btn danger" title="Remover" onClick={() => deleteFromHistory(item.id)}>🗑</button>
-                          </div>
+                                {hasOcr && (
+                                   <>
+                                     <button className="icon-btn" title="Abrir Extração" onClick={(e) => { e.stopPropagation(); loadFromHistory(item); }}>↗</button>
+                                     <button className="icon-btn" title="Baixar TXT" onClick={(e) => { e.stopPropagation(); handleDownloadTXTFromHistory(item); }}>📝</button>
+                                   </>
+                                )}
+                                <button className="icon-btn danger" title="Remover" onClick={(e) => { e.stopPropagation(); deleteFromHistory(item.id); }}>🗑</button>
+                              </div>
+                            );
+                          })()}
                         </div>
-                        <div className="hist-preview">{item.text.slice(0, 120)}...</div>
+                        <div className="hist-preview">
+                          {item.text 
+                            ? (item.text.slice(0, 120) + (item.text.length > 120 ? '...' : '')) 
+                            : `(Documento com ${item.words || 0} palavras. Clique para carregar o conteúdo)`}
+                        </div>
                       </div>
                     ));
                   })()}
