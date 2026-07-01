@@ -1003,95 +1003,122 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
+// Auxiliar para detectar se um texto extraído nativamente é de fato conteúdo digital legítimo
+function isGenuineDigitalText(text: string): boolean {
+  if (!text) return false;
+  const cleaned = text.trim();
+  if (cleaned.length < 100) return false;
+  
+  // Conta caracteres alfabéticos em português/inglês
+  const letters = (cleaned.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+  if (letters / cleaned.length < 0.4) {
+    // Se menos de 40% do texto são letras normais, pode ser lixo de OCR ou tabelas vazias
+    return false;
+  }
+
+  // Verifica se possui pelo menos 10 palavras com 3+ caracteres para garantir que não são silabas quebradas
+  const words = cleaned.split(/\s+/).filter(w => w.length >= 3);
+  if (words.length < 10) return false;
+
+  return true;
+}
+
 function getRealConfidence(text, fallbackConfidence) {
   if (!text || typeof text !== 'string') return fallbackConfidence || 0;
   
   const textLower = text.toLowerCase();
-  
-  // REGRA DE OURO: Se o texto contém marcação de OCR LOCAL, OCR BRUTO ou TEXTO DIGITAL NATIVO, a confiança líquida é ZERO para permitir reprocessamento.
-  if (
-    textLower.includes('ocr local') || 
-    textLower.includes('ocr bruto') || 
-    textLower.includes('texto digital nativo') || 
-    textLower.includes('digital nativo')
-  ) {
-    return 0;
-  }
-  
-  // Se o documento tiver marcas de "[ILEGÍVEL]" ou "ILEGÍVEL", penaliza a confiança proporcionalmente
-  const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
-  let computedConfidence = fallbackConfidence || 99;
-  
-  const pageRegex = /(?:PÁGINA|PAGINA)\s+(\d+)/gi;
   const lines = text.split('\n');
-  const pagesSeen = new Set();
-  const failedPagesSeen = new Set();
-  let hasCheckedPages = false;
-  
+  const pageConfidences: { [key: number]: number } = {};
+  let hasStructuredTags = false;
+
   for (let line of lines) {
-    const match = pageRegex.exec(line);
-    pageRegex.lastIndex = 0;
-    
-    if (match) {
-      const pageNum = parseInt(match[1], 10);
-      const lowerLine = line.toLowerCase();
-      
-      const isFailed = lowerLine.includes('pulada') || 
-                       lowerLine.includes('crash') || 
-                       lowerLine.includes('falha') || 
-                       lowerLine.includes('erro crítico') || 
-                       lowerLine.includes('erro critico');
-      
-      pagesSeen.add(pageNum);
-      if (isFailed) {
-        failedPagesSeen.add(pageNum);
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      // Detecção de erro crítico na página
+      const errMatch = trimmed.match(/\[(?:ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA|ERRO\s+CR[ÍI]TICO\s+NA\s+PAGINA)\s+(\d+)\]/i);
+      if (errMatch) {
+        const pageNum = parseInt(errMatch[1], 10);
+        pageConfidences[pageNum] = 0;
+        hasStructuredTags = true;
+        continue;
       }
-      hasCheckedPages = true;
+
+      // Detecção de página com conteúdo
+      const pMatch = trimmed.match(/\[(?:P[ÁA]GINA|PAGINA)\s+(\d+)\s*-\s*([^\]]+)\]/i);
+      if (pMatch) {
+        const pageNum = parseInt(pMatch[1], 10);
+        const tagContent = pMatch[2].toLowerCase();
+        hasStructuredTags = true;
+        
+        if (tagContent.includes('texto digital nativo') || tagContent.includes('digital nativo')) {
+          pageConfidences[pageNum] = 100;
+        } else if (tagContent.includes('ia jurídica') || tagContent.includes('ia juridica') || tagContent.includes('recuperado via ia')) {
+          pageConfidences[pageNum] = 99;
+        } else if (tagContent.includes('ocr bruto') || tagContent.includes('ocr local')) {
+          const pctMatch = tagContent.match(/(\d+)%/);
+          if (pctMatch) {
+            pageConfidences[pageNum] = parseInt(pctMatch[1], 10);
+          } else {
+            pageConfidences[pageNum] = 75;
+          }
+        } else {
+          pageConfidences[pageNum] = fallbackConfidence || 90;
+        }
+      }
     }
   }
-  
-  if (hasCheckedPages && pagesSeen.size > 0) {
-    const totalCount = pagesSeen.size;
-    const failedCount = failedPagesSeen.size;
-    const successfulCount = Math.max(0, totalCount - failedCount);
-    
-    if (successfulCount === 0) return 0;
-    
-    const baseConfidence = Math.max(0, Math.min(100, computedConfidence));
-    const successRatio = successfulCount / totalCount;
-    computedConfidence = Math.min(100, Math.max(0, Math.round(baseConfidence * successRatio)));
-  } else if (textLower.includes('página pulada') || textLower.includes('pagina pulada') || textLower.includes('erro crítico na página') || textLower.includes('erro critico na pagina')) {
-    computedConfidence = Math.max(0, Math.round(computedConfidence * 0.5));
-  } else {
-    computedConfidence = Math.min(100, Math.max(0, Math.round(computedConfidence)));
+
+  if (hasStructuredTags) {
+    const pages = Object.keys(pageConfidences);
+    if (pages.length > 0) {
+      let total = 0;
+      let count = 0;
+      const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
+      const ilegivelPenalty = Math.min(4, Math.round(ilegivelCount * 0.5));
+
+      for (const pStr of pages) {
+        const pNum = parseInt(pStr, 10);
+        let conf = pageConfidences[pNum];
+        
+        if (conf === 99 && ilegivelCount > 0) {
+          conf = Math.max(95, 99 - ilegivelPenalty);
+        }
+        
+        total += conf;
+        count++;
+      }
+      
+      return Math.min(100, Math.max(0, Math.round(total / count)));
+    }
   }
 
-  // É do Modo IA Jurídica?
-  const isAiJuridica = textLower.includes('ia jurídica') || textLower.includes('ia juridica') || textLower.includes('recuperado via ia');
-
-  if (isAiJuridica) {
-    // Para a IA Jurídica (Padrão Ouro), o fato de marcar campos carimbados ou assinaturas indecifráveis como [ILEGÍVEL] 
-    // é um sinal de extrema fidedignidade e precisão (evitando alucinação perigosa), e não uma falha de detecção.
-    // Portanto, a penalidade por ilegível é praticamente nula (apenas 0.5% por ocorrência, limitado a no máximo 4% de dedução total).
+  // Fallback se não houver tags estruturadas (ex: imagem individual)
+  let computedConfidence = fallbackConfidence || 99;
+  const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
+  
+  if (textLower.includes('ia jurídica') || textLower.includes('ia juridica') || textLower.includes('recuperado via ia')) {
     if (ilegivelCount > 0) {
       const ilegivelPenalty = Math.min(4, Math.round(ilegivelCount * 0.5));
-      computedConfidence = Math.max(95, computedConfidence - ilegivelPenalty); // Garante piso de 95% para transcrições da IA
+      computedConfidence = Math.max(95, computedConfidence - ilegivelPenalty);
     } else {
       computedConfidence = Math.max(99, computedConfidence);
     }
   } else {
-    // Para OCR local comum, se houver marcas de ilegibilidade, de fato indica que o OCR local falhou em partes maiores
     if (ilegivelCount > 0) {
       const ilegivelPenalty = Math.min(30, ilegivelCount * 5);
       computedConfidence = Math.max(0, computedConfidence - ilegivelPenalty);
     }
   }
+  
+  if (textLower.includes('erro crítico') || textLower.includes('erro critico') || textLower.includes('pagina pulada') || textLower.includes('página pulada')) {
+    return 0;
+  }
 
-  return computedConfidence;
+  return Math.min(100, Math.max(0, Math.round(computedConfidence)));
 }
 
 // Substituição cirúrgica do texto de uma página específica
-function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string): string {
+function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string, isDigital: boolean = false): string {
   // Regex altamente precisa para encontrar somente marcadores de cabeçalho de página que comecem no início do texto ou de uma linha
   const regexHeader = new RegExp(
     "(?:^|\\r?\\n)(?:\\[|\\*\\*)?(?:ERRO\\s+CR[ÍI]TICO\\s+NA\\s+|TEXTO\\s+DIGITAL\\s+NATIVO\\s+NA\\s+|RECUPERADO\\s+VIA\\s+IA\\s+JUR[ÍI]DICA\\s+NA\\s+)?(?:P[ÁA]GINA|PAGINA)\\s+" + pageNum + "\\b[^\\n\\*]*?(?:\\]|\\*\\*)?(?:\\r?\\n|$)", 
@@ -1101,7 +1128,10 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   const match = regexHeader.exec(fullText);
   if (!match) {
     console.warn(`[Recuperar páginas] Cabeçalho original não encontrado para a pág ${pageNum}. Fazendo append.`);
-    return fullText + `\n\n[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n` + newPageText;
+    const prefix = isDigital 
+      ? `[PÁGINA ${pageNum} - TEXTO DIGITAL NATIVO]\n` 
+      : `[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n`;
+    return fullText + `\n\n` + prefix + newPageText;
   }
   
   const startIndex = match.index;
@@ -1118,7 +1148,10 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   const before = fullText.substring(0, startIndex);
   const after = fullText.substring(endIndex);
   
-  const replacement = `[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n` + newPageText + "\n\n";
+  const prefix = isDigital 
+    ? `[PÁGINA ${pageNum} - TEXTO DIGITAL NATIVO]\n` 
+    : `[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n`;
+  const replacement = prefix + newPageText + "\n\n";
   return (before.trim() ? before.trim() + "\n\n" : "") + replacement + (after.trim() ? after.trim() : "");
 }
 
@@ -1178,19 +1211,26 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         const currentTimeout = 20000 * attempt;
         const page = await withTimeout(pdf.getPage(i), currentTimeout, `Timeout ao carregar dados do PDF para a pág ${i}`);
 
-        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias)
-        const shouldBypassNative = forceAi || goldStandard;
-        if (!shouldBypassNative && attempt === 1) {
+        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias e se não forçar IA explicitamente)
+        let isDigital = false;
+        if (!forceAi && attempt === 1) {
           try {
             const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout no texto nativo da pág ${i}`);
             pageText = textContent.items.map(item => item.str).join(" ").trim();
+            if (isGenuineDigitalText(pageText)) {
+              isDigital = true;
+            }
           } catch (nativeErr) {
             console.warn(`[Pág ${i}] Não foi possível obter texto nativo (tentando OCR visual):`, nativeErr);
             pageText = "";
           }
         }
 
-        if (!shouldBypassNative && pageText.length > 600) {
+        if (isDigital) {
+          onProgress(
+            Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+            `Pág ${i}/${endIdx}: Lida instantaneamente (Texto Digital Nativo)!`
+          );
           fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
           confidenceTotal += 100;
           pagesEvaluated++;
@@ -2712,38 +2752,59 @@ export default function ScannerJuridico() {
         
         try {
           const page = await pdf.getPage(pageNum);
-          let viewport = page.getViewport({ scale: goldStandard ? 2.0 : 1.5 });
-          let canvas = document.createElement("canvas");
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          let ctx = canvas.getContext("2d");
-          if (!ctx) {
-            console.error(`[Recuperar páginas] Erro ao obter Context 2D para a pág ${pageNum}`);
-            continue;
+          
+          // Tenta extrair texto digital nativo primeiro para ver se é uma página genuinamente digital
+          let isDigital = false;
+          let pageText = "";
+          try {
+            const textContent = await page.getTextContent();
+            pageText = textContent.items.map((item: any) => item.str).join(" ").trim();
+            if (isGenuineDigitalText(pageText)) {
+              isDigital = true;
+            }
+          } catch (nativeErr) {
+            console.warn(`[Recuperar páginas - Pág ${pageNum}] Não obteve texto nativo:`, nativeErr);
           }
-          
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          
-          const originalColorBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
-          if (!originalColorBlob) {
-            console.error(`[Recuperar páginas] Erro ao converter canvas em blob para a pág ${pageNum}`);
-            continue;
+
+          let cleanAiText = "";
+          if (isDigital) {
+            setProgressMsg(`[Pág ${pageNum}] Restaurada via Texto Digital Nativo...`);
+            cleanAiText = pageText;
+          } else {
+            let viewport = page.getViewport({ scale: goldStandard ? 2.0 : 1.5 });
+            let canvas = document.createElement("canvas");
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            let ctx = canvas.getContext("2d");
+            if (!ctx) {
+              console.error(`[Recuperar páginas] Erro ao obter Context 2D para a pág ${pageNum}`);
+              continue;
+            }
+            
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            
+            const originalColorBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
+            if (!originalColorBlob) {
+              console.error(`[Recuperar páginas] Erro ao converter canvas em blob para a pág ${pageNum}`);
+              canvas.width = 0; canvas.height = 0;
+              continue;
+            }
+            
+            const enhancedForAi = await enhanceImageForGemini(originalColorBlob as Blob);
+            
+            setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
+            const aiText = await extractPageWithGemini(enhancedForAi, (p, msg) => {
+              setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
+            }, goldStandard);
+            
+            cleanAiText = optimizeRawText(aiText, true);
+            
+            // Limpar canvas
+            canvas.width = 0; canvas.height = 0;
           }
-          
-          const enhancedForAi = await enhanceImageForGemini(originalColorBlob as Blob);
-          
-          setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
-          const aiText = await extractPageWithGemini(enhancedForAi, (p, msg) => {
-            setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
-          }, goldStandard);
-          
-          const cleanAiText = optimizeRawText(aiText, true);
           
           // Substituição cirúrgica no texto completo!
-          updatedText = replacePageTextInDoc(updatedText, pageNum, cleanAiText);
-          
-          // Limpar canvas
-          canvas.width = 0; canvas.height = 0;
+          updatedText = replacePageTextInDoc(updatedText, pageNum, cleanAiText, isDigital);
           successCount++;
           console.log(`[Recuperar páginas] Página ${pageNum} recuperada e substituída com sucesso.`);
         } catch (pageErr) {
