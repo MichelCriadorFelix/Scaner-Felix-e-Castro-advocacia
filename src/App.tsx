@@ -1707,6 +1707,9 @@ export default function ScannerJuridico() {
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
   const [completedCrop, setCompletedCrop] = useState(null);
 
+  const [isWebcamOpen, setIsWebcamOpen] = useState(false);
+  const [webcamFacingMode, setWebcamFacingMode] = useState("environment");
+
   // Filtros de Processamento de Imagem para alta qualidade de OCR/Contraste de Fontes
   const [imagePreset, setImagePreset] = useState("nitido-cores"); // "original", "documento", "nitido-cores", "alto-contraste", "personalizado"
   const [imageContrast, setImageContrast] = useState(115); // % de contraste (suave para não estourar documentos coloridos tipo RG/CNH)
@@ -1746,6 +1749,7 @@ export default function ScannerJuridico() {
   const nativeCameraRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
+  const webcamVideoRef = useRef();
   const [viewingBatchPage, setViewingBatchPage] = useState(null);
 
   // Expor função de tracking para o motor externo de IA
@@ -2966,6 +2970,105 @@ export default function ScannerJuridico() {
   };
 
   // Camera and Image Capture functions
+  const stopWebcam = () => {
+    if (webcamVideoRef.current && webcamVideoRef.current.srcObject) {
+      const stream = webcamVideoRef.current.srcObject;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      webcamVideoRef.current.srcObject = null;
+    }
+  };
+
+  const startWebcam = async (facing = "environment") => {
+    setIsWebcamOpen(true);
+    setWebcamFacingMode(facing);
+    
+    setTimeout(async () => {
+      try {
+        let constraints = {
+          video: {
+            facingMode: facing,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          audio: false
+        };
+        
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+          console.warn("Falha ao abrir com restricoes ideais, tentando generico...", err);
+          constraints = {
+            video: {
+              facingMode: facing
+            },
+            audio: false
+          };
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        }
+        
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = stream;
+          webcamVideoRef.current.setAttribute("playsinline", "true");
+          try {
+            await webcamVideoRef.current.play();
+          } catch (e) {
+            console.warn("Erro ao iniciar reproducao:", e);
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao iniciar webcam:", err);
+        showToast("Não foi possível acessar a câmera do aparelho.", "error");
+        setIsWebcamOpen(false);
+      }
+    }, 100);
+  };
+
+  const toggleWebcamFacing = () => {
+    const nextFacing = webcamFacingMode === "environment" ? "user" : "environment";
+    setWebcamFacingMode(nextFacing);
+    startWebcam(nextFacing);
+  };
+
+  const captureWebcamPhoto = () => {
+    if (!webcamVideoRef.current) return;
+    
+    const video = webcamVideoRef.current;
+    const canvas = document.createElement("canvas");
+    
+    const width = video.videoWidth || video.clientWidth || 1280;
+    const height = video.videoHeight || video.clientHeight || 720;
+    
+    canvas.width = width;
+    canvas.height = height;
+    
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, width, height);
+      
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          showToast("Erro ao processar imagem capturada.", "error");
+          return;
+        }
+        
+        stopWebcam();
+        setIsWebcamOpen(false);
+        
+        const f = new File([blob], "camera_web_" + Date.now() + ".jpg", { type: "image/jpeg" });
+        setFile(f);
+        setPreview(URL.createObjectURL(blob));
+        setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
+        setCompletedCrop(null);
+        setIsCropping(true);
+      }, "image/jpeg", 0.95);
+    } else {
+      showToast("Erro ao criar contexto de renderização.", "error");
+    }
+  };
+
   const handleNativeCameraCapture = async (files) => {
     if (!files || files.length === 0) return;
     const f = files[0];
@@ -3864,6 +3967,71 @@ export default function ScannerJuridico() {
 
 
 
+      {/* Webcam Modal */}
+      {isWebcamOpen && (
+        <div className="modal-overlay" style={{ zIndex: 115 }}>
+          <div style={{
+            background: G.card,
+            padding: '20px',
+            borderRadius: '16px',
+            width: '100%',
+            maxWidth: '440px',
+            border: `1px solid ${G.border}`,
+            boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center'
+          }}>
+            <h3 style={{ marginBottom: 12, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+              📸 Câmera Direta do App
+            </h3>
+            <p style={{ fontSize: '12px', color: G.muted, textAlign: 'center', marginBottom: '16px', lineHeight: '1.4' }}>
+              Captura fotos direto na página, sem abrir o aplicativo de câmera externo, <strong>evitando travamentos por falta de memória em celulares como Motorola e aparelhos antigos</strong>.
+            </p>
+            
+            <div style={{ position: 'relative', width: '100%', borderRadius: '12px', overflow: 'hidden', background: '#000', aspectRatio: '3/4', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <video 
+                ref={webcamVideoRef} 
+                className="modal-video" 
+                style={{ width: '100%', height: '100%', objectFit: 'cover', border: 'none', borderRadius: '12px' }}
+                playsInline
+                autoPlay
+                muted
+              />
+            </div>
+            
+            <div className="modal-actions" style={{ width: '100%', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', marginTop: '16px' }}>
+              <button 
+                onClick={toggleWebcamFacing} 
+                className="modal-btn cancel" 
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 14px', flex: 1, justifyContent: 'center', minWidth: '130px', margin: 0, fontSize: '12px' }}
+                title="Alternar entre câmera frontal e traseira"
+              >
+                🔄 Inverter Câmera
+              </button>
+              
+              <button 
+                onClick={captureWebcamPhoto} 
+                className="modal-btn capture" 
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', background: G.accent, color: '#000', fontWeight: 'bold', padding: '10px 20px', flex: 1, justifyContent: 'center', minWidth: '130px', margin: 0, fontSize: '12px' }}
+              >
+                📸 Bater Foto
+              </button>
+              
+              <button 
+                onClick={() => { stopWebcam(); setIsWebcamOpen(false); }} 
+                className="modal-btn cancel"
+                style={{ padding: '10px 14px', flex: '1 1 100%', justifyContent: 'center', marginTop: '4px', fontSize: '12px' }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+
       {/* Crop Modal */}
       {isCropping && preview && file && file.type.startsWith("image/") && (
         <div className="modal-overlay" style={{zIndex: 110}}>
@@ -4109,7 +4277,7 @@ export default function ScannerJuridico() {
                 <button 
                   className="modal-btn" 
                   style={{flex: 1, background: `${G.accent}12`, color: G.accent, border: `1px solid ${G.accent}`, fontSize: '12px', fontWeight: 'bold'}} 
-                  onClick={() => { setIsBatchModalOpen(false); nativeCameraRef.current?.click(); }}
+                  onClick={() => { setIsBatchModalOpen(false); startWebcam("environment"); }}
                 >
                   📸 Câmera
                 </button>
@@ -4468,10 +4636,16 @@ export default function ScannerJuridico() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                    <button className="action-card action-card-full" onClick={() => startWebcam("environment")} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}16` }}>
                       <div className="action-icon" style={{ color: G.accent }}>📸</div>
-                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Integrada do Relatório</div>
-                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Alta Qualidade, Não trava o dispositivo</div>
+                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Direta do App</div>
+                      <div className="action-desc" style={{ color: G.text, opacity: 0.95 }}>Recomendado: Rápido e evita erros de memória / fechar o app</div>
+                    </button>
+
+                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1px solid ${G.border}`, background: 'transparent', padding: '12px 10px' }}>
+                      <div className="action-icon" style={{ fontSize: '18px' }}>📷</div>
+                      <div className="action-title" style={{ fontSize: '13px', fontWeight: 'normal' }}>Câmera Externa do Celular</div>
+                      <div className="action-desc" style={{ fontSize: '11px', color: G.muted }}>Usar aplicativo de câmera do próprio aparelho</div>
                     </button>
                   </div>
                 </div>
