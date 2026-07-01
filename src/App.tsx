@@ -1007,18 +1007,22 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 function isGenuineDigitalText(text: string): boolean {
   if (!text) return false;
   const cleaned = text.trim();
-  if (cleaned.length < 100) return false;
+  if (cleaned.length < 10) return false;
   
   // Conta caracteres alfabéticos em português/inglês
   const letters = (cleaned.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
-  if (letters / cleaned.length < 0.4) {
-    // Se menos de 40% do texto são letras normais, pode ser lixo de OCR ou tabelas vazias
+  
+  // Se não tiver pelo menos 3 letras, provavelmente é lixo ou apenas caracteres especiais/caixas vazias
+  if (letters < 3) return false;
+
+  // Letras devem representar pelo menos 25% do texto total (permite tabelas com muitos números)
+  if (letters / cleaned.length < 0.25) {
     return false;
   }
 
-  // Verifica se possui pelo menos 10 palavras com 3+ caracteres para garantir que não são silabas quebradas
-  const words = cleaned.split(/\s+/).filter(w => w.length >= 3);
-  if (words.length < 10) return false;
+  // Verifica se possui pelo menos 2 palavras de comprimento mínimo de 2 caracteres
+  const words = cleaned.split(/\s+/).filter(w => w.length >= 2);
+  if (words.length < 2) return false;
 
   return true;
 }
