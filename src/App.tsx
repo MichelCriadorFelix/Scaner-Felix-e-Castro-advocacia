@@ -3659,9 +3659,14 @@ export default function ScannerJuridico() {
     }
   };
 
-  const compileFolderTXT = () => {
+  const compileFolderTXT = async () => {
     const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
     
+    if (docs.length === 0) {
+      showToast("Nenhuma petição ou documento nesta pasta para compilar.", "info");
+      return;
+    }
+
     // Clona e ordena usando Ordem Alfanumérica Natural (Natural Sort)
     // Isso garante que "Doc. 1", "Doc. 2", "Doc. 10", "Doc. 13" fiquem na ordem matemática e lógica,
     // independentemente de que horas foram escaneados ou inseridos.
@@ -3669,6 +3674,39 @@ export default function ScannerJuridico() {
     
     const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
     
+    showToast("Preparando compilação e carregando textos da pasta...", "info");
+
+    const docsToFetch = sortedDocs.filter(d => !d.text || d.text.trim() === "");
+    const textMap: { [key: string]: string } = {};
+
+    if (docsToFetch.length > 0 && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('lexscan_documents')
+          .select('id, extracted_text')
+          .in('id', docsToFetch.map(d => d.id));
+        
+        if (error) throw error;
+        
+        if (data) {
+          data.forEach(row => {
+            textMap[row.id] = row.extracted_text || "";
+          });
+
+          // Atualiza o histórico em lote para persistir na interface e evitar novas buscas individuais
+          setHistory(prev => prev.map(h => {
+            if (textMap[h.id] !== undefined) {
+              return { ...h, text: textMap[h.id] };
+            }
+            return h;
+          }));
+        }
+      } catch (err) {
+        console.error("Erro ao buscar textos em lote para a compilação:", err);
+        showToast("Alguns documentos não puderam ter seus textos carregados do banco.", "error");
+      }
+    }
+
     let compiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
     compiledText += `Pasta: ${folderName}\n`;
     compiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
@@ -3676,14 +3714,16 @@ export default function ScannerJuridico() {
     compiledText += `======================================================\n\n`;
 
     sortedDocs.forEach((doc, i) => {
+      const docText = doc.text !== undefined ? doc.text : (textMap[doc.id] || "");
       compiledText += `------------------------------------------------------\n`;
       compiledText += `DOCUMENTO ${i + 1}: ${doc.name}\n`;
       compiledText += `Originalmente Escaneado em: ${formatDate(doc.ts)}\n`;
       compiledText += `------------------------------------------------------\n\n`;
-      compiledText += `${doc.text}\n\n\n\n`;
+      compiledText += `${docText}\n\n\n\n`;
     });
 
     downloadTXT(compiledText, `COMPILADO_${folderName.replace(/\s+/g, '_')}`);
+    showToast("Compilado gerado com sucesso!", "success");
   };
 
   const downloadFolderPDFsZip = async () => {
