@@ -1007,22 +1007,37 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 function isGenuineDigitalText(text: string): boolean {
   if (!text) return false;
   const cleaned = text.trim();
-  if (cleaned.length < 10) return false;
+  if (cleaned.length < 15) return false;
   
-  // Conta caracteres alfabéticos em português/inglês
-  const letters = (cleaned.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
-  
-  // Se não tiver pelo menos 3 letras, provavelmente é lixo ou apenas caracteres especiais/caixas vazias
-  if (letters < 3) return false;
+  // 1. Detecção de Ruído de Símbolos típicos de OCR corrompido / PDF Escaneado com camada ruim de fábrica
+  // Se tiver sequências longas de underscores, iguais, hifens ou barras (ex: "___", "===", "---", "////")
+  if (/_{3,}|={3,}|-{4,}|[/\\|]{4,}/.test(cleaned)) {
+    return false; // Rejeita porque parece tabela mal interpretada ou linhas ruidosas de scanner antigo
+  }
 
-  // Letras devem representar pelo menos 25% do texto total (permite tabelas com muitos números)
-  if (letters / cleaned.length < 0.25) {
+  // Se tiver um excesso de caracteres especiais que costumam aparecer em OCR ruim
+  const specialSymbols = (cleaned.match(/[•■~|\[\]\\{}_=§¤¢¶*]/g) || []).length;
+  // Se mais de 2.5% do texto for composto por símbolos típicos de ruído de OCR em textos maiores
+  if (specialSymbols / cleaned.length > 0.025 && cleaned.length > 50) {
     return false;
   }
 
-  // Verifica se possui pelo menos 2 palavras de comprimento mínimo de 2 caracteres
-  const words = cleaned.split(/\s+/).filter(w => w.length >= 2);
-  if (words.length < 2) return false;
+  // Conta caracteres alfabéticos em português/inglês
+  const letters = (cleaned.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+  
+  // Se não tiver pelo menos 5 letras, provavelmente é lixo ou apenas caracteres especiais/caixas vazias
+  if (letters < 5) return false;
+
+  // Letras devem representar pelo menos 45% do texto total em textos normais digitais.
+  // PDFs digitais reais gerados pelo Word possuem mais de 65-70% de letras/espaços.
+  // Se tiver menos de 45% de letras, é muito provável que seja ruído ou tabela muito poluída
+  if (letters / cleaned.length < 0.45) {
+    return false;
+  }
+
+  // Verifica se possui pelo menos 4 palavras de comprimento mínimo de 3 caracteres (garante fluxo gramatical mínimo)
+  const words = cleaned.split(/\s+/).filter(w => w.length >= 3);
+  if (words.length < 4) return false;
 
   return true;
 }
@@ -1031,94 +1046,204 @@ function getRealConfidence(text, fallbackConfidence) {
   if (!text || typeof text !== 'string') return fallbackConfidence || 0;
   
   const textLower = text.toLowerCase();
-  const lines = text.split('\n');
-  const pageConfidences: { [key: number]: number } = {};
-  let hasStructuredTags = false;
-
-  for (let line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      // Detecção de erro crítico na página
-      const errMatch = trimmed.match(/\[(?:ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA|ERRO\s+CR[ÍI]TICO\s+NA\s+PAGINA)\s+(\d+)\b[^\]]*\]/i);
-      if (errMatch) {
-        const pageNum = parseInt(errMatch[1], 10);
-        pageConfidences[pageNum] = 0;
-        hasStructuredTags = true;
-        continue;
-      }
-
-      // Detecção de página com conteúdo
-      const pMatch = trimmed.match(/\[(?:P[ÁA]GINA|PAGINA)\s+(\d+)\s*-\s*([^\]]+)\]/i);
-      if (pMatch) {
-        const pageNum = parseInt(pMatch[1], 10);
-        const tagContent = pMatch[2].toLowerCase();
-        hasStructuredTags = true;
-        
-        if (tagContent.includes('texto digital nativo') || tagContent.includes('digital nativo')) {
-          pageConfidences[pageNum] = 100;
-        } else if (tagContent.includes('ia jurídica') || tagContent.includes('ia juridica') || tagContent.includes('recuperado via ia')) {
-          pageConfidences[pageNum] = 99;
-        } else if (tagContent.includes('ocr bruto') || tagContent.includes('ocr local')) {
-          const pctMatch = tagContent.match(/(\d+)%/);
-          if (pctMatch) {
-            pageConfidences[pageNum] = parseInt(pctMatch[1], 10);
-          } else {
-            pageConfidences[pageNum] = 75;
-          }
-        } else {
-          pageConfidences[pageNum] = fallbackConfidence || 90;
-        }
-      }
-    }
-  }
-
-  if (hasStructuredTags) {
-    const pages = Object.keys(pageConfidences);
-    if (pages.length > 0) {
-      let total = 0;
-      let count = 0;
-      const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
-      const ilegivelPenalty = Math.min(4, Math.round(ilegivelCount * 0.5));
-
-      for (const pStr of pages) {
-        const pNum = parseInt(pStr, 10);
-        let conf = pageConfidences[pNum];
-        
-        if (conf === 99 && ilegivelCount > 0) {
-          conf = Math.max(95, 99 - ilegivelPenalty);
-        }
-        
-        total += conf;
-        count++;
-      }
-      
-      return Math.min(100, Math.max(0, Math.round(total / count)));
-    }
-  }
-
-  // Fallback se não houver tags estruturadas (ex: imagem individual)
-  let computedConfidence = fallbackConfidence || 99;
-  const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
   
-  if (textLower.includes('ia jurídica') || textLower.includes('ia juridica') || textLower.includes('recuperado via ia')) {
-    if (ilegivelCount > 0) {
-      const ilegivelPenalty = Math.min(4, Math.round(ilegivelCount * 0.5));
-      computedConfidence = Math.max(95, computedConfidence - ilegivelPenalty);
-    } else {
-      computedConfidence = Math.max(99, computedConfidence);
-    }
-  } else {
-    if (ilegivelCount > 0) {
-      const ilegivelPenalty = Math.min(30, ilegivelCount * 5);
-      computedConfidence = Math.max(0, computedConfidence - ilegivelPenalty);
-    }
-  }
-  
+  // Se o texto explicitamente disser "ERRO CRÍTICO" ou similar, confiança é 0
   if (textLower.includes('erro crítico') || textLower.includes('erro critico') || textLower.includes('pagina pulada') || textLower.includes('página pulada')) {
     return 0;
   }
 
-  return Math.min(100, Math.max(0, Math.round(computedConfidence)));
+  // Vamos analisar a qualidade real do texto
+  // Removemos as tags de estrutura de página para não interferir no cálculo
+  let cleanText = text.replace(/\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]/gi, '');
+  cleanText = cleanText.replace(/\[RECUPERADO VIA IA JURÍDICA\]/gi, '');
+  cleanText = cleanText.replace(/\[TEXTO DIGITAL NATIVO\]/gi, '');
+  cleanText = cleanText.replace(/\[OCR BRUTO \(\d+%\)\]/gi, '');
+  
+  const totalLength = cleanText.length;
+  if (totalLength < 10) {
+    return 0; // Praticamente vazio
+  }
+
+  // 1. Proporção de símbolos e caracteres especiais ruidosos
+  const totalSymbols = (cleanText.match(/[-=_+•■~|\\#§¤¢¶*\[\]{}()<>]/g) || []).length;
+  const hifensEqualsUnderscores = (cleanText.match(/[-=_]{3,}/g) || []).length; // Sequências de tabelas escaneadas
+  const symbolRatio = totalSymbols / totalLength;
+
+  // 2. Proporção de letras normais em relação ao comprimento total (excluindo espaços)
+  const letters = (cleanText.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+  const spaces = (cleanText.match(/\s/g) || []).length;
+  const nonSpaceLength = totalLength - spaces;
+  const letterRatioOfNonSpace = nonSpaceLength > 0 ? letters / nonSpaceLength : 0;
+
+  // 3. Proporção de palavras corrompidas (que misturam letras e números, ou têm pontuação interna estranha)
+  const words = cleanText.split(/\s+/).filter(w => w.trim().length > 0);
+  let corruptWordsCount = 0;
+  let validPortugueseCommonCount = 0;
+  
+  // Lista de palavras em português ultra comuns que confirmam que o texto faz sentido
+  const commonWords = new Set(['o', 'a', 'os', 'as', 'de', 'do', 'da', 'dos', 'das', 'em', 'um', 'uma', 'com', 'para', 'por', 'que', 'se', 'no', 'na', 'nos', 'nas', 'ao', 'aos', 'ou', 'sua', 'seu', 'suas', 'seus', 'esta', 'este', 'isso', 'esteve', 'como', 'mais', 'não', 'sim', 'doença', 'médico', 'medico', 'laudo', 'processo', 'autor', 'réu', 'reu', 'direito', 'justiça', 'justica', 'lei', 'artigo', 'art', 'civis', 'advogado', 'advogada', 'social', 'previdenciário', 'previdenciario', 'trabalhista', 'trt', 'tribunal', 'federal', 'inss', 'benefício', 'beneficio', 'aposentadoria', 'auxílio', 'auxilio']);
+
+  words.forEach(w => {
+    const hasLetters = /[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/.test(w);
+    const hasDigits = /[0-9]/.test(w);
+    const hasSymbols = /[-_~=•■|\\/§¤*]/.test(w);
+    
+    // Se a palavra mistura letras com números (ex: Munlcip10, u.u01)
+    if (hasLetters && hasDigits && w.length > 2) {
+      corruptWordsCount++;
+    } 
+    // Se a palavra tem símbolos internos e letras (ex: cE_IT_RO_CÃ_RIOC_A_DE)
+    else if (hasLetters && hasSymbols && w.length > 3) {
+      corruptWordsCount++;
+    }
+    // Se a palavra for toda estranha (ex: tJnidaOe) - letras misturadas com maiúsculas/minúsculas de forma bizarra
+    else if (hasLetters && !hasDigits && !hasSymbols && w.length > 3) {
+      const upperCount = (w.match(/[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+      const lowerCount = (w.match(/[a-záéíóúâêîôûãõç]/g) || []).length;
+      if (upperCount > 0 && lowerCount > 0) {
+        const isStandardCapitalized = /^[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÇ][a-záéíóúâêîôûãõç]*$/.test(w);
+        const isAllCaps = /^[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÇ]+$/.test(w);
+        if (!isStandardCapitalized && !isAllCaps && upperCount > 1 && lowerCount > 1) {
+          corruptWordsCount++;
+        }
+      }
+    }
+
+    if (commonWords.has(w.toLowerCase().replace(/[,.:;()]/g, ''))) {
+      validPortugueseCommonCount++;
+    }
+  });
+
+  const corruptWordRatio = words.length > 0 ? corruptWordsCount / words.length : 0;
+  
+  // Vamos calcular uma nota baseada nesses fatores
+  let score = 100;
+
+  // Penalização por excesso de símbolos (se symbolRatio for maior que 2%)
+  if (symbolRatio > 0.02) {
+    const penalty = Math.min(45, (symbolRatio - 0.02) * 200);
+    score -= penalty;
+  }
+
+  // Penalização por sequências longas de linhas ou tabelas ruidosas
+  if (hifensEqualsUnderscores > 0) {
+    score -= Math.min(15, hifensEqualsUnderscores * 3);
+  }
+
+  // Penalização por baixa taxa de letras normais (se letterRatioOfNonSpace for menor que 70%)
+  if (letterRatioOfNonSpace < 0.70) {
+    const letterPenalty = Math.min(40, (0.70 - letterRatioOfNonSpace) * 100);
+    score -= letterPenalty;
+  }
+
+  // Penalização por palavras corrompidas (se corruptWordRatio for maior que 2%)
+  if (corruptWordRatio > 0.02) {
+    const corruptPenalty = Math.min(50, (corruptWordRatio - 0.02) * 300);
+    score -= corruptPenalty;
+  }
+
+  // Bônus se contiver muitas palavras em português ultra comuns
+  if (words.length > 10) {
+    const commonWordRatio = validPortugueseCommonCount / words.length;
+    if (commonWordRatio > 0.15) {
+      score += 5;
+    } else if (commonWordRatio < 0.04) {
+      score -= 15;
+    }
+  }
+
+  if (textLower.includes('digital nativo') || textLower.includes('texto digital nativo')) {
+    score = Math.min(100, score + 10);
+  } else if (textLower.includes('recuperado via ia jurídica') || textLower.includes('ia jurídica') || textLower.includes('ia juridica') || textLower.includes('refinado via ia')) {
+    score = Math.max(92, Math.min(99, score + 5));
+  }
+
+  if (fallbackConfidence !== undefined && fallbackConfidence < score && fallbackConfidence > 0) {
+    score = (score + fallbackConfidence) / 2;
+  }
+
+  const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
+  if (ilegivelCount > 0) {
+    score -= Math.min(25, ilegivelCount * 4);
+  }
+
+  return Math.min(100, Math.max(5, Math.round(score)));
+}
+
+async function refineTextWithGemini(mangledText) {
+  const allKeys = getAvailableGeminiKeys();
+  if (allKeys.length === 0) {
+    throw new Error("❌ Nenhuma Chave GEMINI configurada.");
+  }
+  
+  const keysMetadata = allKeys.map(key => {
+    const meta = getKeyMetadata(key);
+    return { key, ...meta };
+  });
+  
+  const activeKeys = keysMetadata.filter(m => 
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+  );
+  
+  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
+  candidateKeysInfo.sort((a, b) => a.usage - b.usage);
+  const finalSortedKeys = candidateKeysInfo.map(info => info.key);
+
+  const systemInstruction = `Você é um corretor e reconstrutor de textos ortográficos de altíssima precisão e inteligência do escritório Felix & Castro Advocacia.
+Sua tarefa é analisar um texto transcrito por leitores automáticos (OCR) que veio com ruídos, símbolos corrompidos, letras trocadas por números ou pontuações bizarras, e RECONSTRUIR o texto de forma limpa, fluida e impecável em português correto e formal.
+
+══════════════════════════════════════════════════
+REGRAS CRÍTICAS DE REFINAMENTO:
+══════════════════════════════════════════════════
+1. CORREÇÃO DE PALAVRAS CORROMPIDAS:
+   - Identifique e conserte palavras estragadas pelo leitor (ex: "tJnidaOe" -> "Unidade", "Munlcip10" -> "Município", "u.u01" -> "u.u", ou conserte o fluxo silábico).
+   - Corrija erros de grafia comuns ou acentuações destruídas (ex: "CONTRARREFER~NCIA" -> "CONTRARREFERÊNCIA", "EtõirnYWPIRES-DE_O_LIV-EIRA" -> "LANETONE TAVARES PIRES DE OLIVEIRA", etc).
+
+2. ELIMINAÇÃO DE RUÍDO:
+   - Elimine símbolos espúrios, sequências de traços longos ou iguais (como "=====================-", "---------") que foram lidos de tabelas escaneadas, mas mantenha a separação limpa do texto.
+   - Remova ruídos como "•", "■", "~", "|", "\\", "_", "=" no meio das palavras.
+
+3. PRESERVAÇÃO DE DADOS CRÍTICOS (FUNDO DE VERDADE):
+   - NUNCA invente, mude ou ignore dados reais como NOMES, DATAS, CPFs, CPFs com pontuação, números de processo, CRMs, RG, telefones ou CNPJ. Estes dados devem ser mantidos idênticos, apenas corrigindo se houver caracteres estranhos no meio do nome. Por exemplo: se o nome é "LANETONE TAVARES PIRES DE OLIVEIRA" e veio "L_A-N-E-T-O-N-E...", limpe os traços para que fique o nome limpo e correto.
+   - Preserve o conteúdo original inteiro. NÃO RESUMA, NÃO COMENTE E NÃO EXPLIQUE. Sua resposta deve conter APENAS o texto reconstruído e nada mais.
+
+4. MANTER MARCADORES DE PÁGINA:
+   - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
+
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+
+  for (let i = 0; i < finalSortedKeys.length; i++) {
+    const apiKey = finalSortedKeys[i];
+    const keyHash = apiKey.slice(-6);
+    
+    for (let m = 0; m < modelsToTry.length; m++) {
+      const modelName = modelsToTry[m];
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: [
+            { text: "Por favor, reconstrua e refine este texto ruidoso de OCR, corrigindo as palavras no vocabulário oficial em português, removendo símbolos estranhos de tabelas, mas preservando TODOS os nomes, CPFs, números e datas de forma verbatim e idêntica:\n\n" + mangledText }
+          ],
+          config: {
+            systemInstruction,
+            temperature: 0.1,
+          }
+        });
+
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+        
+        if (response && response.text) {
+          return response.text.trim();
+        }
+      } catch (err) {
+        console.warn(`[Refinamento IA Failover] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
+      }
+    }
+  }
+
+  throw new Error("Não foi possível refinar o texto utilizando as chaves Gemini disponíveis.");
 }
 
 // Substituição cirúrgica do texto de uma página específica
@@ -1615,6 +1740,7 @@ export default function ScannerJuridico() {
   const [progressMsg, setProgressMsg] = useState("");
   const [result, setResult] = useState(null);
   const [isEditingText, setIsEditingText] = useState(false);
+  const [isRefiningText, setIsRefiningText] = useState(false);
   const [editedText, setEditedText] = useState("");
   const [startPage, setStartPage] = useState(1);
   const [history, setHistory] = useState([]);
@@ -3504,6 +3630,61 @@ export default function ScannerJuridico() {
     }
   };
 
+  const handleRefineTextWithAI = async () => {
+    if (!result) return;
+    if (!result.text || result.text.trim() === "") {
+      showToast("Não há texto neste documento para refinar.", "info");
+      return;
+    }
+
+    try {
+      setIsRefiningText(true);
+      showToast("Iniciando refinamento inteligente via IA Jurídica...", "info");
+      
+      const refined = await refineTextWithGemini(result.text);
+      if (!refined) {
+        throw new Error("A resposta da IA veio vazia.");
+      }
+
+      const newWords = refined.split(/\s+/).filter(Boolean).length;
+      const newChars = refined.length;
+      const realConf = getRealConfidence(refined, result.confidence);
+
+      const updatedItem = {
+        ...result,
+        text: refined,
+        words: newWords,
+        chars: newChars,
+        confidence: realConf,
+      };
+
+      setResult(updatedItem);
+      setHistory((prev) => prev.map((h) => (h.id === result.id ? updatedItem : h)));
+
+      if (supabase) {
+        await supabase
+          .from("lexscan_documents")
+          .update({
+            extracted_text: refined,
+            words_count: newWords,
+            chars_count: newChars,
+            confidence: realConf,
+          })
+          .eq("id", result.id);
+      } else {
+        const localH = getHistory().map((h) => (h.id === result.id ? updatedItem : h));
+        localStorage.setItem("lexscan_history", JSON.stringify(localH));
+      }
+
+      showToast("Texto refinado e otimizado com IA Jurídica com sucesso!", "success");
+    } catch (e: any) {
+      console.error("Erro ao refinar texto com IA:", e);
+      showToast(e.message || "Não foi possível refinar o texto com IA.", "error");
+    } finally {
+      setIsRefiningText(false);
+    }
+  };
+
   const fetchItemTextIfNeeded = async (item) => {
     if (!item.text || item.text.trim() === "") {
       if (supabase) {
@@ -4925,6 +5106,15 @@ export default function ScannerJuridico() {
                         <>
                           <button className="dl-btn" onClick={() => { setIsEditingText(true); setEditedText(result.text || ""); }} style={{ background: G.surface, border: `1px solid ${G.border}`, color: G.text }}>
                             ✏️ Editar Texto
+                          </button>
+                          <button 
+                            className="dl-btn" 
+                            onClick={handleRefineTextWithAI} 
+                            style={{ background: 'rgba(59, 130, 246, 0.12)', border: `1px solid #3b82f6`, color: '#3b82f6', cursor: isRefiningText ? 'not-allowed' : 'pointer' }}
+                            disabled={isRefiningText}
+                            title="Refinar ortografia do texto, remover ruídos de OCR e corrigir palavras em português utilizando Inteligência Artificial"
+                          >
+                            {isRefiningText ? "🪄 Refinando..." : "🪄 Refinar com IA"}
                           </button>
                           <button className="dl-btn" onClick={() => downloadTXT(result.text, result.name.replace(/\.[^.]+$/, ""))}>
                             📝 .TXT
