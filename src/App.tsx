@@ -3888,14 +3888,96 @@ export default function ScannerJuridico() {
       }
     }
 
+    // Criar lista de documentos totalmente populados com texto para avaliar a qualidade de OCR
+    const fullDocs = sortedDocs.map(d => {
+      const text = d.text !== undefined ? d.text : (textMap[d.id] || "");
+      return { ...d, text };
+    });
+
+    // Identificar documentos com baixa qualidade de OCR (confiança < 85%) que ainda não foram refinados
+    const lowQualityDocs = fullDocs.filter(d => {
+      if (!d.text || d.text.trim() === "") return false;
+      const textLower = d.text.toLowerCase();
+      // Se já foi refinado ou é nativo digital, pula
+      if (textLower.includes('recuperado via ia') || textLower.includes('refinado via ia') || textLower.includes('digital nativo') || textLower.includes('texto digital nativo')) {
+        return false;
+      }
+      const score = getRealConfidence(d.text, d.confidence);
+      return score < 85;
+    });
+
+    // Se houver documentos ruidosos, acionar o refinador inteligente automaticamente para cada um
+    if (lowQualityDocs.length > 0) {
+      showToast(`Detectamos ${lowQualityDocs.length} documentos ruidosos na pasta. Otimizando automaticamente com IA Jurídica...`, "info");
+      
+      for (let index = 0; index < lowQualityDocs.length; index++) {
+        const doc = lowQualityDocs[index];
+        showToast(`Otimizando texto com IA (${index + 1}/${lowQualityDocs.length}): "${doc.name}"...`, "info");
+        try {
+          const refined = await refineTextWithGemini(doc.text);
+          if (refined && refined.trim() !== "") {
+            const newWords = refined.split(/\s+/).filter(Boolean).length;
+            const newChars = refined.length;
+            const realConf = getRealConfidence(refined, doc.confidence);
+
+            // Atualizar o objeto local do documento
+            doc.text = refined;
+            doc.words = newWords;
+            doc.chars = newChars;
+            doc.confidence = realConf;
+
+            // Persistir as atualizações no banco correspondente (Supabase ou LocalStorage)
+            if (supabase) {
+              await supabase
+                .from("lexscan_documents")
+                .update({
+                  extracted_text: refined,
+                  words_count: newWords,
+                  chars_count: newChars,
+                  confidence: realConf,
+                })
+                .eq("id", doc.id);
+            } else {
+              const localH = getHistory().map((h) => (h.id === doc.id ? doc : h));
+              localStorage.setItem("lexscan_history", JSON.stringify(localH));
+            }
+          }
+        } catch (err: any) {
+          console.error(`Erro ao refinar automaticamente "${doc.name}":`, err);
+          showToast(`Não foi possível otimizar "${doc.name}": ${err.message || err}`, "warn");
+        }
+      }
+
+      // Atualizar o histórico global em lote para que as novas métricas e textos reflitam imediatamente na UI
+      setHistory(prev => prev.map(h => {
+        const match = lowQualityDocs.find(l => l.id === h.id);
+        return match ? { ...h, text: match.text, words: match.words, chars: match.chars, confidence: match.confidence } : h;
+      }));
+
+      // Atualizar o visualizador de resultados se o documento ativo atualmente foi um dos refinados
+      if (result) {
+        const matchedCurrent = lowQualityDocs.find(l => l.id === result.id);
+        if (matchedCurrent) {
+          setResult(prev => ({
+            ...prev,
+            text: matchedCurrent.text,
+            words: matchedCurrent.words,
+            chars: matchedCurrent.chars,
+            confidence: matchedCurrent.confidence
+          }));
+        }
+      }
+    }
+
     let compiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
     compiledText += `Pasta: ${folderName}\n`;
     compiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
     compiledText += `Quantidade de Documentos: ${sortedDocs.length}\n`;
     compiledText += `======================================================\n\n`;
 
-    sortedDocs.forEach((doc, i) => {
-      const docText = doc.text !== undefined ? doc.text : (textMap[doc.id] || "");
+    fullDocs.forEach((doc, i) => {
+      // Usar o texto refinado atualizado
+      const docText = doc.text;
       compiledText += `------------------------------------------------------\n`;
       compiledText += `DOCUMENTO ${i + 1}: ${doc.name}\n`;
       compiledText += `Originalmente Escaneado em: ${formatDate(doc.ts)}\n`;
