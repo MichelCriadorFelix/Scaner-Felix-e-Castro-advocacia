@@ -2258,6 +2258,65 @@ export default function ScannerJuridico() {
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
   const [appendingDoc, setAppendingDoc] = useState(null); // Documento original que está sendo expandido/continuado
 
+  // --- Memory Optimization & Anti-Crash Cache for Multi-Page Scans ---
+  const blobUrlCacheRef = useRef<Map<any, string>>(new Map());
+
+  const getStableBlobUrl = (blob: any) => {
+    if (!blob) return "";
+    let url = blobUrlCacheRef.current.get(blob);
+    if (!url) {
+      url = URL.createObjectURL(blob);
+      blobUrlCacheRef.current.set(blob, url);
+    }
+    return url;
+  };
+
+  // Sync cache and revoke URLs of blobs that were removed/replaced in cameraPages
+  useEffect(() => {
+    const currentPagesSet = new Set(cameraPages);
+    const cache = blobUrlCacheRef.current;
+    
+    for (const [blob, url] of cache.entries()) {
+      if (!currentPagesSet.has(blob)) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.error("Error revoking cached URL:", e);
+        }
+        cache.delete(blob);
+      }
+    }
+  }, [cameraPages]);
+
+  // Sync preview changes and revoke the previous preview URL if it's a blob url
+  useEffect(() => {
+    const oldPreview = preview;
+    return () => {
+      if (oldPreview && typeof oldPreview === "string" && oldPreview.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(oldPreview);
+        } catch (e) {
+          console.error("Error revoking preview URL:", e);
+        }
+      }
+    };
+  }, [preview]);
+
+  // Clean up all cached URLs when the component unmounts
+  useEffect(() => {
+    return () => {
+      const cache = blobUrlCacheRef.current;
+      for (const url of cache.values()) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.error("Error revoking cached URL on unmount:", e);
+        }
+      }
+      cache.clear();
+    };
+  }, []);
+
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
   const [completedCrop, setCompletedCrop] = useState(null);
@@ -4812,7 +4871,7 @@ export default function ScannerJuridico() {
                {cameraPages.map((p, i) => (
                   <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
                     <div onClick={() => setViewingBatchPage(i)} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`, cursor: 'pointer'}}>
-                      <img src={URL.createObjectURL(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+                      <img src={getStableBlobUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
                       <div style={{position: 'absolute', bottom: 2, right: 4, fontSize: '10px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 4px', borderRadius: '4px'}}>{i+1}</div>
                       <div className="hover-overlay" style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: '0.2s'}}>
                          <span style={{color: '#fff', fontSize: '20px'}}>👁️</span>
@@ -4918,7 +4977,7 @@ export default function ScannerJuridico() {
               </div>
               <div style={{flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden', position: 'relative'}}>
                  <img 
-                    src={URL.createObjectURL(cameraPages[viewingBatchPage])} 
+                    src={getStableBlobUrl(cameraPages[viewingBatchPage])} 
                     style={{maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${G.border}`}} 
                     onClick={() => handleEditPage(viewingBatchPage)}
                     title="Clique na imagem para recortar/tratar"
