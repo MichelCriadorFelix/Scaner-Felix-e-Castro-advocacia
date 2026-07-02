@@ -1295,7 +1295,63 @@ REGRAS CRÍTICAS DE REFINAMENTO:
   throw new Error("Não foi possível refinar o texto utilizando as chaves Gemini disponíveis.");
 }
 
-async function refineCompiledTextWithGemini(compiledText: string, clientName: string) {
+function extractNamesFromText(text: string): string[] {
+  // Matches typical proper noun sequences
+  const regex = /\b[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+(?:da|de|do|dos|das|e)\s+[A-ZÀ-Ý][a-zà-ÿ]+|\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4}\b/g;
+  const matches = text.match(regex) || [];
+  
+  const map: { [key: string]: number } = {};
+  matches.forEach(m => {
+    const name = m.trim();
+    if (name.length < 8 || name.length > 40) return;
+    
+    // Avoid common Brazilian stop phrases in legal texts that are capitalized
+    if (/^(P[áa]gina|Documento|Originalmente|Escaneado|T[íi]tulo|Tipo|Área|Obs|Data|Rep[úu]blica|Governo|Estado|Federal|Registro|Geral|Certificado|Assinado|Assinatura|Identificador|TramitaSign|Biometria|Hist[óo]rico|Eventos|Validade|Jur[íi]dica|Anexo|Catar|Fatura|Claro|Seu|Plano|Subtotal|Total|Avisos|Autentica|Bases|Painel|Cidad[ãa]o|Membros|Filiação|Órgão|Emissão|Válida|Territ[óo]rio|Nacional|Lei|Início|Fim|Consultas|Tratamentos|Alimentação|Proteção|Espécie|Interessados|Procuradores|Informações|Anexos|Tamanho|Arquivo|Descri|Enviado|Autenticado|Despacho|Prezado|Senhor|Passos|Atenção|Aplicativo|Telefone|Declaro|Sei|Secretaria|Inss|Cnis|Lista|Elos|Relações|Renda|RQS|Carta|Concessão|Memória|Cálculo|Presidente|Canais|WhatsApp|Código|Fidelidade)/i.test(name)) {
+      return;
+    }
+    map[name] = (map[name] || 0) + 1;
+  });
+  
+  // Sort by frequency and limit to avoid huge payload
+  return Object.keys(map)
+    .sort((a, b) => map[b] - map[a])
+    .slice(0, 30);
+}
+
+function applyLocalOCRCorrections(text: string): string {
+  let temp = text;
+  const corrections: [RegExp, string][] = [
+    [/\btJnidaOe\b/g, "Unidade"],
+    [/\bMunlcip10\b/gi, "Município"],
+    [/\bMunlclp10\b/gi, "Município"],
+    [/\bMinlsterio\b/gi, "Ministério"],
+    [/\bPrevidoncia\b/gi, "Previdência"],
+    [/\bprevidoncia\b/gi, "previdência"],
+    [/\bNlcl\b/g, "NIT"],
+    [/\bNlC\b/g, "NIT"],
+    [/\bAsslss\b/gi, "Assiste"],
+    [/\bconcedldo\b/gi, "concedido"],
+    [/\bbeneficlo\b/gi, "benefício"],
+    [/\bBeneficlo\b/gi, "Benefício"],
+    [/\bpetete\b/g, "pelo"],
+    [/\bflf\b/g, "fls."],
+    [/\bu\.u01\b/gi, ""],
+    [/_{4,}/g, "____"],
+    [/-{4,}/g, "----"],
+    [/\={4,}/g, "====="]
+  ];
+
+  corrections.forEach(([regex, replacement]) => {
+    temp = temp.replace(regex, replacement);
+  });
+  return temp;
+}
+
+async function refineCompiledTextWithGemini(
+  compiledText: string, 
+  clientName: string, 
+  addLogCallback?: (msg: string) => void
+): Promise<string> {
   const allKeys = getAvailableGeminiKeys();
   if (allKeys.length === 0) {
     throw new Error("❌ Nenhuma Chave GEMINI configurada.");
@@ -1314,83 +1370,132 @@ async function refineCompiledTextWithGemini(compiledText: string, clientName: st
   candidateKeysInfo.sort((a, b) => a.usage - b.usage);
   const finalSortedKeys = candidateKeysInfo.map(info => info.key);
 
-  let systemInstruction = "";
-  if (clientName && clientName !== "Geral" && clientName !== "Pasta" && clientName.trim() !== "") {
-    systemInstruction = `Você é um refinador, padronizador e revisor de textos consolidados de processos do escritório Felix & Castro Advocacia.
-Sua tarefa é analisar o arquivo COMPILADO final de múltiplos documentos processuais, fazer uma revisão inteligente global de ortografia e, principalmente, PADRONIZAR o nome do cliente principal para corrigir inconsistências ou erros de digitação/leitura do OCR.
-
-══════════════════════════════════════════════════
-REGRAS CRÍTICAS DE REVISÃO E PADRONIZAÇÃO GLOBAL:
-══════════════════════════════════════════════════
-1. PADRONIZAÇÃO DO NOME DO CLIENTE PRINCIPAL:
-   - O nome oficial e correto do cliente desta pasta é: "${clientName}".
-   - Varra o texto compilado. Se encontrar qualquer variação desse nome com erros de leitura de OCR, letras corrompidas ou sobrenomes ligeiramente incorretos/truncados (ex: se o oficial é "Jairo Gomes da Cruz Silva Soares" e aparecer "Jairo Gomes Crux", "Jairo Gomes da Cruz Silva", "Jalro Gomes", "Jairo G. da Cruz Soares", etc.), PADRONIZE para o nome correto oficial: "${clientName}".
-   - Se o cliente correto for "Michel Santos Felix", e aparecer "Michel pereira felix" em algum documento de forma inconsistente por falha de leitura, ajuste para o padrão correto oficial: "Michel Santos Felix".
-   - Mantenha intactos nomes de terceiros (como juízes, réus, advogados, testemunhas), alterando apenas as variações ruidosas/truncadas ou inconsistentes do CLIENTE PRINCIPAL especificado.
-
-2. LIMPEZA DE RUÍDO RESIDUAL DE OCR:
-   - Identifique e conserte palavras estragadas (ex: "tJnidaOe" -> "Unidade", "Munlcip10" -> "Município", etc).
-   - Elimine símbolos ruidosos espúrios que sobraram nos textos originais (como sequências excessivas de underscores "___" ou traços "---" no meio das frases).
-
-3. PRESERVAÇÃO INTEGRAL DE DADOS REAIS:
-   - NUNCA invente, resuma ou remova dados críticos reais como datas, números de CPF, números de processos, telefones, endereços, RGs ou CNPJs.
-   - NÃO altere o teor dos documentos jurídicos. Mantenha os cabeçalhos de arquivo estruturais, marcadores de página (ex: "[PÁGINA 1 - ...]") intactos para manter a organização lógica do arquivo compilado.
-
-4. SEM COMENTÁRIOS:
-   - Retorne APENAS o texto compilado revisado e padronizado final, sem qualquer introdução ou comentário explicativo.`;
-  } else {
-    systemInstruction = `Você é um refinador e revisor de textos consolidados de processos do escritório Felix & Castro Advocacia.
-Sua tarefa é analisar o arquivo COMPILADO final de múltiplos documentos processuais e fazer uma revisão inteligente global de ortografia e gramática, removendo ruídos de leitura do OCR.
-
-══════════════════════════════════════════════════
-REGRAS CRÍTICAS DE REVISÃO GLOBAL:
-══════════════════════════════════════════════════
-1. LIMPEZA DE RUÍDO RESIDUAL DE OCR:
-   - Identifique e conserte palavras estragadas (ex: "tJnidaOe" -> "Unidade", "Munlcip10" -> "Município", etc).
-   - Elimine símbolos ruidosos espúrios que sobraram nos textos originais (como sequências excessivas de underscores "___" ou traços "---" no meio das frases).
-
-2. PRESERVAÇÃO INTEGRAL DE DADOS REAIS:
-   - NUNCA invente, resuma ou remova dados críticos reais como nomes, datas, números de CPF, números de processos, telefones, endereços, RGs ou CNPJs.
-   - NÃO altere o teor dos documentos jurídicos. Mantenha os cabeçalhos de arquivo estruturais, marcadores de página (ex: "[PÁGINA 1 - ...]") intactos para manter a organização lógica do arquivo compilado.
-
-3. SEM COMENTÁRIOS:
-   - Retorne APENAS o texto compilado revisado final, sem qualquer introdução ou comentário explicativo.`;
+  if (addLogCallback) {
+    addLogCallback(`[${new Date().toLocaleTimeString()}] 🔍 Varrendo texto compilado localmente em busca de nomes próprios e termos...`);
   }
 
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+  // 1. Extract proper nouns
+  const extractedNames = extractNamesFromText(compiledText);
+  if (addLogCallback) {
+    addLogCallback(`[${new Date().toLocaleTimeString()}] 📝 Encontrados ${extractedNames.length} candidatos a nomes próprios para análise de consistência.`);
+  }
 
-  for (let i = 0; i < finalSortedKeys.length; i++) {
-    const apiKey = finalSortedKeys[i];
-    const keyHash = apiKey.slice(-6);
-    
-    for (let m = 0; m < modelsToTry.length; m++) {
-      const modelName = modelsToTry[m];
-      try {
-        const ai = new GoogleGenAI({ apiKey });
-        
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: [
-            { text: "Por favor, revise o seguinte texto compilado de documentos. Aplique a padronização do nome do cliente principal para corrigir todas as inconsistências de leitura de seu nome se aplicável, e conserte os ruídos e erros de digitação:\n\n" + compiledText }
-          ],
-          config: {
-            systemInstruction,
-            temperature: 0.1,
+  let nameMapping: { [key: string]: string } = {};
+
+  if (extractedNames.length > 0) {
+    if (addLogCallback) {
+      addLogCallback(`[${new Date().toLocaleTimeString()}] 🧠 Consultando a IA para cruzamento ultra-rápido de inconsistências cadastrais...`);
+    }
+
+    const systemInstruction = `Você é um auditor de banco de dados cadastrais especializado em unificação e padronização de registros do escritório Félix & Castro Advocacia.
+Sua missão é analisar uma lista de nomes extraídos via OCR de um processo e identificar quais deles são variações incorretas, parciais ou truncadas de pessoas reais relevantes do caso.
+
+As pessoas relevantes da causa e seus nomes corretos oficiais são:
+1. Cliente Principal: "${clientName}" (se aplicável, use como o padrão ouro para o cliente)
+2. Advogados: "Michel Santos Felix", "Luana de Oliveira Castro Pacheco", "Flávia Zacarias Gonçalves"
+3. Genitora/Representante (se houver na lista, ex: "Sulamita Gomes da Cruz Silva")
+
+Identifique as inconsistências de grafia, abreviações ou erros de leitura de OCR (como "Jalro" em vez de "Jairo", ou nomes parciais como "Jairo Gomes da Cruz Silva" que deveriam ser completados para "${clientName}") e mapeie de forma inteligente.
+Preste muita atenção ao exemplo dado pelo usuário:
+- Se o cliente correto for "${clientName}", e na lista houver "Michel pereira felix" ou variações de grafia incorretas de Michel, mapeie para "Michel Santos Felix".
+- Se houver nomes parciais do cliente principal, mapeie para "${clientName}".
+
+Retorne APENAS um objeto JSON no formato abaixo, sem qualquer formatação markdown ou comentário explicativo, contendo as substituições que devem ser feitas no texto para unificá-lo:
+{
+  "nome_encontrado_ruidoso_ou_parcial": "NOME_CORRETO_PADRONIZADO"
+}
+Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio {}.`;
+
+    const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
+    const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+    let success = false;
+
+    for (let i = 0; i < finalSortedKeys.length; i++) {
+      const apiKey = finalSortedKeys[i];
+      const keyHash = apiKey.slice(-6);
+      
+      for (let m = 0; m < modelsToTry.length; m++) {
+        const modelName = modelsToTry[m];
+        try {
+          const ai = new GoogleGenAI({ apiKey });
+          
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [{ text: promptText }],
+            config: {
+              systemInstruction,
+              temperature: 0.1,
+              responseMimeType: "application/json"
+            }
+          });
+
+          if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+          
+          if (response && response.text) {
+            try {
+              nameMapping = JSON.parse(response.text.trim());
+              success = true;
+              break;
+            } catch (jsonErr) {
+              const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                nameMapping = JSON.parse(jsonMatch[0].trim());
+                success = true;
+                break;
+              }
+            }
           }
-        });
-
-        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-        
-        if (response && response.text) {
-          return response.text.trim();
+        } catch (err) {
+          console.warn(`[Failover Name Correction] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
         }
-      } catch (err) {
-        console.warn(`[Refinamento Compilado IA Failover] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
+      }
+      if (success) break;
+    }
+  }
+
+  // 2. Apply name replacements locally
+  let refinedText = compiledText;
+  const appliedCorrections: string[] = [];
+
+  for (const [wrongName, correctName] of Object.entries(nameMapping)) {
+    if (
+      typeof wrongName === 'string' && 
+      typeof correctName === 'string' && 
+      wrongName.trim() !== "" && 
+      correctName.trim() !== "" &&
+      wrongName.toLowerCase() !== correctName.toLowerCase()
+    ) {
+      const escaped = wrongName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const regex = new RegExp('\\b' + escaped + '\\b', 'gi');
+      
+      if (regex.test(refinedText)) {
+        refinedText = refinedText.replace(regex, correctName);
+        appliedCorrections.push(`• "${wrongName}" ➔ "${correctName}"`);
       }
     }
   }
 
-  throw new Error("Não foi possível refinar o texto compilado utilizando as chaves Gemini disponíveis.");
+  if (addLogCallback) {
+    if (appliedCorrections.length > 0) {
+      addLogCallback(`[${new Date().toLocaleTimeString()}] ⚖️ Inconsistências de nomes encontradas e corrigidas localmente:`);
+      appliedCorrections.forEach(c => addLogCallback(`   ${c}`));
+    } else {
+      addLogCallback(`[${new Date().toLocaleTimeString()}] ✨ Nenhuma inconsistência grave de nomes própria detectada pela IA.`);
+    }
+  }
+
+  // 3. Apply local OCR spelling/structural corrections
+  if (addLogCallback) {
+    addLogCallback(`[${new Date().toLocaleTimeString()}] 🪄 Aplicando correções locais automatizadas de ortografia e ruídos de OCR...`);
+  }
+  
+  refinedText = applyLocalOCRCorrections(refinedText);
+
+  if (addLogCallback) {
+    addLogCallback(`[${new Date().toLocaleTimeString()}] ✅ Processo de compilação e harmonização ultra-rápido concluído!`);
+  }
+
+  return refinedText;
 }
 
 // Substituição cirúrgica do texto de uma página específica
@@ -4114,7 +4219,11 @@ export default function ScannerJuridico() {
       setCompilationProgress(65);
       setCompilationStatusText("Processando refinamento global de textos...");
       
-      const refinedResult = await refineCompiledTextWithGemini(rawCompiledText, clientName);
+      const refinedResult = await refineCompiledTextWithGemini(
+        rawCompiledText, 
+        clientName, 
+        (msg) => setCompilationLogs(prev => [...prev, msg])
+      );
       if (refinedResult && refinedResult.trim() !== "") {
         finalCompiledText = refinedResult;
         setCompilationLogs(prev => [
