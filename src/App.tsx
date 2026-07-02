@@ -1006,38 +1006,53 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 // Auxiliar para detectar se um texto extraído nativamente é de fato conteúdo digital legítimo
 function isGenuineDigitalText(text: string): boolean {
   if (!text) return false;
-  const cleaned = text.trim();
-  if (cleaned.length < 15) return false;
   
-  // 1. Detecção de Ruído de Símbolos típicos de OCR corrompido / PDF Escaneado com camada ruim de fábrica
-  // Se tiver sequências longas de underscores, iguais, hifens ou barras (ex: "___", "===", "---", "////")
-  if (/_{3,}|={3,}|-{4,}|[/\\|]{4,}/.test(cleaned)) {
-    return false; // Rejeita porque parece tabela mal interpretada ou linhas ruidosas de scanner antigo
+  // Remove formatação jurídica e linhas de assinatura comuns antes de fazer as validações
+  // para evitar que um PDF digital perfeito de procuração/contrato seja rejeitado.
+  let cleanedForCheck = text
+    .replace(/_{2,}/g, '') // Remove linhas de assinatura do tipo ________
+    .replace(/-{3,}/g, '') // Remove linhas divisórias do tipo -------
+    .replace(/={3,}/g, '') // Remove linhas divisórias do tipo =======
+    .replace(/\[\s*\]/g, '') // Remove checkboxes vazios [ ] ou [  ]
+    .trim();
+
+  if (cleanedForCheck.length < 15) return false;
+
+  // Em vez de rejeitar por sequências de barras ou barras invertidas na página inteira,
+  // vamos verificar se há sequências excessivas de caracteres de erro que não pareçam divisão de caminhos/urls
+  // Por exemplo, mais de 10 barras consecutivas, o que é raríssimo em PDFs normais
+  if (/[/\\|]{10,}/.test(cleanedForCheck)) {
+    return false; // Rejeita ruídos extremos de scanner corrompido
   }
 
-  // Se tiver um excesso de caracteres especiais que costumam aparecer em OCR ruim
-  const specialSymbols = (cleaned.match(/[•■~|\[\]\\{}_=§¤¢¶*]/g) || []).length;
-  // Se mais de 2.5% do texto for composto por símbolos típicos de ruído de OCR em textos maiores
-  if (specialSymbols / cleaned.length > 0.025 && cleaned.length > 50) {
+  // Símbolos de ruído real do OCR (remover da lista símbolos jurídicos comuns como §, [ ], _ e =)
+  // Mantemos símbolos altamente suspeitos de OCR corrompido como •, ■, ~, ¤, ¢, ¶, *, ou símbolos avulsos de formatação estranha
+  const noiseSymbols = (cleanedForCheck.match(/[•■~¤¢¶*]/g) || []).length;
+  if (noiseSymbols / cleanedForCheck.length > 0.03 && cleanedForCheck.length > 50) {
     return false;
   }
 
   // Conta caracteres alfabéticos em português/inglês
-  const letters = (cleaned.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+  const letters = (cleanedForCheck.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
   
   // Se não tiver pelo menos 5 letras, provavelmente é lixo ou apenas caracteres especiais/caixas vazias
   if (letters < 5) return false;
 
   // Letras devem representar pelo menos 45% do texto total em textos normais digitais.
-  // PDFs digitais reais gerados pelo Word possuem mais de 65-70% de letras/espaços.
-  // Se tiver menos de 45% de letras, é muito provável que seja ruído ou tabela muito poluída
-  if (letters / cleaned.length < 0.45) {
+  if (letters / cleanedForCheck.length < 0.45) {
     return false;
   }
 
   // Verifica se possui pelo menos 4 palavras de comprimento mínimo de 3 caracteres (garante fluxo gramatical mínimo)
-  const words = cleaned.split(/\s+/).filter(w => w.length >= 3);
+  const words = cleanedForCheck.split(/\s+/).filter(w => w.length >= 3);
   if (words.length < 4) return false;
+
+  // Validação extra altamente positiva para português: se contiver palavras comuns do idioma,
+  // é uma garantia fortíssima de que o texto é digital nativo perfeitamente legível.
+  const ptStopwords = /\b(de|do|da|para|com|que|o|a|os|as|em|um|uma|se|por|ao|dos|das|procuração|declaração|termo|outorgante|outorgado|advocacia|advogado|direito|justiça)\b/i;
+  if (ptStopwords.test(cleanedForCheck)) {
+    return true; 
+  }
 
   return true;
 }
@@ -1155,7 +1170,9 @@ function getRealConfidence(text, fallbackConfidence) {
   if (textLower.includes('digital nativo') || textLower.includes('texto digital nativo')) {
     score = Math.min(100, score + 10);
   } else if (textLower.includes('recuperado via ia jurídica') || textLower.includes('ia jurídica') || textLower.includes('ia juridica') || textLower.includes('refinado via ia')) {
-    score = Math.max(92, Math.min(99, score + 5));
+    if (score >= 75) {
+      score = Math.max(92, Math.min(99, score + 5));
+    }
   }
 
   if (fallbackConfidence !== undefined && fallbackConfidence < score && fallbackConfidence > 0) {
@@ -3894,16 +3911,40 @@ export default function ScannerJuridico() {
       return { ...d, text };
     });
 
-    // Identificar documentos com baixa qualidade de OCR (confiança < 85%) que ainda não foram refinados
+    // Identificar documentos com baixa qualidade de OCR ou com ruídos significativos de símbolos/OCR que ainda não foram refinados
     const lowQualityDocs = fullDocs.filter(d => {
       if (!d.text || d.text.trim() === "") return false;
       const textLower = d.text.toLowerCase();
-      // Se já foi refinado ou é nativo digital, pula
-      if (textLower.includes('recuperado via ia') || textLower.includes('refinado via ia') || textLower.includes('digital nativo') || textLower.includes('texto digital nativo')) {
+      
+      // Se já foi refinado pela IA do LEXSCAN, pula para não duplicar refinamento
+      if (textLower.includes('refinado via ia') || textLower.includes('[página ' && textLower.includes('refinado via ia'))) {
         return false;
       }
+      
+      // Avalia a pontuação de confiança real baseada no texto atual
       const score = getRealConfidence(d.text, d.confidence);
-      return score < 85;
+      
+      // Vamos checar a proporção de símbolos e palavras corrompidas para identificar ruídos reais
+      const cleanText = d.text.replace(/\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]/gi, '');
+      const totalLength = cleanText.length;
+      if (totalLength < 10) return false;
+
+      const totalSymbols = (cleanText.match(/[-=_+•■~|\\#§¤¢¶*\[\]{}()<>]/g) || []).length;
+      const symbolRatio = totalSymbols / totalLength;
+
+      const wordsList = cleanText.split(/\s+/).filter(w => w.trim().length > 0);
+      let corruptWordsCount = 0;
+      wordsList.forEach(w => {
+        // Palavras que combinam letras e números (ex: Munlcip10, u.u01) de tamanho > 2
+        if (/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/.test(w) && /[0-9]/.test(w) && w.length > 2) {
+          corruptWordsCount++;
+        }
+      });
+      const corruptWordRatio = wordsList.length > 0 ? corruptWordsCount / wordsList.length : 0;
+
+      // Se o score geral for < 85, ou se tiver menos de 96% de confiança E tiver ruídos significativos (símbolos > 1% ou palavras corrompidas > 1%)
+      const hasSignificantNoise = symbolRatio > 0.01 || corruptWordRatio > 0.01;
+      return score < 85 || (score < 96 && hasSignificantNoise);
     });
 
     // Se houver documentos ruidosos, acionar o refinador inteligente automaticamente para cada um
