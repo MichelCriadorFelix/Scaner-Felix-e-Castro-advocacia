@@ -1263,6 +1263,104 @@ REGRAS CRÍTICAS DE REFINAMENTO:
   throw new Error("Não foi possível refinar o texto utilizando as chaves Gemini disponíveis.");
 }
 
+async function refineCompiledTextWithGemini(compiledText: string, clientName: string) {
+  const allKeys = getAvailableGeminiKeys();
+  if (allKeys.length === 0) {
+    throw new Error("❌ Nenhuma Chave GEMINI configurada.");
+  }
+  
+  const keysMetadata = allKeys.map(key => {
+    const meta = getKeyMetadata(key);
+    return { key, ...meta };
+  });
+  
+  const activeKeys = keysMetadata.filter(m => 
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+  );
+  
+  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
+  candidateKeysInfo.sort((a, b) => a.usage - b.usage);
+  const finalSortedKeys = candidateKeysInfo.map(info => info.key);
+
+  let systemInstruction = "";
+  if (clientName && clientName !== "Geral" && clientName !== "Pasta" && clientName.trim() !== "") {
+    systemInstruction = `Você é um refinador, padronizador e revisor de textos consolidados de processos do escritório Felix & Castro Advocacia.
+Sua tarefa é analisar o arquivo COMPILADO final de múltiplos documentos processuais, fazer uma revisão inteligente global de ortografia e, principalmente, PADRONIZAR o nome do cliente principal para corrigir inconsistências ou erros de digitação/leitura do OCR.
+
+══════════════════════════════════════════════════
+REGRAS CRÍTICAS DE REVISÃO E PADRONIZAÇÃO GLOBAL:
+══════════════════════════════════════════════════
+1. PADRONIZAÇÃO DO NOME DO CLIENTE PRINCIPAL:
+   - O nome oficial e correto do cliente desta pasta é: "${clientName}".
+   - Varra o texto compilado. Se encontrar qualquer variação desse nome com erros de leitura de OCR, letras corrompidas ou sobrenomes ligeiramente incorretos/truncados (ex: se o oficial é "Jairo Gomes da Cruz Silva Soares" e aparecer "Jairo Gomes Crux", "Jairo Gomes da Cruz Silva", "Jalro Gomes", "Jairo G. da Cruz Soares", etc.), PADRONIZE para o nome correto oficial: "${clientName}".
+   - Se o cliente correto for "Michel Santos Felix", e aparecer "Michel pereira felix" em algum documento de forma inconsistente por falha de leitura, ajuste para o padrão correto oficial: "Michel Santos Felix".
+   - Mantenha intactos nomes de terceiros (como juízes, réus, advogados, testemunhas), alterando apenas as variações ruidosas/truncadas ou inconsistentes do CLIENTE PRINCIPAL especificado.
+
+2. LIMPEZA DE RUÍDO RESIDUAL DE OCR:
+   - Identifique e conserte palavras estragadas (ex: "tJnidaOe" -> "Unidade", "Munlcip10" -> "Município", etc).
+   - Elimine símbolos ruidosos espúrios que sobraram nos textos originais (como sequências excessivas de underscores "___" ou traços "---" no meio das frases).
+
+3. PRESERVAÇÃO INTEGRAL DE DADOS REAIS:
+   - NUNCA invente, resuma ou remova dados críticos reais como datas, números de CPF, números de processos, telefones, endereços, RGs ou CNPJs.
+   - NÃO altere o teor dos documentos jurídicos. Mantenha os cabeçalhos de arquivo estruturais, marcadores de página (ex: "[PÁGINA 1 - ...]") intactos para manter a organização lógica do arquivo compilado.
+
+4. SEM COMENTÁRIOS:
+   - Retorne APENAS o texto compilado revisado e padronizado final, sem qualquer introdução ou comentário explicativo.`;
+  } else {
+    systemInstruction = `Você é um refinador e revisor de textos consolidados de processos do escritório Felix & Castro Advocacia.
+Sua tarefa é analisar o arquivo COMPILADO final de múltiplos documentos processuais e fazer uma revisão inteligente global de ortografia e gramática, removendo ruídos de leitura do OCR.
+
+══════════════════════════════════════════════════
+REGRAS CRÍTICAS DE REVISÃO GLOBAL:
+══════════════════════════════════════════════════
+1. LIMPEZA DE RUÍDO RESIDUAL DE OCR:
+   - Identifique e conserte palavras estragadas (ex: "tJnidaOe" -> "Unidade", "Munlcip10" -> "Município", etc).
+   - Elimine símbolos ruidosos espúrios que sobraram nos textos originais (como sequências excessivas de underscores "___" ou traços "---" no meio das frases).
+
+2. PRESERVAÇÃO INTEGRAL DE DADOS REAIS:
+   - NUNCA invente, resuma ou remova dados críticos reais como nomes, datas, números de CPF, números de processos, telefones, endereços, RGs ou CNPJs.
+   - NÃO altere o teor dos documentos jurídicos. Mantenha os cabeçalhos de arquivo estruturais, marcadores de página (ex: "[PÁGINA 1 - ...]") intactos para manter a organização lógica do arquivo compilado.
+
+3. SEM COMENTÁRIOS:
+   - Retorne APENAS o texto compilado revisado final, sem qualquer introdução ou comentário explicativo.`;
+  }
+
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+
+  for (let i = 0; i < finalSortedKeys.length; i++) {
+    const apiKey = finalSortedKeys[i];
+    const keyHash = apiKey.slice(-6);
+    
+    for (let m = 0; m < modelsToTry.length; m++) {
+      const modelName = modelsToTry[m];
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: [
+            { text: "Por favor, revise o seguinte texto compilado de documentos. Aplique a padronização do nome do cliente principal para corrigir todas as inconsistências de leitura de seu nome se aplicável, e conserte os ruídos e erros de digitação:\n\n" + compiledText }
+          ],
+          config: {
+            systemInstruction,
+            temperature: 0.1,
+          }
+        });
+
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+        
+        if (response && response.text) {
+          return response.text.trim();
+        }
+      } catch (err) {
+        console.warn(`[Refinamento Compilado IA Failover] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
+      }
+    }
+  }
+
+  throw new Error("Não foi possível refinar o texto compilado utilizando as chaves Gemini disponíveis.");
+}
+
 // Substituição cirúrgica do texto de uma página específica
 function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string, isDigital: boolean = false): string {
   // Regex altamente precisa para encontrar somente marcadores de cabeçalho de página que comecem no início do texto ou de uma linha
@@ -3937,158 +4035,79 @@ export default function ScannerJuridico() {
       }
     }
 
-    setCompilationProgress(20);
-    setCompilationStatusText("Analisando qualidade do OCR de cada documento...");
-    setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🔍 Analisando textos para identificar ruídos e qualidade do OCR...`]);
+    setCompilationProgress(30);
+    setCompilationStatusText("Montando compilado inicial estruturado...");
+    setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 📝 Agrupando textos de todos os ${sortedDocs.length} documentos da pasta...`]);
 
-    // Criar lista de documentos totalmente populados com texto para avaliar a qualidade de OCR
     const fullDocs = sortedDocs.map(d => {
       const text = d.text !== undefined ? d.text : (textMap[d.id] || "");
       return { ...d, text };
     });
 
-    // Identificar documentos com baixa qualidade de OCR ou com ruídos significativos de símbolos/OCR que ainda não foram refinados
-    const lowQualityDocs = fullDocs.filter(d => {
-      if (!d.text || d.text.trim() === "") return false;
-      const textLower = d.text.toLowerCase();
-      
-      // Se já foi refinado pela IA do LEXSCAN, pula para não duplicar refinamento
-      if (textLower.includes('refinado via ia') || textLower.includes('[página ' && textLower.includes('refinado via ia'))) {
-        return false;
-      }
-      
-      // Avalia a pontuação de confiança real baseada no texto atual
-      const score = getRealConfidence(d.text, d.confidence);
-      
-      // Vamos checar a proporção de símbolos e palavras corrompidas para identificar ruídos reais
-      const cleanText = d.text.replace(/\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]/gi, '');
-      const totalLength = cleanText.length;
-      if (totalLength < 10) return false;
-
-      const totalSymbols = (cleanText.match(/[-=_+•■~|\\#§¤¢¶*\[\]{}()<>]/g) || []).length;
-      const symbolRatio = totalSymbols / totalLength;
-
-      const wordsList = cleanText.split(/\s+/).filter(w => w.trim().length > 0);
-      let corruptWordsCount = 0;
-      wordsList.forEach(w => {
-        // Palavras que combinam letras e números (ex: Munlcip10, u.u01) de tamanho > 2
-        if (/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/.test(w) && /[0-9]/.test(w) && w.length > 2) {
-          corruptWordsCount++;
-        }
-      });
-      const corruptWordRatio = wordsList.length > 0 ? corruptWordsCount / wordsList.length : 0;
-
-      // Se o score geral for < 85, ou se tiver menos de 96% de confiança E tiver ruídos significativos (símbolos > 1% ou palavras corrompidas > 1%)
-      const hasSignificantNoise = symbolRatio > 0.01 || corruptWordRatio > 0.01;
-      return score < 85 || (score < 96 && hasSignificantNoise);
-    });
-
-    setCompilationLogs(prev => [
-      ...prev,
-      `[${new Date().toLocaleTimeString()}] 📊 Análise concluída: ${lowQualityDocs.length} de ${fullDocs.length} documentos precisam de refinamento de OCR com IA.`
-    ]);
-
-    // Se houver documentos ruidosos, acionar o refinador inteligente automaticamente para cada um
-    if (lowQualityDocs.length > 0) {
-      setCompilationTotal(lowQualityDocs.length);
-      
-      for (let index = 0; index < lowQualityDocs.length; index++) {
-        const doc = lowQualityDocs[index];
-        setCompilationCurrentIndex(index + 1);
-        setCompilationStatusText(`Otimizando com IA (${index + 1}/${lowQualityDocs.length}): "${doc.name}"...`);
-        setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🪄 Otimizando "${doc.name}" com Inteligência Artificial Jurídica...`]);
-        
-        // Progresso proporcional entre 20% e 90%
-        const percent = Math.round(20 + (index / lowQualityDocs.length) * 70);
-        setCompilationProgress(percent);
-
-        try {
-          const refined = await refineTextWithGemini(doc.text);
-          if (refined && refined.trim() !== "") {
-            const newWords = refined.split(/\s+/).filter(Boolean).length;
-            const newChars = refined.length;
-            const realConf = getRealConfidence(refined, doc.confidence);
-
-            // Atualizar o objeto local do documento
-            doc.text = refined;
-            doc.words = newWords;
-            doc.chars = newChars;
-            doc.confidence = realConf;
-
-            // Persistir as atualizações no banco correspondente (Supabase ou LocalStorage)
-            if (supabase) {
-              await supabase
-                .from("lexscan_documents")
-                .update({
-                  extracted_text: refined,
-                  words_count: newWords,
-                  chars_count: newChars,
-                  confidence: realConf,
-                })
-                .eq("id", doc.id);
-            } else {
-              const localH = getHistory().map((h) => (h.id === doc.id ? doc : h));
-              localStorage.setItem("lexscan_history", JSON.stringify(localH));
-            }
-            
-            setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}]   ↳ ✅ "${doc.name}" otimizado com sucesso! Confiança real subiu para ${realConf}%.`]);
-          } else {
-            setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}]   ↳ ⚠️ Resposta vazia da IA para "${doc.name}". Mantendo original.`]);
-          }
-        } catch (err: any) {
-          console.error(`Erro ao refinar automaticamente "${doc.name}":`, err);
-          setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}]   ↳ ❌ Erro ao otimizar "${doc.name}": ${err.message || err}`]);
-        }
-      }
-
-      // Atualizar o histórico global em lote para que as novas métricas e textos reflitam imediatamente na UI
-      setHistory(prev => prev.map(h => {
-        const match = lowQualityDocs.find(l => l.id === h.id);
-        return match ? { ...h, text: match.text, words: match.words, chars: match.chars, confidence: match.confidence } : h;
-      }));
-
-      // Atualizar o visualizador de resultados se o documento ativo atualmente foi um dos refinados
-      if (result) {
-        const matchedCurrent = lowQualityDocs.find(l => l.id === result.id);
-        if (matchedCurrent) {
-          setResult(prev => ({
-            ...prev,
-            text: matchedCurrent.text,
-            words: matchedCurrent.words,
-            chars: matchedCurrent.chars,
-            confidence: matchedCurrent.confidence
-          }));
-        }
-      }
-    } else {
-      setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✨ Todos os documentos já possuem excelente qualidade de OCR. Pulando etapa de refinamento.`]);
-    }
-
-    setCompilationProgress(95);
-    setCompilationStatusText("Formatando e gerando arquivo de compilação...");
-    setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 📝 Montando o arquivo estruturado do Compilado de Documentos...`]);
-
-    let compiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
-    compiledText += `Pasta: ${folderName}\n`;
-    compiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
-    compiledText += `Quantidade de Documentos: ${sortedDocs.length}\n`;
-    compiledText += `======================================================\n\n`;
+    let rawCompiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
+    rawCompiledText += `Pasta: ${folderName}\n`;
+    rawCompiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
+    rawCompiledText += `Quantidade de Documentos: ${sortedDocs.length}\n`;
+    rawCompiledText += `======================================================\n\n`;
 
     fullDocs.forEach((doc, i) => {
-      // Usar o texto refinado atualizado
-      const docText = doc.text;
-      compiledText += `------------------------------------------------------\n`;
-      compiledText += `DOCUMENTO ${i + 1}: ${doc.name}\n`;
-      compiledText += `Originalmente Escaneado em: ${formatDate(doc.ts)}\n`;
-      compiledText += `------------------------------------------------------\n\n`;
-      compiledText += `${docText}\n\n\n\n`;
+      rawCompiledText += `------------------------------------------------------\n`;
+      rawCompiledText += `DOCUMENTO ${i + 1}: ${doc.name}\n`;
+      rawCompiledText += `Originalmente Escaneado em: ${formatDate(doc.ts)}\n`;
+      rawCompiledText += `------------------------------------------------------\n\n`;
+      rawCompiledText += `${doc.text || ""}\n\n\n\n`;
     });
+
+    setCompilationProgress(45);
+    setCompilationTotal(1);
+    setCompilationCurrentIndex(1);
+    setCompilationStatusText("Iniciando varredura com IA Jurídica...");
+    
+    const clientName = viewingClient === 'unassigned' ? '' : folderName;
+    if (clientName) {
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🧠 IA acionada! Buscando inconsistências no nome do cliente principal: "${clientName}"...`,
+        `[${new Date().toLocaleTimeString()}] 🔍 Verificando ortografia global, removendo ruídos de OCR e unificando grafias...`
+      ]);
+    } else {
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🧠 IA acionada! Iniciando verificação de ortografia global e remoção de ruídos de OCR...`
+      ]);
+    }
+
+    let finalCompiledText = rawCompiledText;
+    try {
+      setCompilationProgress(65);
+      setCompilationStatusText("Processando refinamento global de textos...");
+      
+      const refinedResult = await refineCompiledTextWithGemini(rawCompiledText, clientName);
+      if (refinedResult && refinedResult.trim() !== "") {
+        finalCompiledText = refinedResult;
+        setCompilationLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] ✨ IA concluiu o refinamento do lote unificado com sucesso!`,
+          `[${new Date().toLocaleTimeString()}]   ↳ ✅ Todas as variações de nomes foram padronizadas sob "${clientName || 'Padrão Geral'}".`,
+          `[${new Date().toLocaleTimeString()}]   ↳ ✅ Erros ortográficos, pontuações truncadas e símbolos de OCR foram removidos.`
+        ]);
+      } else {
+        setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ Resposta vazia da IA. Mantendo o compilado estruturado original.`]);
+      }
+    } catch (err: any) {
+      console.error("Erro ao refinar compilado de textos com Gemini:", err);
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ⚠️ Falha na otimização de IA: ${err.message || err}`,
+        `[${new Date().toLocaleTimeString()}] ℹ️ Mantendo o compilado original de segurança.`
+      ]);
+    }
 
     setCompilationProgress(100);
     setCompilationStatusText("Compilado gerado com sucesso!");
     setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🎉 Compilação concluída! Download do arquivo COMPILADO_${folderName.replace(/\s+/g, '_')}.txt iniciado.`]);
 
-    downloadTXT(compiledText, `COMPILADO_${folderName.replace(/\s+/g, '_')}`);
+    downloadTXT(finalCompiledText, `COMPILADO_${folderName.replace(/\s+/g, '_')}`);
     showToast("Compilado gerado com sucesso!", "success");
   };
 
