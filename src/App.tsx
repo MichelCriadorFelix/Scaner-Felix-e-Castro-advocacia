@@ -1295,6 +1295,58 @@ REGRAS CRÍTICAS DE REFINAMENTO:
   throw new Error("Não foi possível refinar o texto utilizando as chaves Gemini disponíveis.");
 }
 
+function extractNamesFromText(text: string): string[] {
+  // Matches typical proper noun sequences
+  const regex = /\b[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+(?:da|de|do|dos|das|e)\s+[A-ZÀ-Ý][a-zà-ÿ]+|\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4}\b/g;
+  const matches = text.match(regex) || [];
+  
+  const map: { [key: string]: number } = {};
+  matches.forEach(m => {
+    const name = m.trim();
+    if (name.length < 8 || name.length > 40) return;
+    
+    // Avoid common Brazilian stop phrases in legal texts that are capitalized
+    if (/^(P[áa]gina|Documento|Originalmente|Escaneado|T[íi]tulo|Tipo|Área|Obs|Data|Rep[úu]blica|Governo|Estado|Federal|Registro|Geral|Certificado|Assinado|Assinatura|Identificador|TramitaSign|Biometria|Hist[óo]rico|Eventos|Validade|Jur[íi]dica|Anexo|Catar|Fatura|Claro|Seu|Plano|Subtotal|Total|Avisos|Autentica|Bases|Painel|Cidad[ãa]o|Membros|Filiação|Órgão|Emissão|Válida|Territ[óo]rio|Nacional|Lei|Início|Fim|Consultas|Tratamentos|Alimentação|Proteção|Espécie|Interessados|Procuradores|Informações|Anexos|Tamanho|Arquivo|Descri|Enviado|Autenticado|Despacho|Prezado|Senhor|Passos|Atenção|Aplicativo|Telefone|Declaro|Sei|Secretaria|Inss|Cnis|Lista|Elos|Relações|Renda|RQS|Carta|Concessão|Memória|Cálculo|Presidente|Canais|WhatsApp|Código|Fidelidade)/i.test(name)) {
+      return;
+    }
+    map[name] = (map[name] || 0) + 1;
+  });
+  
+  // Sort by frequency and limit to avoid huge payload
+  return Object.keys(map)
+    .sort((a, b) => map[b] - map[a])
+    .slice(0, 30);
+}
+
+function applyLocalOCRCorrections(text: string): string {
+  let temp = text;
+  const corrections: [RegExp, string][] = [
+    [/\btJnidaOe\b/g, "Unidade"],
+    [/\bMunlcip10\b/gi, "Município"],
+    [/\bMunlclp10\b/gi, "Município"],
+    [/\bMinlsterio\b/gi, "Ministério"],
+    [/\bPrevidoncia\b/gi, "Previdência"],
+    [/\bprevidoncia\b/gi, "previdência"],
+    [/\bNlcl\b/g, "NIT"],
+    [/\bNlC\b/g, "NIT"],
+    [/\bAsslss\b/gi, "Assiste"],
+    [/\bconcedldo\b/gi, "concedido"],
+    [/\bbeneficlo\b/gi, "benefício"],
+    [/\bBeneficlo\b/gi, "Benefício"],
+    [/\bpetete\b/g, "pelo"],
+    [/\bflf\b/g, "fls."],
+    [/\bu\.u01\b/gi, ""],
+    [/_{4,}/g, "____"],
+    [/-{4,}/g, "----"],
+    [/\={4,}/g, "====="]
+  ];
+
+  corrections.forEach(([regex, replacement]) => {
+    temp = temp.replace(regex, replacement);
+  });
+  return temp;
+}
+
 function splitTextIntoCleanChunks(text: string, maxChunkSize: number = 12000): string[] {
   const chunks: string[] = [];
   let currentIndex = 0;
