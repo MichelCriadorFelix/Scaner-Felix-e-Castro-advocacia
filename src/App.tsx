@@ -1295,62 +1295,124 @@ REGRAS CRÍTICAS DE REFINAMENTO:
   throw new Error("Não foi possível refinar o texto utilizando as chaves Gemini disponíveis.");
 }
 
-function extractNamesFromText(text: string): string[] {
-  // Matches typical proper noun sequences
-  const regex = /\b[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+(?:da|de|do|dos|das|e)\s+[A-ZÀ-Ý][a-zà-ÿ]+|\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4}\b/g;
-  const matches = text.match(regex) || [];
+function splitTextIntoCleanChunks(text: string, maxChunkSize: number = 12000): string[] {
+  const chunks: string[] = [];
+  let currentIndex = 0;
   
-  const map: { [key: string]: number } = {};
-  matches.forEach(m => {
-    const name = m.trim();
-    if (name.length < 8 || name.length > 40) return;
-    
-    // Avoid common Brazilian stop phrases in legal texts that are capitalized
-    if (/^(P[áa]gina|Documento|Originalmente|Escaneado|T[íi]tulo|Tipo|Área|Obs|Data|Rep[úu]blica|Governo|Estado|Federal|Registro|Geral|Certificado|Assinado|Assinatura|Identificador|TramitaSign|Biometria|Hist[óo]rico|Eventos|Validade|Jur[íi]dica|Anexo|Catar|Fatura|Claro|Seu|Plano|Subtotal|Total|Avisos|Autentica|Bases|Painel|Cidad[ãa]o|Membros|Filiação|Órgão|Emissão|Válida|Territ[óo]rio|Nacional|Lei|Início|Fim|Consultas|Tratamentos|Alimentação|Proteção|Espécie|Interessados|Procuradores|Informações|Anexos|Tamanho|Arquivo|Descri|Enviado|Autenticado|Despacho|Prezado|Senhor|Passos|Atenção|Aplicativo|Telefone|Declaro|Sei|Secretaria|Inss|Cnis|Lista|Elos|Relações|Renda|RQS|Carta|Concessão|Memória|Cálculo|Presidente|Canais|WhatsApp|Código|Fidelidade)/i.test(name)) {
-      return;
+  while (currentIndex < text.length) {
+    if (text.length - currentIndex <= maxChunkSize) {
+      chunks.push(text.slice(currentIndex));
+      break;
     }
-    map[name] = (map[name] || 0) + 1;
-  });
+    
+    // Encontrar ponto ideal de corte por volta de maxChunkSize
+    let splitIndex = currentIndex + maxChunkSize;
+    
+    // Janela de busca retroativa para evitar cortar palavras ou linhas no meio
+    const searchWindow = text.slice(currentIndex, splitIndex);
+    
+    // Tenta cortar em quebra de página dupla ou cabeçalho de documento
+    const dNL = searchWindow.lastIndexOf("\n\n");
+    if (dNL !== -1 && dNL > maxChunkSize * 0.4) {
+      splitIndex = currentIndex + dNL;
+    } else {
+      // Tenta cortar em quebra de linha simples
+      const sNL = searchWindow.lastIndexOf("\n");
+      if (sNL !== -1 && sNL > maxChunkSize * 0.4) {
+        splitIndex = currentIndex + sNL;
+      } else {
+        // Corta em espaço
+        const spc = searchWindow.lastIndexOf(" ");
+        if (spc !== -1 && spc > maxChunkSize * 0.4) {
+          splitIndex = currentIndex + spc;
+        }
+      }
+    }
+    
+    chunks.push(text.slice(currentIndex, splitIndex));
+    currentIndex = splitIndex;
+    
+    // Pula espaços em branco/quebras de linha iniciais do próximo chunk
+    while (currentIndex < text.length && /\s/.test(text[currentIndex])) {
+      currentIndex++;
+    }
+  }
   
-  // Sort by frequency and limit to avoid huge payload
-  return Object.keys(map)
-    .sort((a, b) => map[b] - map[a])
-    .slice(0, 30);
+  return chunks;
 }
 
-function applyLocalOCRCorrections(text: string): string {
-  let temp = text;
-  const corrections: [RegExp, string][] = [
-    [/\btJnidaOe\b/g, "Unidade"],
-    [/\bMunlcip10\b/gi, "Município"],
-    [/\bMunlclp10\b/gi, "Município"],
-    [/\bMinlsterio\b/gi, "Ministério"],
-    [/\bPrevidoncia\b/gi, "Previdência"],
-    [/\bprevidoncia\b/gi, "previdência"],
-    [/\bNlcl\b/g, "NIT"],
-    [/\bNlC\b/g, "NIT"],
-    [/\bAsslss\b/gi, "Assiste"],
-    [/\bconcedldo\b/gi, "concedido"],
-    [/\bbeneficlo\b/gi, "benefício"],
-    [/\bBeneficlo\b/gi, "Benefício"],
-    [/\bpetete\b/g, "pelo"],
-    [/\bflf\b/g, "fls."],
-    [/\bu\.u01\b/gi, ""],
-    [/_{4,}/g, "____"],
-    [/-{4,}/g, "----"],
-    [/\={4,}/g, "====="]
-  ];
+async function refineChunkWithGemini(
+  chunkText: string,
+  clientName: string,
+  chunkIndex: number,
+  totalChunks: number,
+  sortedKeys: string[],
+  addLogCallback?: (msg: string) => void
+): Promise<string> {
+  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+  
+  const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
+Sua missão única é revisar o trecho de texto fornecido pelo usuário e entregar uma versão impecável, livre de erros ortográficos, concordâncias truncadas ou caracteres espúrios gerados pelo escaneamento.
 
-  corrections.forEach(([regex, replacement]) => {
-    temp = temp.replace(regex, replacement);
-  });
-  return temp;
+══════════════════════════════════════════════════
+DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
+══════════════════════════════════════════════════
+1. PADRONIZAÇÃO E CONSISTÊNCIA DE NOMES:
+   - Cliente principal (Nome Oficial da pasta): "${clientName}". Se encontrar qualquer variação truncada ou com erro de OCR (ex: "Jalro", "Jairo Gomes Crux", ou abreviações inconsistentes do cliente), mude para: "${clientName}".
+   - Advogados do escritório: "Michel Santos Felix", "Luana de Oliveira Castro Pacheco", "Flávia Zacarias Gonçalves". Corrija qualquer grafia errônea (ex: "Michel pereira felix" -> "Michel Santos Felix").
+   - Genitora/Representante: "Sulamita Gomes da Cruz Silva". Corrija qualquer erro de digitação/OCR neste nome.
+
+2. CORREÇÃO DE PALAVRAS CORROMPIDAS (RUÍDO DE OCR):
+   - Corrija as palavras com precisão e profundidade de forma contextual (ex: "tJnidaOe" -> "Unidade", "Munlcip10" -> "Município", "Previdoncia" -> "Previdência", "beneficlo" -> "benefício", "Nlcl" -> "NIT").
+   - Elimine símbolos ruidosos espúrios que sobraram nos textos originais, mas preserve absolutamente toda a formatação markdown legítima (tabelas, negritos, cabeçalhos, listas).
+
+3. PRESERVAÇÃO INTEGRAL E SEGURANÇA JURÍDICA:
+   - NUNCA resuma, abrevie ou delete qualquer parte do texto. Não ignore dados reais.
+   - Todos os números de documentos (CPF, RG, NIT, CNPJ), números de processos, datas, valores monetários, telefones e endereços devem ser mantidos IDÊNTICOS aos originais.
+   - Mantenha intactos os marcadores estruturais do compilado, como divisórias (ex: "------------------"), títulos de documentos (ex: "DOCUMENTO X: ...") e tags de página (ex: "[PÁGINA X - TEXTO DIGITAL NATIVO]").
+
+4. RETORNO LIMPO:
+   - Retorne APENAS o texto revisado final correspondente ao trecho fornecido, sem qualquer comentário explicativo, introdução ou conclusão.`;
+
+  for (let i = 0; i < sortedKeys.length; i++) {
+    const apiKey = sortedKeys[i];
+    const keyHash = apiKey.slice(-6);
+    
+    for (let m = 0; m < modelsToTry.length; m++) {
+      const modelName = modelsToTry[m];
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: [
+            { text: `Por favor, revise o seguinte trecho de texto jurídico de forma minuciosa, corrigindo erros de OCR, ortografia profunda e unificando nomes:\n\n${chunkText}` }
+          ],
+          config: {
+            systemInstruction,
+            temperature: 0.1,
+          }
+        });
+
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+        
+        if (response && response.text) {
+          return response.text.trim();
+        }
+      } catch (err) {
+        console.warn(`[Refinamento Trecho IA Failover] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
+      }
+    }
+  }
+
+  throw new Error(`Não foi possível refinar o trecho ${chunkIndex + 1} de ${totalChunks} com as chaves Gemini disponíveis.`);
 }
 
 async function refineCompiledTextWithGemini(
   compiledText: string, 
   clientName: string, 
-  addLogCallback?: (msg: string) => void
+  addLogCallback?: (msg: string) => void,
+  onProgressCallback?: (progress: number, statusText?: string) => void
 ): Promise<string> {
   const allKeys = getAvailableGeminiKeys();
   if (allKeys.length === 0) {
@@ -1371,13 +1433,13 @@ async function refineCompiledTextWithGemini(
   const finalSortedKeys = candidateKeysInfo.map(info => info.key);
 
   if (addLogCallback) {
-    addLogCallback(`[${new Date().toLocaleTimeString()}] 🔍 Varrendo texto compilado localmente em busca de nomes próprios e termos...`);
+    addLogCallback(`[${new Date().toLocaleTimeString()}] 🔍 Iniciando auditoria e cruzamento inteligente de dados cadastrais...`);
   }
 
-  // 1. Extract proper nouns
+  // 1. Extração de candidatos a nomes próprios
   const extractedNames = extractNamesFromText(compiledText);
   if (addLogCallback) {
-    addLogCallback(`[${new Date().toLocaleTimeString()}] 📝 Encontrados ${extractedNames.length} candidatos a nomes próprios para análise de consistência.`);
+    addLogCallback(`[${new Date().toLocaleTimeString()}] 📝 Encontrados ${extractedNames.length} termos e nomes próprios na pasta para análise de consistência.`);
   }
 
   let nameMapping: { [key: string]: string } = {};
@@ -1453,7 +1515,7 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
     }
   }
 
-  // 2. Apply name replacements locally
+  // 2. Aplicar mapeamento de nomes localmente antes de fatiar
   let refinedText = compiledText;
   const appliedCorrections: string[] = [];
 
@@ -1477,25 +1539,76 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
   if (addLogCallback) {
     if (appliedCorrections.length > 0) {
-      addLogCallback(`[${new Date().toLocaleTimeString()}] ⚖️ Inconsistências de nomes encontradas e corrigidas localmente:`);
+      addLogCallback(`[${new Date().toLocaleTimeString()}] ⚖️ Inconsistências cadastrais harmonizadas localmente no lote principal:`);
       appliedCorrections.forEach(c => addLogCallback(`   ${c}`));
     } else {
-      addLogCallback(`[${new Date().toLocaleTimeString()}] ✨ Nenhuma inconsistência grave de nomes própria detectada pela IA.`);
+      addLogCallback(`[${new Date().toLocaleTimeString()}] ✨ Nenhuma inconsistência grave de grafia de nomes detectada no cruzamento inicial.`);
     }
   }
 
-  // 3. Apply local OCR spelling/structural corrections
-  if (addLogCallback) {
-    addLogCallback(`[${new Date().toLocaleTimeString()}] 🪄 Aplicando correções locais automatizadas de ortografia e ruídos de OCR...`);
-  }
-  
+  // 3. Aplicar correções locais comuns (ortografia estática e símbolos)
   refinedText = applyLocalOCRCorrections(refinedText);
 
+  // 4. FATIAR EM CHUNKS PARA REVISÃO PROFUNDA DE IA SEM CONGELAMENTO
+  const chunks = splitTextIntoCleanChunks(refinedText, 12000);
+  const totalChunks = chunks.length;
+
   if (addLogCallback) {
-    addLogCallback(`[${new Date().toLocaleTimeString()}] ✅ Processo de compilação e harmonização ultra-rápido concluído!`);
+    addLogCallback(`[${new Date().toLocaleTimeString()}] ✂️ Documento fatiado com precisão em ${totalChunks} trechos para revisão ortográfica profunda de alta fidelidade.`);
   }
 
-  return refinedText;
+  const refinedChunks: string[] = [];
+
+  for (let index = 0; index < totalChunks; index++) {
+    const chunk = chunks[index];
+    
+    // Se não for a primeira iteração, aplicamos um pequeno atraso de cortesia para evitar limite de RPM (Too Many Requests - 429)
+    if (index > 0) {
+      if (addLogCallback) {
+        addLogCallback(`[${new Date().toLocaleTimeString()}] ⏳ Aguardando intervalo de segurança anti-estrangulamento de API (1.5s)...`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
+    // Atualiza o progresso visual de 45% a 95%
+    const progressPercent = 45 + Math.round((index / totalChunks) * 50);
+    const statusMsg = `Revisando com IA profunda (${index + 1}/${totalChunks})...`;
+    
+    if (onProgressCallback) {
+      onProgressCallback(progressPercent, statusMsg);
+    }
+
+    if (addLogCallback) {
+      addLogCallback(`[${new Date().toLocaleTimeString()}] 🪄 Iniciando revisão profunda do trecho ${index + 1} de ${totalChunks} (${Math.round((chunk.length / 1024) * 10) / 10} KB)...`);
+    }
+
+    try {
+      const refinedChunk = await refineChunkWithGemini(
+        chunk,
+        clientName,
+        index,
+        totalChunks,
+        finalSortedKeys,
+        addLogCallback
+      );
+      refinedChunks.push(refinedChunk);
+      
+      if (addLogCallback) {
+        addLogCallback(`[${new Date().toLocaleTimeString()}]   ↳ ✅ Trecho ${index + 1} de ${totalChunks} concluído com sucesso e livre de erros.`);
+      }
+    } catch (err: any) {
+      if (addLogCallback) {
+        addLogCallback(`[${new Date().toLocaleTimeString()}]   ↳ ⚠️ Falha na revisão profunda do trecho ${index + 1}: ${err.message || err}. Mantendo texto semi-limpo.`);
+      }
+      refinedChunks.push(chunk); // fallback de segurança
+    }
+  }
+
+  if (addLogCallback) {
+    addLogCallback(`[${new Date().toLocaleTimeString()}] 🤝 Unificando trechos revisados e finalizando arquivo consolidado...`);
+  }
+
+  return refinedChunks.join("\n\n");
 }
 
 // Substituição cirúrgica do texto de uma página específica
@@ -4222,7 +4335,11 @@ export default function ScannerJuridico() {
       const refinedResult = await refineCompiledTextWithGemini(
         rawCompiledText, 
         clientName, 
-        (msg) => setCompilationLogs(prev => [...prev, msg])
+        (msg) => setCompilationLogs(prev => [...prev, msg]),
+        (progress, text) => {
+          setCompilationProgress(progress);
+          if (text) setCompilationStatusText(text);
+        }
       );
       if (refinedResult && refinedResult.trim() !== "") {
         finalCompiledText = refinedResult;
