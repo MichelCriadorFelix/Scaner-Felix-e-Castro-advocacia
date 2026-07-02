@@ -1776,6 +1776,14 @@ export default function ScannerJuridico() {
   const [clientSearch, setClientSearch] = useState("");
   const [docSearch, setDocSearch] = useState("");
 
+  // Estados para Modal de Progresso da Compilação
+  const [isCompiling, setIsCompiling] = useState(false);
+  const [compilationProgress, setCompilationProgress] = useState(0);
+  const [compilationTotal, setCompilationTotal] = useState(0);
+  const [compilationCurrentIndex, setCompilationCurrentIndex] = useState(0);
+  const [compilationStatusText, setCompilationStatusText] = useState("");
+  const [compilationLogs, setCompilationLogs] = useState<string[]>([]);
+
   useEffect(() => {
     if (!movingItem) {
       setMoveSearch("");
@@ -1894,6 +1902,13 @@ export default function ScannerJuridico() {
   const nativeCameraRef = useRef();
   const canvasRef = useRef();
   const croppedImgRef = useRef();
+  const compilationLogsEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (compilationLogsEndRef.current) {
+      compilationLogsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [compilationLogs]);
 
   const [viewingBatchPage, setViewingBatchPage] = useState(null);
 
@@ -3865,19 +3880,34 @@ export default function ScannerJuridico() {
       return;
     }
 
+    const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
+
+    // Inicializa estados do modal de compilação
+    setIsCompiling(true);
+    setCompilationProgress(5);
+    setCompilationTotal(0);
+    setCompilationCurrentIndex(0);
+    setCompilationStatusText("Iniciando compilação de documentos...");
+    const initialLogs = [
+      `[${new Date().toLocaleTimeString()}] 🚀 Iniciando compilação da pasta: "${folderName}"`,
+      `[${new Date().toLocaleTimeString()}] 📊 Total de documentos na pasta: ${docs.length}`
+    ];
+    setCompilationLogs(initialLogs);
+
     // Clona e ordena usando Ordem Alfanumérica Natural (Natural Sort)
     // Isso garante que "Doc. 1", "Doc. 2", "Doc. 10", "Doc. 13" fiquem na ordem matemática e lógica,
     // independentemente de que horas foram escaneados ou inseridos.
     const sortedDocs = [...docs].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     
-    const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
-    
-    showToast("Preparando compilação e carregando textos da pasta...", "info");
+    // Pequena pausa para animação do modal
+    await new Promise(r => setTimeout(r, 600));
 
     const docsToFetch = sortedDocs.filter(d => !d.text || d.text.trim() === "");
     const textMap: { [key: string]: string } = {};
 
     if (docsToFetch.length > 0 && supabase) {
+      setCompilationStatusText(`Carregando textos de ${docsToFetch.length} arquivos do banco...`);
+      setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ☁️ Buscando ${docsToFetch.length} textos pendentes no banco de dados...`]);
       try {
         const { data, error } = await supabase
           .from('lexscan_documents')
@@ -3898,12 +3928,18 @@ export default function ScannerJuridico() {
             }
             return h;
           }));
+          setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Carregados ${data.length} textos com sucesso.`]);
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Erro ao buscar textos em lote para a compilação:", err);
+        setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ❌ Falha ao buscar textos: ${err.message || err}`]);
         showToast("Alguns documentos não puderam ter seus textos carregados do banco.", "error");
       }
     }
+
+    setCompilationProgress(20);
+    setCompilationStatusText("Analisando qualidade do OCR de cada documento...");
+    setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🔍 Analisando textos para identificar ruídos e qualidade do OCR...`]);
 
     // Criar lista de documentos totalmente populados com texto para avaliar a qualidade de OCR
     const fullDocs = sortedDocs.map(d => {
@@ -3947,13 +3983,25 @@ export default function ScannerJuridico() {
       return score < 85 || (score < 96 && hasSignificantNoise);
     });
 
+    setCompilationLogs(prev => [
+      ...prev,
+      `[${new Date().toLocaleTimeString()}] 📊 Análise concluída: ${lowQualityDocs.length} de ${fullDocs.length} documentos precisam de refinamento de OCR com IA.`
+    ]);
+
     // Se houver documentos ruidosos, acionar o refinador inteligente automaticamente para cada um
     if (lowQualityDocs.length > 0) {
-      showToast(`Detectamos ${lowQualityDocs.length} documentos ruidosos na pasta. Otimizando automaticamente com IA Jurídica...`, "info");
+      setCompilationTotal(lowQualityDocs.length);
       
       for (let index = 0; index < lowQualityDocs.length; index++) {
         const doc = lowQualityDocs[index];
-        showToast(`Otimizando texto com IA (${index + 1}/${lowQualityDocs.length}): "${doc.name}"...`, "info");
+        setCompilationCurrentIndex(index + 1);
+        setCompilationStatusText(`Otimizando com IA (${index + 1}/${lowQualityDocs.length}): "${doc.name}"...`);
+        setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🪄 Otimizando "${doc.name}" com Inteligência Artificial Jurídica...`]);
+        
+        // Progresso proporcional entre 20% e 90%
+        const percent = Math.round(20 + (index / lowQualityDocs.length) * 70);
+        setCompilationProgress(percent);
+
         try {
           const refined = await refineTextWithGemini(doc.text);
           if (refined && refined.trim() !== "") {
@@ -3982,10 +4030,14 @@ export default function ScannerJuridico() {
               const localH = getHistory().map((h) => (h.id === doc.id ? doc : h));
               localStorage.setItem("lexscan_history", JSON.stringify(localH));
             }
+            
+            setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}]   ↳ ✅ "${doc.name}" otimizado com sucesso! Confiança real subiu para ${realConf}%.`]);
+          } else {
+            setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}]   ↳ ⚠️ Resposta vazia da IA para "${doc.name}". Mantendo original.`]);
           }
         } catch (err: any) {
           console.error(`Erro ao refinar automaticamente "${doc.name}":`, err);
-          showToast(`Não foi possível otimizar "${doc.name}": ${err.message || err}`, "warn");
+          setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}]   ↳ ❌ Erro ao otimizar "${doc.name}": ${err.message || err}`]);
         }
       }
 
@@ -4008,7 +4060,13 @@ export default function ScannerJuridico() {
           }));
         }
       }
+    } else {
+      setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ✨ Todos os documentos já possuem excelente qualidade de OCR. Pulando etapa de refinamento.`]);
     }
+
+    setCompilationProgress(95);
+    setCompilationStatusText("Formatando e gerando arquivo de compilação...");
+    setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 📝 Montando o arquivo estruturado do Compilado de Documentos...`]);
 
     let compiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
     compiledText += `Pasta: ${folderName}\n`;
@@ -4025,6 +4083,10 @@ export default function ScannerJuridico() {
       compiledText += `------------------------------------------------------\n\n`;
       compiledText += `${docText}\n\n\n\n`;
     });
+
+    setCompilationProgress(100);
+    setCompilationStatusText("Compilado gerado com sucesso!");
+    setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] 🎉 Compilação concluída! Download do arquivo COMPILADO_${folderName.replace(/\s+/g, '_')}.txt iniciado.`]);
 
     downloadTXT(compiledText, `COMPILADO_${folderName.replace(/\s+/g, '_')}`);
     showToast("Compilado gerado com sucesso!", "success");
@@ -5752,6 +5814,203 @@ export default function ScannerJuridico() {
           )}
         </div>
       </div>
+
+      {/* Modal de Progresso da Compilação de Lote */}
+      {isCompiling && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(13, 15, 20, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '20px'
+        }}>
+          <div style={{
+            background: G.surface,
+            border: `1px solid ${G.accentDim}`,
+            borderRadius: '16px',
+            width: '100%',
+            maxWidth: '620px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 15px rgba(201, 168, 76, 0.1)',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: `1px solid ${G.border}`,
+              background: 'rgba(201, 168, 76, 0.03)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '24px' }}>📚</span>
+                <div>
+                  <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '18px', fontWeight: 600, color: G.accent, margin: 0 }}>
+                    Compilador de Lote Félix & Castro
+                  </h3>
+                  <p style={{ fontSize: '11px', color: G.muted, margin: '2px 0 0 0' }}>
+                    Processamento Inteligente & Otimização de OCR em Tempo Real
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {compilationProgress < 100 && (
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Status & Message */}
+              <div style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: `1px solid ${G.border}`,
+                padding: '16px',
+                borderRadius: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '12px', color: G.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Fase Atual</span>
+                  {compilationTotal > 0 && compilationCurrentIndex > 0 && (
+                    <span style={{ fontSize: '11px', color: G.accent, background: 'rgba(201, 168, 76, 0.1)', padding: '2px 8px', borderRadius: '10px', fontWeight: 600 }}>
+                      Documento {compilationCurrentIndex} de {compilationTotal}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 500, color: G.text, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {compilationProgress === 100 ? '✅' : '⚡'} {compilationStatusText}
+                </div>
+              </div>
+
+              {/* Progress Bar */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', color: G.muted, fontWeight: 500 }}>Progresso Geral</span>
+                  <span style={{ fontSize: '14px', fontWeight: 700, color: G.accent }}>{compilationProgress}%</span>
+                </div>
+                <div style={{ width: '100%', height: '8px', background: G.border, borderRadius: '4px', overflow: 'hidden' }}>
+                  <div style={{
+                    width: `${compilationProgress}%`,
+                    height: '100%',
+                    background: `linear-gradient(90deg, ${G.accentDim} 0%, ${G.accent} 100%)`,
+                    borderRadius: '4px',
+                    transition: 'width 0.3s ease-out'
+                  }} />
+                </div>
+              </div>
+
+              {/* Real-time terminal logs */}
+              <div>
+                <span style={{ fontSize: '11px', color: G.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: '6px' }}>
+                  Log de Processamento (Terminal de Auditoria)
+                </span>
+                <div style={{
+                  background: '#07080a',
+                  border: `1px solid ${G.border}`,
+                  borderRadius: '10px',
+                  padding: '12px 16px',
+                  height: '200px',
+                  overflowY: 'auto',
+                  fontFamily: "'DM Mono', ui-monospace, monospace",
+                  fontSize: '11px',
+                  lineHeight: '1.6',
+                  color: '#cad3f5',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}>
+                  {compilationLogs.map((log, index) => {
+                    let color = '#cad3f5';
+                    if (log.includes('✅') || log.includes('Concluído') || log.includes('sucesso')) {
+                      color = '#a6da95'; // green-ish
+                    } else if (log.includes('❌') || log.includes('Falha')) {
+                      color = '#ed8796'; // red-ish
+                    } else if (log.includes('⚠️') || log.includes('Minimizar') || log.includes('Mantendo original')) {
+                      color = '#eed49f'; // amber-ish
+                    } else if (log.includes('🚀') || log.includes('Iniciando')) {
+                      color = G.accent; // gold-ish
+                    } else if (log.includes('🪄') || log.includes('Otimizando')) {
+                      color = '#f5bde6'; // purple/pink-ish
+                    }
+
+                    return (
+                      <div key={index} style={{ color, wordBreak: 'break-all' }}>
+                        {log}
+                      </div>
+                    );
+                  })}
+                  <div ref={compilationLogsEndRef} />
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Actions */}
+            <div style={{
+              padding: '16px 24px',
+              borderTop: `1px solid ${G.border}`,
+              background: 'rgba(0,0,0,0.15)',
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '12px'
+            }}>
+              {compilationProgress < 100 ? (
+                <button
+                  onClick={() => {
+                    setIsCompiling(false);
+                    showToast("Compilação em segundo plano. Toasts de progresso serão exibidos.", "info");
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: `1px solid ${G.border}`,
+                    color: G.text,
+                    fontSize: '13px',
+                    padding: '10px 18px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  Minimizar & Manter em 2° Plano
+                </button>
+              ) : (
+                <button
+                  onClick={() => setIsCompiling(false)}
+                  style={{
+                    background: G.accent,
+                    color: '#0d0f14',
+                    border: 'none',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    padding: '10px 24px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    boxShadow: '0 4px 12px rgba(201, 168, 76, 0.2)'
+                  }}
+                >
+                  Fechar Visualizador
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
