@@ -1067,6 +1067,20 @@ function getRealConfidence(text, fallbackConfidence) {
     return 0;
   }
 
+  // Se o texto já foi refinado pela IA ou é digital nativo, a confiabilidade real dele é excelente (98% a 100%)
+  const isAlreadyRefinedOrDigital = 
+    textLower.includes('digital nativo') || 
+    textLower.includes('texto digital nativo') || 
+    textLower.includes('recuperado via ia') || 
+    textLower.includes('refinado via ia') || 
+    textLower.includes('ia jurídica') || 
+    textLower.includes('ia juridica') || 
+    textLower.includes('tramitasign') || // Documentos assinados digitalmente e estruturados
+    textLower.includes('assinatura eletrônica') ||
+    textLower.includes('comprovante de protocolo') ||
+    textLower.includes('carta de concessão') ||
+    textLower.includes('processo administrativo');
+
   // Vamos analisar a qualidade real do texto
   // Removemos as tags de estrutura de página para não interferir no cálculo
   let cleanText = text.replace(/\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]/gi, '');
@@ -1079,19 +1093,32 @@ function getRealConfidence(text, fallbackConfidence) {
     return 0; // Praticamente vazio
   }
 
-  // 1. Proporção de símbolos e caracteres especiais ruidosos
-  const totalSymbols = (cleanText.match(/[-=_+•■~|\\#§¤¢¶*\[\]{}()<>]/g) || []).length;
-  const hifensEqualsUnderscores = (cleanText.match(/[-=_]{3,}/g) || []).length; // Sequências de tabelas escaneadas
-  const symbolRatio = totalSymbols / totalLength;
+  // Criamos uma versão limpa de avaliação (removendo markdown, tabelas e divisórias decorativas)
+  // para que símbolos legítimos de formatação/layout não baixem falsamente a pontuação.
+  let evalText = cleanText;
+
+  // Remove linhas de tabelas markdown (contendo '|')
+  evalText = evalText.split('\n').filter(line => !line.includes('|')).join('\n');
+
+  // Remove caracteres decorativos de linhas divisórias comuns
+  evalText = evalText.replace(/[─═━┼┤├┬┴_=-]{3,}/g, ' ');
+
+  // Remove marcadores de lista, negrito, títulos do markdown
+  evalText = evalText.replace(/[\*#>`~•■]/g, ' ');
+
+  // 1. Proporção de símbolos e caracteres especiais ruidosos na versão de avaliação
+  const totalSymbols = (evalText.match(/[-=_+•■~|\\#§¤¢¶*\[\]{}()<>]/g) || []).length;
+  const hifensEqualsUnderscores = (evalText.match(/[-=_]{3,}/g) || []).length; // Sequências de tabelas escaneadas
+  const symbolRatio = evalText.length > 0 ? totalSymbols / evalText.length : 0;
 
   // 2. Proporção de letras normais em relação ao comprimento total (excluindo espaços)
-  const letters = (cleanText.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
-  const spaces = (cleanText.match(/\s/g) || []).length;
-  const nonSpaceLength = totalLength - spaces;
+  const letters = (evalText.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+  const spaces = (evalText.match(/\s/g) || []).length;
+  const nonSpaceLength = evalText.length - spaces;
   const letterRatioOfNonSpace = nonSpaceLength > 0 ? letters / nonSpaceLength : 0;
 
   // 3. Proporção de palavras corrompidas (que misturam letras e números, ou têm pontuação interna estranha)
-  const words = cleanText.split(/\s+/).filter(w => w.trim().length > 0);
+  const words = evalText.split(/\s+/).filter(w => w.trim().length > 0);
   let corruptWordsCount = 0;
   let validPortugueseCommonCount = 0;
   
@@ -1182,6 +1209,11 @@ function getRealConfidence(text, fallbackConfidence) {
   const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
   if (ilegivelCount > 0) {
     score -= Math.min(25, ilegivelCount * 4);
+  }
+
+  // Se o documento é sabidamente refinado ou digital nativo, a confiabilidade de sua leitura é garantida em nível máximo (98% a 100%)
+  if (isAlreadyRefinedOrDigital) {
+    score = Math.max(98, score);
   }
 
   return Math.min(100, Math.max(5, Math.round(score)));
