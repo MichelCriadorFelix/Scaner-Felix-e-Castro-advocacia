@@ -2105,11 +2105,19 @@ async function runOCR(imageBlob, onProgress) {
         i.src = url;
       });
       const canvas = document.createElement("canvas");
-      canvas.width = img.width; canvas.height = img.height;
+      
+      const MAX_DIM = 2400; // Limite seguro para OCR mobile sem OOM
+      let scale = 1;
+      if (img.width > MAX_DIM || img.height > MAX_DIM) {
+         scale = Math.min(MAX_DIM / img.width, MAX_DIM / img.height);
+      }
+      
+      canvas.width = Math.floor(img.width * scale); 
+      canvas.height = Math.floor(img.height * scale);
       const ctx = canvas.getContext("2d");
       // Filtro otimizado para fotos de celular (mais contraste para manuscritos)
       ctx.filter = 'grayscale(100%) contrast(200%) brightness(105%)';
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const resBlob = await new Promise(r => canvas.toBlob(r, "image/png", 1.0));
       canvas.width = 0; canvas.height = 0;
       return resBlob;
@@ -3226,12 +3234,19 @@ export default function ScannerJuridico() {
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
       const loadedPages = [];
+      // Otimização de memória: se tiver muitas páginas, reduzimos a resolução de importação
+      // para evitar OOM (Out of Memory) em celulares no Chrome/Safari
+      let scaleToUse = 1.5;
+      if (pdf.numPages > 10) scaleToUse = 1.2;
+      if (pdf.numPages > 25) scaleToUse = 1.0;
+      if (pdf.numPages > 50) scaleToUse = 0.8;
+
       for (let i = 1; i <= pdf.numPages; i++) {
         setProgressMsg(`Importando página original ${i}/${pdf.numPages}...`);
         setProgress(Math.round(20 + (i / pdf.numPages) * 75));
         
         const page = await pdf.getPage(i);
-        let viewport = page.getViewport({ scale: 1.5 });
+        let viewport = page.getViewport({ scale: scaleToUse });
         let canvas = document.createElement("canvas");
         canvas.width = viewport.width;
         canvas.height = viewport.height;
@@ -3574,23 +3589,39 @@ export default function ScannerJuridico() {
     if (!croppedImgRef.current) return;
     const img = croppedImgRef.current;
     const canvas = document.createElement("canvas");
-    canvas.width = img.naturalHeight;
-    canvas.height = img.naturalWidth;
+    
+    // Limite rígido para evitar OOM (Out Of Memory) no rotate em celulares (Tela Branca)
+    const MAX_DIM = 3000;
+    let scale = 1;
+    if (img.naturalWidth > MAX_DIM || img.naturalHeight > MAX_DIM) {
+       scale = Math.min(MAX_DIM / img.naturalWidth, MAX_DIM / img.naturalHeight);
+    }
+    
+    const scaledWidth = Math.floor(img.naturalWidth * scale);
+    const scaledHeight = Math.floor(img.naturalHeight * scale);
+
+    // Swap dimensions for rotation (90 deg)
+    canvas.width = scaledHeight;
+    canvas.height = scaledWidth;
+    
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     
+    ctx.imageSmoothingQuality = 'high';
+    
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate((90 * Math.PI) / 180);
-    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    ctx.drawImage(img, -scaledWidth / 2, -scaledHeight / 2, scaledWidth, scaledHeight);
 
     canvas.toBlob((blob) => {
+      canvas.width = 0; canvas.height = 0; // Libera RAM
       if (!blob) return;
       const newFile = new File([blob], file.name, { type: file.type });
       setFile(newFile);
       setPreview(URL.createObjectURL(blob));
       setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
       setCompletedCrop(null);
-    }, file.type, 1.0);
+    }, file.type, Math.min(0.95, scale < 1 ? 0.90 : 1.0));
   };
 
 
@@ -3799,6 +3830,10 @@ export default function ScannerJuridico() {
       // Libera ram explícito a cada página para evitar crash!
       compCanvas.width = 0; compCanvas.height = 0; 
       URL.revokeObjectURL(pageUrl);
+      
+      // Yield to the event loop para dar chance ao Garbage Collector do navegador rodar
+      // Isso evita crash/tela branca em celulares ao compilar muitos PDFs!
+      await new Promise(r => setTimeout(r, 20));
     }
     
     setProgressMsg("Salvando PDF gerado...");
