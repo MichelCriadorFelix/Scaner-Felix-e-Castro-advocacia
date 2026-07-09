@@ -5,6 +5,7 @@ import 'react-image-crop/dist/ReactCrop.css';
 import { createClient } from '@supabase/supabase-js';
 import JSZip from 'jszip';
 import { GoogleGenAI } from "@google/genai";
+import { get, set, del } from 'idb-keyval';
 
 // ── Paleta e estilos globais ──────────────────────────────────────────────────
 const G = {
@@ -2265,6 +2266,39 @@ export default function ScannerJuridico() {
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
   const [appendingDoc, setAppendingDoc] = useState(null); // Documento original que está sendo expandido/continuado
+
+  // --- Auto-Save & Recovery Draft for Multi-Page Scans ---
+  const [hasRecoverableBatch, setHasRecoverableBatch] = useState(false);
+
+  useEffect(() => {
+    get('lexscan_camera_pages_draft').then((val) => {
+      if (val && Array.isArray(val) && val.length > 0) {
+        setHasRecoverableBatch(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const recoverDraft = async () => {
+    try {
+      const val = await get('lexscan_camera_pages_draft');
+      if (val && Array.isArray(val) && val.length > 0) {
+        setCameraPages(val);
+        setIsBatchModalOpen(true);
+      }
+    } catch(e) {}
+    setHasRecoverableBatch(false);
+  };
+
+  const discardDraft = async () => {
+    await del('lexscan_camera_pages_draft');
+    setHasRecoverableBatch(false);
+  };
+
+  useEffect(() => {
+    if (cameraPages.length > 0) {
+      set('lexscan_camera_pages_draft', cameraPages).catch(() => {});
+    }
+  }, [cameraPages]);
 
   // --- Memory Optimization & Anti-Crash Cache for Multi-Page Scans ---
   const blobUrlCacheRef = useRef<Map<any, string>>(new Map());
@@ -5326,6 +5360,31 @@ export default function ScannerJuridico() {
           {/* ── SCANNER TAB ── */}
           {tab === "scanner" && (
             <div className="scanner-panel">
+
+              {hasRecoverableBatch && !isBatchModalOpen && (
+                <div style={{
+                  marginBottom: '16px',
+                  padding: '16px',
+                  borderRadius: '12px',
+                  background: 'rgba(212, 163, 89, 0.1)',
+                  border: `1px solid ${G.accent}`,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '18px' }}>⚠️</span>
+                    <strong style={{ color: G.accent, fontSize: '14px' }}>Escaneamento Recuperado</strong>
+                  </div>
+                  <p style={{ color: G.text, fontSize: '12px', lineHeight: '1.4', margin: 0 }}>
+                    Identificamos um conjunto de páginas em andamento (provavelmente o navegador foi recarregado para liberar memória). Deseja continuar de onde parou?
+                  </p>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={recoverDraft} style={{ flex: 1, padding: '8px', borderRadius: '6px', background: G.accent, color: '#000', border: 'none', fontWeight: 'bold', cursor: 'pointer' }}>Recuperar</button>
+                    <button onClick={discardDraft} style={{ flex: 1, padding: '8px', borderRadius: '6px', background: 'transparent', color: G.text, border: `1px solid ${G.border}`, cursor: 'pointer' }}>Descartar</button>
+                  </div>
+                </div>
+              )}
 
               {/* Upload zone */}
               {!file && (
