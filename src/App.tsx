@@ -868,8 +868,9 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
      - Reconstitua a tabela fielmente em tabelas Markdown para manter a estrutura original perfeitamente legível e idêntica para o judiciário.
      - Se o documento tiver múltiplas colunas de texto (como em Diários Oficiais), leia as colunas na ordem lógica correta (coluna 1 completa, depois coluna 2, por exemplo, ou preserve a divisão lógica correta das portarias). Nunca misture o texto de colunas paralelas.
 
-3. ZERO OMISSÃO E ZERO ALUCINAÇÃO:
+3. ZERO OMISSÃO E ZERO ALUCINAÇÃO (ATENÇÃO AOS NOMES):
    - Jamais invente ou modifique nomes, números, CPFs, datas ou valores.
+   - É ESTRITAMENTE PROIBIDO resumir ou abreviar nomes de pessoas (clientes, advogados, partes, juízes, etc). Todos os nomes devem ser transcritos completos e por extenso, de forma idêntica e verbatim ao que está no documento.
    - Para caracteres de fato ilegíveis por rasuras ou má qualidade extrema do scanner, use '[ILEGÍVEL]'.
    - Para caligrafias médicas ou manuscritos complexos, esforce-se ao limite máximo para transcrever palavra por palavra com exatidão, deduzindo pelo contexto clínico quando possível, evitando o uso fácil de '[ILEGÍVEL]'.
 
@@ -1255,6 +1256,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 
 3. PRESERVAÇÃO DE DADOS CRÍTICOS (FUNDO DE VERDADE):
    - NUNCA invente, mude ou ignore dados reais como NOMES, DATAS, CPFs, CPFs com pontuação, números de processo, CRMs, RG, telefones ou CNPJ. Estes dados devem ser mantidos idênticos, apenas corrigindo se houver caracteres estranhos no meio do nome. Por exemplo: se o nome é "LANETONE TAVARES PIRES DE OLIVEIRA" e veio "L_A-N-E-T-O-N-E...", limpe os traços para que fique o nome limpo e correto.
+   - É ESTRITAMENTE PROIBIDO abreviar ou resumir os nomes das pessoas. O nome completo de todos os indivíduos deve ser mantido de forma estendida, idêntica ao original.
    - Preserve o conteúdo original inteiro. NÃO RESUMA, NÃO COMENTE E NÃO EXPLIQUE. Sua resposta deve conter APENAS o texto reconstruído e nada mais.
 
 4. MANTER MARCADORES DE PÁGINA:
@@ -1421,6 +1423,7 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
 
 3. PRESERVAÇÃO INTEGRAL E SEGURANÇA JURÍDICA:
    - NUNCA resuma, abrevie ou delete qualquer parte do texto. Não ignore dados reais.
+   - É ESTRITAMENTE PROIBIDO resumir ou abreviar os nomes das pessoas (clientes, testemunhas, partes, juízes, etc). O nome completo DEVE ser mantido exatamente como aparece no documento original, sendo estendido e jamais abreviado.
    - Todos os números de documentos (CPF, RG, NIT, CNPJ), números de processos, datas, valores monetários, telefones e endereços devem ser mantidos IDÊNTICOS aos originais.
    - Mantenha intactos os marcadores estruturais do compilado, como divisórias (ex: "------------------"), títulos de documentos (ex: "DOCUMENTO X: ...") e tags de página (ex: "[PÁGINA X - TEXTO DIGITAL NATIVO]").
 
