@@ -921,6 +921,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             config: {
               systemInstruction: prompt,
               temperature: 0.1,
+              maxOutputTokens: 16383,
             }
           });
 
@@ -1281,6 +1282,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
           config: {
             systemInstruction,
             temperature: 0.1,
+            maxOutputTokens: 16383,
           }
         });
 
@@ -1423,6 +1425,8 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
 
 3. PRESERVAÇÃO INTEGRAL E SEGURANÇA JURÍDICA:
    - NUNCA resuma, abrevie ou delete qualquer parte do texto. Não ignore dados reais.
+   - É ESTRITAMENTE PROIBIDO PULAR OU DELETAR DOCUMENTOS. Se o trecho contiver "DOCUMENTO 6", "DOCUMENTO 7", etc., você DEVE transcrever o conteúdo deles INTEGRALMENTE, sem remover absolutamente nenhuma linha ou parágrafo.
+   - Se o trecho contiver tabelas, listas de números, extratos bancários, logs do INSS, históricos de remuneração ou qualquer dado repetitivo (comum em processos previdenciários), VOCÊ DEVE PRESERVAR 100% DESTE CONTEÚDO EXATAMENTE COMO ESTÁ. NUNCA sumarize, encurte ou pule tabelas/números.
    - É ESTRITAMENTE PROIBIDO resumir ou abreviar os nomes das pessoas (clientes, testemunhas, partes, juízes, etc). O nome completo DEVE ser mantido exatamente como aparece no documento original, sendo estendido e jamais abreviado.
    - Todos os números de documentos (CPF, RG, NIT, CNPJ), números de processos, datas, valores monetários, telefones e endereços devem ser mantidos IDÊNTICOS aos originais.
    - Mantenha intactos os marcadores estruturais do compilado, como divisórias (ex: "------------------"), títulos de documentos (ex: "DOCUMENTO X: ...") e tags de página (ex: "[PÁGINA X - TEXTO DIGITAL NATIVO]").
@@ -1442,11 +1446,12 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
         const response = await ai.models.generateContent({
           model: modelName,
           contents: [
-            { text: `Por favor, revise o seguinte trecho de texto jurídico de forma minuciosa, corrigindo erros de OCR, ortografia profunda e unificando nomes:\n\n${chunkText}` }
+            { text: `Por favor, revise o seguinte trecho de texto jurídico de forma minuciosa, corrigindo erros de OCR, ortografia profunda e unificando nomes. NÃO CORTE O FIM DO TEXTO, PRESERVE ATÉ A ÚLTIMA PALAVRA:\n\n${chunkText}` }
           ],
           config: {
             systemInstruction,
             temperature: 0.1,
+            maxOutputTokens: 16383,
           }
         });
 
