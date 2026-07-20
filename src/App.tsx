@@ -3812,7 +3812,8 @@ export default function ScannerJuridico() {
     setProcessing(true);
     setProgress(0);
     setProgressMsg("Iniciando conversão...");
-    
+    try {
+
     // Injeção Local de Jspdf para alta consistência
     if (!window.jspdf) {
       await new Promise((res, rej) => {
@@ -3829,11 +3830,16 @@ export default function ScannerJuridico() {
     for (let i = 0; i < cameraPages.length; i++) {
       if (i > 0) doc.addPage();
       const pageBlob = cameraPages[i];
+      console.log('compiling pageBlob:', pageBlob);
+      if (!(pageBlob instanceof Blob)) {
+         throw new Error("Página recuperada está corrompida. Descarte e tente novamente.");
+      }
       const pageUrl = URL.createObjectURL(pageBlob);
       
-      const img = await new Promise((res) => {
+      const img: any = await new Promise((res, rej) => {
         const image = new Image();
         image.onload = () => res(image);
+        image.onerror = (e) => rej(new Error("Erro ao carregar a imagem da página " + (i + 1)));
         image.src = pageUrl;
       });
       
@@ -3963,6 +3969,11 @@ export default function ScannerJuridico() {
     setProcessing(false);
     
     showToast(appendingDoc ? "✓ Documento atualizado com novas páginas!" : "✓ Salvo! Scanner liberado para seu próximo documento.");
+    } catch (e: any) {
+      console.error(e);
+      showToast("Erro ao compilar: " + e.message, "error");
+      setProcessing(false);
+    }
   };
 
   const processHistoryItem = async (item) => {
