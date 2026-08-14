@@ -1006,56 +1006,68 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
-// Auxiliar para detectar se um texto extraído nativamente é de fato conteúdo digital legítimo
-function isGenuineDigitalText(text: string): boolean {
+// Auxiliar para detectar se um texto extraído nativamente é de fato conteúdo digital legítimo e completo da página
+function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean {
   if (!text) return false;
   
-  // Remove formatação jurídica e linhas de assinatura comuns antes de fazer as validações
-  // para evitar que um PDF digital perfeito de procuração/contrato seja rejeitado.
-  let cleanedForCheck = text
-    .replace(/_{2,}/g, '') // Remove linhas de assinatura do tipo ________
-    .replace(/-{3,}/g, '') // Remove linhas divisórias do tipo -------
-    .replace(/={3,}/g, '') // Remove linhas divisórias do tipo =======
-    .replace(/\[\s*\]/g, '') // Remove checkboxes vazios [ ] ou [  ]
+  // 1. Remove carimbos/rodapés e cabeçalhos automáticos de sistemas como INSS, PJe, eproc, TramitaSign, SEI, etc.
+  let bodyText = text
+    .replace(/Autenticado por:[^\n]*/gi, '')
+    .replace(/Sem dados de autentica[çc][ãa]o/gi, '')
+    .replace(/Anexo ID:\s*\d+/gi, '')
+    .replace(/P[áa]gina\s+\d+\s+de\s+\d+/gi, '')
+    .replace(/Emitido em:\s*\d{2}\/\d{2}\/\d{4}[^\n]*/gi, '')
+    .replace(/Protocolo de Requerimento:?\s*\d+/gi, '')
+    .replace(/Hash do documento[^\n]*/gi, '')
+    .replace(/Identificador do documento[^\n]*/gi, '')
+    .replace(/Documento assinado digitalmente[^\n]*/gi, '')
+    .replace(/Você pode conferir a autenticidade[^\n]*/gi, '')
+    .replace(/https?:\/\/[^\s]+/gi, '')
+    .replace(/_{2,}/g, '')
+    .replace(/-{3,}/g, '')
+    .replace(/={3,}/g, '')
+    .replace(/\[\s*\]/g, '')
     .trim();
 
-  if (cleanedForCheck.length < 15) return false;
+  // Se após remover os carimbos de cabeçalho/rodapé não sobrar conteúdo substancial (menos de 160 caracteres),
+  // significa que a página é na verdade uma imagem/foto escaneada com apenas o carimbo do INSS em cima!
+  // Logo, DEVE ser renderizada e enviada para OCR / IA Jurídica.
+  if (bodyText.length < 160) {
+    return false;
+  }
+
+  // Se foi detectada imagem de anexo/fundo no PDF e o texto for relativamente curto (< 350 caracteres),
+  // também deve ser processada por IA/OCR para capturar o conteúdo visual completo da imagem.
+  if (hasImage && bodyText.length < 350) {
+    return false;
+  }
 
   // Em vez de rejeitar por sequências de barras ou barras invertidas na página inteira,
   // vamos verificar se há sequências excessivas de caracteres de erro que não pareçam divisão de caminhos/urls
-  // Por exemplo, mais de 10 barras consecutivas, o que é raríssimo em PDFs normais
-  if (/[/\\|]{10,}/.test(cleanedForCheck)) {
+  if (/[/\\|]{10,}/.test(bodyText)) {
     return false; // Rejeita ruídos extremos de scanner corrompido
   }
 
   // Símbolos de ruído real do OCR (remover da lista símbolos jurídicos comuns como §, [ ], _ e =)
-  // Mantemos símbolos altamente suspeitos de OCR corrompido como •, ■, ~, ¤, ¢, ¶, *, ou símbolos avulsos de formatação estranha
-  const noiseSymbols = (cleanedForCheck.match(/[•■~¤¢¶*]/g) || []).length;
-  if (noiseSymbols / cleanedForCheck.length > 0.03 && cleanedForCheck.length > 50) {
+  const noiseSymbols = (bodyText.match(/[•■~¤¢¶*]/g) || []).length;
+  if (noiseSymbols / bodyText.length > 0.03 && bodyText.length > 50) {
     return false;
   }
 
   // Conta caracteres alfabéticos em português/inglês
-  const letters = (cleanedForCheck.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
+  const letters = (bodyText.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
   
-  // Se não tiver pelo menos 5 letras, provavelmente é lixo ou apenas caracteres especiais/caixas vazias
-  if (letters < 5) return false;
+  // Se não tiver pelo menos 20 letras úteis, é apenas cabeçalho ou caixas vazias
+  if (letters < 20) return false;
 
-  // Letras devem representar pelo menos 45% do texto total em textos normais digitais.
-  if (letters / cleanedForCheck.length < 0.45) {
+  // Letras devem representar pelo menos 40% do texto total em textos normais digitais.
+  if (letters / bodyText.length < 0.40) {
     return false;
   }
 
-  // Verifica se possui pelo menos 4 palavras de comprimento mínimo de 3 caracteres (garante fluxo gramatical mínimo)
-  const words = cleanedForCheck.split(/\s+/).filter(w => w.length >= 3);
-  if (words.length < 4) return false;
-
-  // Validação extra altamente positiva para português: se contiver palavras comuns do idioma,
-  // é uma garantia fortíssima de que o texto é digital nativo perfeitamente legível.
-  const ptStopwords = /\b(de|do|da|para|com|que|o|a|os|as|em|um|uma|se|por|ao|dos|das|procuração|declaração|termo|outorgante|outorgado|advocacia|advogado|direito|justiça)\b/i;
-  if (ptStopwords.test(cleanedForCheck)) {
-    return true; 
-  }
+  // Verifica se possui pelo menos 8 palavras de comprimento mínimo de 3 caracteres
+  const words = bodyText.split(/\s+/).filter(w => w.length >= 3);
+  if (words.length < 8) return false;
 
   return true;
 }
@@ -1214,8 +1226,8 @@ function getRealConfidence(text, fallbackConfidence) {
     score -= Math.min(25, ilegivelCount * 4);
   }
 
-  // Se o documento é sabidamente refinado ou digital nativo, a confiabilidade de sua leitura é garantida em nível máximo (98% a 100%)
-  if (isAlreadyRefinedOrDigital) {
+  // Se o documento é sabidamente refinado ou digital nativo E possui texto real substancial (> 160 caracteres úteis), a confiabilidade de sua leitura é excelente
+  if (isAlreadyRefinedOrDigital && evalText.length > 160 && corruptWordRatio < 0.05) {
     score = Math.max(98, score);
   }
 
@@ -1717,13 +1729,27 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         const currentTimeout = 20000 * attempt;
         const page = await withTimeout(pdf.getPage(i), currentTimeout, `Timeout ao carregar dados do PDF para a pág ${i}`);
 
-        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias)
+        // Tenta texto digital nativo primeiro (somente na tentativa 1 para poupar redundâncias e se não for forçado IA)
         let isDigital = false;
-        if (attempt === 1) {
+        if (attempt === 1 && !forceAi) {
           try {
             const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout no texto nativo da pág ${i}`);
             pageText = textContent.items.map(item => item.str).join(" ").trim();
-            if (isGenuineDigitalText(pageText)) {
+            
+            // Verifica se a página contém imagens incorporadas (anexos escaneados no processo)
+            let hasImage = false;
+            try {
+              const ops = await page.getOperatorList();
+              if (ops && ops.fnArray) {
+                hasImage = ops.fnArray.some(fn => 
+                  fn === pdfjsLib.OPS.paintImageXObject || 
+                  fn === pdfjsLib.OPS.paintInlineImageXObject || 
+                  fn === pdfjsLib.OPS.paintImageMaskXObject
+                );
+              }
+            } catch (opErr) {}
+
+            if (isGenuineDigitalText(pageText, hasImage)) {
               isDigital = true;
             }
           } catch (nativeErr) {
@@ -3402,7 +3428,19 @@ export default function ScannerJuridico() {
           try {
             const textContent = await page.getTextContent();
             pageText = textContent.items.map((item: any) => item.str).join(" ").trim();
-            if (isGenuineDigitalText(pageText)) {
+            let hasImage = false;
+            try {
+              const ops = await page.getOperatorList();
+              if (ops && ops.fnArray) {
+                hasImage = ops.fnArray.some((fn: any) => 
+                  fn === pdfjsLib.OPS.paintImageXObject || 
+                  fn === pdfjsLib.OPS.paintInlineImageXObject || 
+                  fn === pdfjsLib.OPS.paintImageMaskXObject
+                );
+              }
+            } catch (opErr) {}
+
+            if (isGenuineDigitalText(pageText, hasImage)) {
               isDigital = true;
             }
           } catch (nativeErr) {
@@ -4014,9 +4052,16 @@ export default function ScannerJuridico() {
          ? (!h.clientId || h.clientId === 'unassigned') 
          : h.clientId === viewingClient;
        
-       const alreadyHasOcr = (h.words > 0 || h.chars > 0 || (h.text && h.text.trim() !== '')) && getRealConfidence(h.text, h.confidence) > 98;
+       const text = h.text || '';
+       const hasCriticalError = /ERRO\s+CR[ÍI]TICO|P[ÁA]GINA\s+PULADA/i.test(text);
        
-       return isFolderItem && !alreadyHasOcr;
+       // Detecta páginas incompletas que só têm carimbos de cabeçalho/rodapé do INSS sem corpo real de texto
+       const hasIncompletePages = /\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]\s*(?:Autenticado por:[^\n]*\s*)*(?:Anexo ID:\s*\d+\s*)*(?:P[áa]gina\s+\d+\s+de\s+\d+\s*)*(?:Emitido em:[^\n]*\s*)*\s*(?=\[P[ÁA]GINA|\s*$)/i.test(text);
+
+       const conf = getRealConfidence(text, h.confidence);
+       const isComplete = !hasCriticalError && !hasIncompletePages && conf >= 98 && (h.words > 30 || h.chars > 150);
+       
+       return isFolderItem && !isComplete;
     });
     
     if (docs.length === 0) {
