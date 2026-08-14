@@ -2360,13 +2360,22 @@ export default function ScannerJuridico() {
   };
 
   const discardDraft = async () => {
-    await del('lexscan_camera_pages_draft');
+    try {
+      await del('lexscan_camera_pages_draft');
+    } catch (e) {}
+    try {
+      localStorage.removeItem('lexscan_camera_pages_draft');
+    } catch (e) {}
+    setCameraPages([]);
     setHasRecoverableBatch(false);
+    showToast("Rascunho descartado com sucesso!", "info");
   };
 
   useEffect(() => {
-    if (cameraPages.length > 0) {
+    if (cameraPages && cameraPages.length > 0) {
       set('lexscan_camera_pages_draft', cameraPages).catch(() => {});
+    } else {
+      del('lexscan_camera_pages_draft').catch(() => {});
     }
   }, [cameraPages]);
 
