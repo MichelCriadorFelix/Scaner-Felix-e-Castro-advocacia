@@ -863,10 +863,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Se o diário oficial ou documento contiver certidões, portarias de aposentadoria de terceiros, exonerações, atos ou decisões, transcreva TUDO do início ao fim da página sem omitir nada.
    - NÃO faça resumos, sinopses ou simplificações ("extrair apenas o que o advogado precisa" está PROIBIDO). O advogado precisa do texto INTEGRAL exatamente como está no original.
 
-2. PRESERVAÇÃO DE TABELAS E COLUNAS (DIÁRIO OFICIAL / CNIS / HOLERITES):
-   - Se o documento contiver dados tabulares (como listas de trâmites, tabelas financeiras, CNIS, holerites, faturas, folhas de ponto ou portarias de Diários Oficiais organizada em colunas):
-     - Reconstitua a tabela fielmente em tabelas Markdown para manter a estrutura original perfeitamente legível e idêntica para o judiciário.
-     - Se o documento tiver múltiplas colunas de texto (como em Diários Oficiais), leia as colunas na ordem lógica correta (coluna 1 completa, depois coluna 2, por exemplo, ou preserve a divisão lógica correta das portarias). Nunca misture o texto de colunas paralelas.
+2. PRESERVAÇÃO DE TABELAS E COLUNAS (DIÁRIO OFICIAL / CNIS / HOLERITES / INSS):
+   - Se o documento contiver dados tabulares (como extratos do CNIS, vínculos empregatícios, remunerações, laudos periciais com qualificadores b1 a b8 ou d1 a d9, folhas de ponto, demonstrativos de pagamento ou portarias em colunas):
+     - Reconstitua a tabela fielmente em tabelas Markdown perfeitamente alinhadas (| Coluna 1 | Coluna 2 | ... |) para manter a estrutura original intacta e pronta para peticionamento no PJe/eproc/Projudi.
+     - Mantenha todos os códigos de indicadores previdenciários (ex: PREV-EXT, PEXT, PREC-MENOR-MIN, IRECF-INDP, etc) com exatidão.
+     - Se o documento tiver múltiplas colunas de texto (como em Diários Oficiais), leia as colunas na ordem lógica correta (coluna 1 completa, depois coluna 2, por exemplo). Nunca misture o texto de colunas paralelas.
 
 3. ZERO OMISSÃO E ZERO ALUCINAÇÃO (ATENÇÃO AOS NOMES):
    - Jamais invente ou modifique nomes, números, CPFs, datas ou valores.
@@ -894,8 +895,15 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Lista de modelos do Google em ordem de preferência para o sistema jurídico
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+  // Lista de modelos do Google em ordem de preferência para o sistema jurídico (Série 3.x de alta velocidade e gratuitas no tier padrão)
+  const modelsToTry = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview"
+  ];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -1006,7 +1014,50 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
-// Auxiliar para detectar se um texto extraído nativamente é de fato conteúdo digital legítimo e completo da página
+// Auxiliar para verificar se o canvas da página renderizada é totalmente em branco (ex: verso de certidão, folha vazia)
+function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return false;
+    // Amostra rápida em grade de 30x30 pontos ao longo da folha (baixíssimo custo de CPU)
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0) return true;
+    
+    const sampleCols = 30;
+    const sampleRows = 30;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const data = imgData.data;
+    
+    let nonWhitePixels = 0;
+    const totalSamples = sampleCols * sampleRows;
+    
+    for (let r = 1; r <= sampleRows; r++) {
+      for (let c = 1; c <= sampleCols; c++) {
+        const x = Math.floor((c / (sampleCols + 1)) * w);
+        const y = Math.floor((r / (sampleRows + 1)) * h);
+        const idx = (y * w + x) * 4;
+        const red = data[idx];
+        const green = data[idx + 1];
+        const blue = data[idx + 2];
+        const alpha = data[idx + 3];
+        
+        // Se o pixel não for branco/quase branco (fundo claro com luminância < 240) ou transparente
+        if (alpha > 30) {
+          const lum = 0.299 * red + 0.587 * green + 0.114 * blue;
+          if (lum < 235) {
+            nonWhitePixels++;
+          }
+        }
+      }
+    }
+    
+    // Se menos de 0.6% das amostras tiverem contraste (menos de 6 pontos escuros em 900 amostras), é página em branco
+    return (nonWhitePixels / totalSamples) < 0.006;
+  } catch (e) {
+    return false;
+  }
+}
 function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean {
   if (!text) return false;
   
@@ -1275,7 +1326,14 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+  const modelsToTry = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview"
+  ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     const apiKey = finalSortedKeys[i];
@@ -1418,7 +1476,14 @@ async function refineChunkWithGemini(
   sortedKeys: string[],
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
-  const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+  const modelsToTry = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview"
+  ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
 Sua missão única é revisar o trecho de texto fornecido pelo usuário e entregar uma versão impecável, livre de erros ortográficos, concordâncias truncadas ou caracteres espúrios gerados pelo escaneamento.
@@ -1542,7 +1607,14 @@ Retorne APENAS um objeto JSON no formato abaixo, sem qualquer formatação markd
 Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio {}.`;
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
-    const modelsToTry = ["gemini-3-flash-preview", "gemini-3.5-flash"];
+    const modelsToTry = [
+      "gemini-3.7-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite",
+      "gemini-3-flash-preview"
+    ];
     let success = false;
 
     for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -1809,6 +1881,21 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
 
           if (!renderSuccess || !finalCanvasToUse) {
             throw new Error(`Falha crítica ao tentar renderizar a página ${i} em tela.`);
+          }
+
+          // ── Verificação Rápida de Página em Branco / Verso Vazio ─────────────
+          if (isCanvasBlank(finalCanvasToUse)) {
+            onProgress(
+              Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+              `Pág ${i}: Página em branco / verso sem conteúdo identificada.`
+            );
+            fullText += `[PÁGINA ${i} - PÁGINA EM BRANCO / VERSO SEM CONTEÚDO]\n\n`;
+            confidenceTotal += 100;
+            pagesEvaluated++;
+            pageSuccess = true;
+            finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
+            if (page && page.cleanup) page.cleanup();
+            break;
           }
 
           // Decide previamente se vai direto para a IA (como Padrão Ouro)
