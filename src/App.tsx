@@ -895,14 +895,10 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Lista de modelos do Google em ordem de preferência para o sistema jurídico (Série 3.x de alta velocidade e gratuitas no tier padrão)
+  // Modelos otimizados estritamente para alta fidelidade jurídica e estabilidade contínua
   const modelsToTry = [
-    "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview"
+    "gemini-3.5-flash"
   ];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
@@ -999,9 +995,10 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
            if (window.setKeyError) window.setKeyError(keyHash, 'active');
         }
         
-        // Se for erro de servidor, pode ser apenas no "modelo" específico. Tentar o próximo modelo.
+        // Se for erro de servidor (503/alta demanda), faz uma pausa ultracurta (800ms) para desacelerar e tenta o próximo modelo da lista
         if (errorType === 'server_error') {
-          console.warn(`⏳ Falha temporária da API (503/Timeout). Tentando próximo modelo com a mesma chave...`);
+          console.warn(`⏳ Falha temporária da API (503/Timeout/High Demand). Tentando próximo modelo com a mesma chave em 800ms...`);
+          await new Promise(r => setTimeout(r, 800));
           continue; 
         }
 
@@ -1326,13 +1323,10 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
+  // Modelos otimizados estritamente para alta fidelidade jurídica e estabilidade contínua
   const modelsToTry = [
-    "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview"
+    "gemini-3.5-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -1477,12 +1471,8 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview"
+    "gemini-3.5-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -1608,12 +1598,8 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-3.7-flash",
       "gemini-3.6-flash",
-      "gemini-3.5-flash",
-      "gemini-3.5-flash-lite",
-      "gemini-3.1-flash-lite",
-      "gemini-3-flash-preview"
+      "gemini-3.5-flash"
     ];
     let success = false;
 
