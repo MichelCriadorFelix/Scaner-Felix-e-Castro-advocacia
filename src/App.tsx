@@ -921,47 +921,69 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
         const ai = new GoogleGenAI({ apiKey });
         
-        // Timeout dinâmico de 15s para failover rápido caso uma chave/modelo oscile
+        // Timeout dinâmico baseado em atividade: não interrompe enquanto a IA estiver ativamente gerando tokens
         const fetchPromise = (async () => {
-          const responseStream = await ai.models.generateContentStream({
-            model: modelName,
-            contents: {
-              parts: [
-                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                { inlineData: { data: base64, mimeType: blob.type } }
-              ]
-            },
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.1,
-              maxOutputTokens: 16383,
-            }
+          let timer: any = null;
+          let rejectPromise: ((reason?: any) => void) | null = null;
+          
+          const timeoutPromise = new Promise((_, reject) => {
+            rejectPromise = reject;
+            // Timeout inicial de 45s para iniciar a conexão e receber os primeiros tokens
+            timer = setTimeout(() => {
+              reject(new Error("Timeout: A API do Gemini não respondeu em 45s."));
+            }, 45000);
           });
 
-          let fullText = "";
-          let chunksReceived = 0;
-          
-          for await (const chunk of responseStream) {
-            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-            fullText += chunk.text;
-            chunksReceived++;
-            if (onProgress) {
-              const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
-              onProgress(fakePercent, `IA Lendo e Transcrevendo... (Gerado ${chunksReceived} fragmentos)`);
+          const resetInactivityTimer = () => {
+            if (timer) clearTimeout(timer);
+            // Enquanto estiver recebendo fragmentos, renova 25s de inatividade
+            timer = setTimeout(() => {
+              if (rejectPromise) {
+                rejectPromise(new Error("Timeout de inatividade: IA parou de transmitir fragmentos por mais de 25s."));
+              }
+            }, 25000);
+          };
+
+          const streamPromise = (async () => {
+            try {
+              const responseStream = await ai.models.generateContentStream({
+                model: modelName,
+                contents: {
+                  parts: [
+                    { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                    { inlineData: { data: base64, mimeType: blob.type } }
+                  ]
+                },
+                config: {
+                  systemInstruction: prompt,
+                  temperature: 0.1,
+                  maxOutputTokens: 16383,
+                }
+              });
+
+              let fullText = "";
+              let chunksReceived = 0;
+              
+              for await (const chunk of responseStream) {
+                if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+                resetInactivityTimer();
+                fullText += chunk.text;
+                chunksReceived++;
+                if (onProgress) {
+                  const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+                  onProgress(fakePercent, `IA Lendo e Transcrevendo... (Gerado ${chunksReceived} fragmentos)`);
+                }
+              }
+              return fullText;
+            } finally {
+              if (timer) clearTimeout(timer);
             }
-          }
-          return fullText;
+          })();
+
+          return await Promise.race([streamPromise, timeoutPromise]);
         })();
 
-        let fullText;
-        try {
-          fullText = await Promise.race([
-            fetchPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout: A API do Gemini demorou muito para responder (15s).")), 15000))
-          ]);
-        } catch (fetchErr) {
-          throw fetchErr;
-        }
+        let fullText: any = await fetchPromise;
 
         // Registrar sucesso no uso da chave para o dashboard
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
