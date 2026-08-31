@@ -902,10 +902,10 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Modelos otimizados estritamente para alta fidelidade jurídica e estabilidade contínua
+  // Prioridade absoluta: Gemini 3.5 Flash (Padrão GOD de alta fidelidade sem versões lite)
   const modelsToTry = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash"
+    "gemini-3.5-flash",
+    "gemini-3.7-flash"
   ];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
@@ -921,7 +921,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
         const ai = new GoogleGenAI({ apiKey });
         
-        // 120-second timeout para modelos avançados que demoram mais para processar OCR de alta densidade
+        // Timeout dinâmico de 15s para failover rápido caso uma chave/modelo oscile
         const fetchPromise = (async () => {
           const responseStream = await ai.models.generateContentStream({
             model: modelName,
@@ -957,7 +957,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         try {
           fullText = await Promise.race([
             fetchPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout: A API do Gemini demorou muito para responder (120s).")), 120000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout: A API do Gemini demorou muito para responder (15s).")), 15000))
           ]);
         } catch (fetchErr) {
           throw fetchErr;
@@ -1333,10 +1333,10 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  // Modelos otimizados estritamente para alta fidelidade jurídica e estabilidade contínua
+  // Prioridade absoluta: Gemini 3.5 Flash (Padrão GOD)
   const modelsToTry = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash"
+    "gemini-3.5-flash",
+    "gemini-3.7-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -1481,8 +1481,8 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash"
+    "gemini-3.5-flash",
+    "gemini-3.7-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -1608,8 +1608,8 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-3.6-flash",
-      "gemini-3.5-flash"
+      "gemini-3.5-flash",
+      "gemini-3.7-flash"
     ];
     let success = false;
 
@@ -3059,9 +3059,9 @@ export default function ScannerJuridico() {
       };
 
       if (f.type === "application/pdf") {
-        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, aiMode, goldStandard);
+        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, false, goldStandard);
       } else {
-        extracted = await extractImageHybrid(f, onProgress, aiMode, aiMode, goldStandard);
+        extracted = await extractImageHybrid(f, onProgress, aiMode, false, goldStandard);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
@@ -3149,9 +3149,9 @@ export default function ScannerJuridico() {
       window.lexscan_abort = false;
 
       if (file.type === "application/pdf") {
-        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, aiMode, goldStandard);
+        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, false, goldStandard);
       } else {
-        extracted = await extractImageHybrid(file, onProgress, aiMode, aiMode, goldStandard);
+        extracted = await extractImageHybrid(file, onProgress, aiMode, false, goldStandard);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
@@ -4162,9 +4162,9 @@ export default function ScannerJuridico() {
       window.lexscan_abort = false;
 
       if (fileToProcess.type === "application/pdf") {
-        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true, goldStandard);
+        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
       } else {
-        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true, goldStandard);
+        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, false, goldStandard);
       }
 
       if (extracted && extracted.text) {
@@ -4277,9 +4277,9 @@ export default function ScannerJuridico() {
           window.lexscan_abort = false;
 
           if (fileToProcess.type === "application/pdf") {
-            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, true, goldStandard);
+            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
           } else {
-            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, true, goldStandard);
+            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, false, goldStandard);
           }
     
           if (extracted && extracted.text) {
