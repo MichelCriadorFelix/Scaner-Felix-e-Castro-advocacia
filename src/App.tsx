@@ -1120,32 +1120,55 @@ function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean 
     return false;
   }
 
-  // Se foi detectada imagem de anexo/fundo no PDF e o texto for relativamente curto (< 350 caracteres),
-  // também deve ser processada por IA/OCR para capturar o conteúdo visual completo da imagem.
-  if (hasImage && bodyText.length < 350) {
+  // 2. Se a página contém imagem embutida (anexo escaneado ou foto):
+  if (hasImage) {
+    // Documentos de identificação, laudos, certidões ou comprovantes escaneados que frequentemente possuem
+    // camadas de OCR ruins embutidas pelo scanner devem SEMPRE ser renderizados e processados pela IA Jurídica:
+    const isScannedOfficialDoc = /\b(CARTEIRA DE IDENTIDADE|IDENTIFICA[ÇC][ÃA]O CIVIL|REGISTRO GERAL|DETRAN|HABILITA[ÇC][ÃA]O|CNH|CERTID[ÃA]O|LAUDO|ATESTADO|RECEITU[ÁA]RIO|ASSOCIA[ÇC][ÃA]O DE MORADORES|DECLARA[ÇC][ÃA]O DE RESID[ÊE]NCIA)\b/i.test(bodyText);
+    if (isScannedOfficialDoc) {
+      return false;
+    }
+
+    // Se o texto for relativamente curto (< 550 caracteres) e contiver imagem, prefere a IA visual
+    if (bodyText.length < 550) {
+      return false;
+    }
+  }
+
+  // 3. Detecção de OCR antigo corrompido / caracteres espúrios:
+  // Palavras com números misturados com letras (ex: "1041/20o18", "DE33AM", "Munlcip10", "4beeinçe", "0619 oa fore")
+  const corruptedTokens = bodyText.match(/\b(?=[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ0-9]*[0-9])(?=[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ0-9]*[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ])[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ0-9]{3,}\b/g) || [];
+  const abnormalTokens = corruptedTokens.filter(t => 
+    !/^\d{7,}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$/.test(t) && // Não é num processo
+    !/^[A-Z]{2,4}\d{4,}$/.test(t) && // Não é código de órgão
+    !/^\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}$/.test(t) // Não é CNPJ
+  );
+  if (abnormalTokens.length >= 2) {
     return false;
   }
 
-  // Em vez de rejeitar por sequências de barras ou barras invertidas na página inteira,
-  // vamos verificar se há sequências excessivas de caracteres de erro que não pareçam divisão de caminhos/urls
+  // Palavras com maiúsculas anômalas no meio (ex: "DiRETQRIA", "SANTOns", "Assiratua", "GRANDEJ")
+  const weirdCaseWords = bodyText.match(/\b[a-z]{1,2}[A-Z]{2,}[a-z]*\b|\b[A-Z]{2,}[a-z]+[A-Z]+\b/g) || [];
+  if (weirdCaseWords.length >= 2) {
+    return false;
+  }
+
   if (/[/\\|]{10,}/.test(bodyText)) {
     return false; // Rejeita ruídos extremos de scanner corrompido
   }
 
-  // Símbolos de ruído real do OCR (remover da lista símbolos jurídicos comuns como §, [ ], _ e =)
-  const noiseSymbols = (bodyText.match(/[•■~¤¢¶*]/g) || []).length;
-  if (noiseSymbols / bodyText.length > 0.03 && bodyText.length > 50) {
+  // Símbolos de ruído real do OCR
+  const noiseSymbols = (bodyText.match(/[•■~¤¢¶*«»§]/g) || []).length;
+  if (noiseSymbols / bodyText.length > 0.025 && bodyText.length > 50) {
     return false;
   }
 
   // Conta caracteres alfabéticos em português/inglês
   const letters = (bodyText.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
-  
-  // Se não tiver pelo menos 20 letras úteis, é apenas cabeçalho ou caixas vazias
   if (letters < 20) return false;
 
-  // Letras devem representar pelo menos 40% do texto total em textos normais digitais.
-  if (letters / bodyText.length < 0.40) {
+  // Letras devem representar pelo menos 45% do texto total em textos normais digitais.
+  if (letters / bodyText.length < 0.45) {
     return false;
   }
 
@@ -1423,6 +1446,23 @@ function extractNamesFromText(text: string): string[] {
     .slice(0, 30);
 }
 
+function cleanRepeatedWordsInName(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  let cleaned = text;
+  // 1. Detectar e remover repetição de frases/sobrenomes compostos consecutivos
+  // Ex: "SARA JANE MARIANO BHERING MARIANO BHERING" -> "SARA JANE MARIANO BHERING"
+  // Ex: "MARIANO BHERING MARIANO BHERING" -> "MARIANO BHERING"
+  let prev = '';
+  let iterations = 0;
+  while (prev !== cleaned && iterations < 5) {
+    prev = cleaned;
+    iterations++;
+    cleaned = cleaned.replace(/\b([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){1,4})\s+\1\b/gi, '$1');
+    cleaned = cleaned.replace(/\b([A-Za-zÀ-ÿ]{3,})\s+\1\b/gi, '$1');
+  }
+  return cleaned.trim();
+}
+
 function applyLocalOCRCorrections(text: string): string {
   let temp = text;
   const corrections: [RegExp, string][] = [
@@ -1441,6 +1481,7 @@ function applyLocalOCRCorrections(text: string): string {
     [/\bpetete\b/g, "pelo"],
     [/\bflf\b/g, "fls."],
     [/\bu\.u01\b/gi, ""],
+    [/\bS[íi]tio dos Campos\b/gi, "Sítio dos Gansos"],
     [/_{4,}/g, "____"],
     [/-{4,}/g, "----"],
     [/\={4,}/g, "====="]
@@ -1449,6 +1490,9 @@ function applyLocalOCRCorrections(text: string): string {
   corrections.forEach(([regex, replacement]) => {
     temp = temp.replace(regex, replacement);
   });
+  
+  // Limpeza de repetições consecutivas de nomes no corpo do texto
+  temp = cleanRepeatedWordsInName(temp);
   return temp;
 }
 
@@ -1686,12 +1730,15 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
   let refinedText = compiledText;
   const appliedCorrections: string[] = [];
 
-  for (const [wrongName, correctName] of Object.entries(nameMapping)) {
+  for (const [wrongNameRaw, correctNameRaw] of Object.entries(nameMapping)) {
+    const wrongName = cleanRepeatedWordsInName(wrongNameRaw.trim());
+    const correctName = cleanRepeatedWordsInName(correctNameRaw.trim());
+
     if (
       typeof wrongName === 'string' && 
       typeof correctName === 'string' && 
-      wrongName.trim() !== "" && 
-      correctName.trim() !== "" &&
+      wrongName !== "" && 
+      correctName !== "" &&
       wrongName.toLowerCase() !== correctName.toLowerCase()
     ) {
       const escaped = wrongName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
@@ -1703,6 +1750,9 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
       }
     }
   }
+
+  // Deduplica e higieniza qualquer sobrenome ou bloco duplicado após as substituições
+  refinedText = cleanRepeatedWordsInName(refinedText);
 
   if (addLogCallback) {
     if (appliedCorrections.length > 0) {
@@ -2310,6 +2360,8 @@ export default function ScannerJuridico() {
   const [movingItem, setMovingItem] = useState(null);
   const [renamingItem, setRenamingItem] = useState(null);
   const [newDocumentName, setNewDocumentName] = useState("");
+  const [renamingClient, setRenamingClient] = useState<any | null>(null);
+  const [newClientRenameValue, setNewClientRenameValue] = useState("");
   const [sortOrder, setSortOrder] = useState("name-asc"); // "date-desc", "date-asc", "name-asc", "name-desc"
   
   // Novas variáveis de estado para busca de clientes e documentos (para fácil navegação com o crescimento do app)
@@ -4579,7 +4631,8 @@ export default function ScannerJuridico() {
   const handleCreateClient = async () => {
     if(!newClientName.trim()) return;
     const isSubfolder = viewingClient !== null && viewingClient !== 'unassigned';
-    const finalName = isSubfolder ? `${viewingClient}::${newClientName.trim()}` : newClientName.trim();
+    const cleanedName = cleanRepeatedWordsInName(newClientName.trim());
+    const finalName = isSubfolder ? `${viewingClient}::${cleanedName}` : cleanedName;
     
     setIsCreatingClient(false);
     setNewClientName("");
@@ -4612,6 +4665,38 @@ export default function ScannerJuridico() {
     }
   };
 
+  const handleRenameClient = async () => {
+    if (!renamingClient || !newClientRenameValue.trim()) {
+      setRenamingClient(null);
+      return;
+    }
+    const clientToUpdate = clients.find(c => c.id === renamingClient.id);
+    if (!clientToUpdate) {
+      setRenamingClient(null);
+      return;
+    }
+
+    const isSubfolder = clientToUpdate.parentId !== null && clientToUpdate.parentId !== undefined;
+    const cleanedName = cleanRepeatedWordsInName(newClientRenameValue.trim());
+    const finalDbName = isSubfolder ? `${clientToUpdate.parentId}::${cleanedName}` : cleanedName;
+
+    if (supabase) {
+      showToast("Atualizando nome da pasta...");
+      const { error } = await supabase.from('lexscan_clients').update({ name: finalDbName }).eq('id', renamingClient.id);
+      if (error) {
+        console.error("Supabase Error:", error);
+        showToast("Erro ao renomear pasta: " + error.message, "error");
+      } else {
+        setClients(prev => prev.map(c => c.id === renamingClient.id ? { ...c, name: cleanedName, originalName: finalDbName } : c));
+        showToast("Pasta renomeada com sucesso!");
+      }
+    } else {
+      showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
+    }
+    setRenamingClient(null);
+    setNewClientRenameValue("");
+  };
+
   const compileFolderTXT = async () => {
     const docs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient));
     
@@ -4620,7 +4705,8 @@ export default function ScannerJuridico() {
       return;
     }
 
-    const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
+    const rawFolderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
+    const folderName = cleanRepeatedWordsInName(rawFolderName);
 
     // Inicializa estados do modal de compilação
     setIsCompiling(true);
@@ -6174,7 +6260,33 @@ export default function ScannerJuridico() {
                         >
                           <div style={{ fontSize: '24px' }}>📂</div>
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontWeight: 500, color: G.text }}>{c.name}</div>
+                            {renamingClient?.id === c.id ? (
+                              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                                <input 
+                                  autoFocus
+                                  type="text"
+                                  value={newClientRenameValue}
+                                  onChange={e => setNewClientRenameValue(e.target.value)}
+                                  onKeyDown={e => e.key === 'Enter' && handleRenameClient()}
+                                  style={{ background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '6px 8px', borderRadius: '6px', color: G.text, width: '100%', fontSize: '13px' }}
+                                />
+                                <button onClick={(e) => { e.stopPropagation(); handleRenameClient(); }} style={{ background: G.success, color: '#fff', border: 'none', borderRadius: '6px', padding: '6px 10px', fontSize: '11px', cursor: 'pointer', fontWeight: 600 }}>Salvar</button>
+                                <button onClick={(e) => { e.stopPropagation(); setRenamingClient(null); }} style={{ background: 'transparent', border: `1px solid ${G.border}`, color: G.muted, borderRadius: '6px', padding: '6px 8px', fontSize: '11px', cursor: 'pointer' }}>Cancelar</button>
+                              </div>
+                            ) : (
+                              <div style={{ fontWeight: 500, color: G.text, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span>{c.name}</span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRenamingClient(c);
+                                    setNewClientRenameValue(c.name);
+                                  }}
+                                  style={{ background: 'none', border: 'none', color: G.muted, cursor: 'pointer', padding: '2px 4px', fontSize: '13px' }}
+                                  title="Renomear Pasta"
+                                >✏️</button>
+                              </div>
+                            )}
                             {parent && (
                               <div style={{ fontSize: '11px', color: G.accent, marginTop: '2px' }}>
                                 ↳ Subpasta de: {parent.name}
@@ -6187,6 +6299,7 @@ export default function ScannerJuridico() {
                           <button 
                             onClick={(e) => { e.stopPropagation(); deleteClientHandler(c.id, c.name); }}
                             style={{ background: 'none', border: 'none', color: G.error, cursor: 'pointer', padding: '4px', fontSize: '16px' }}
+                            title="Excluir Pasta"
                           >🗑</button>
                           <div style={{ color: G.muted }}>→</div>
                         </div>
@@ -6208,10 +6321,42 @@ export default function ScannerJuridico() {
                       >
                         <span>←</span> Voltar
                       </button>
-                      <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent, flex: 1 }}>
-                        {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
-                      </h3>
-                      {viewingClient !== 'unassigned' && (
+                      
+                      {renamingClient?.id === viewingClient ? (
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flex: 1 }}>
+                          <input 
+                            autoFocus
+                            type="text"
+                            value={newClientRenameValue}
+                            onChange={e => setNewClientRenameValue(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleRenameClient()}
+                            style={{ background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '6px 10px', borderRadius: '6px', color: G.text, flex: 1, fontSize: '14px' }}
+                          />
+                          <button onClick={handleRenameClient} style={{ background: G.success, color: '#fff', border: 'none', borderRadius: '6px', padding: '6px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>Salvar</button>
+                          <button onClick={() => setRenamingClient(null)} style={{ background: 'transparent', border: `1px solid ${G.border}`, color: G.muted, borderRadius: '6px', padding: '6px 10px', fontSize: '12px', cursor: 'pointer' }}>Cancelar</button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+                          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: G.accent }}>
+                            {viewingClient === 'unassigned' ? "Geral (Sem pasta)" : clients.find(c => c.id === viewingClient)?.name}
+                          </h3>
+                          {viewingClient !== 'unassigned' && (
+                            <button
+                              onClick={() => {
+                                const currentClient = clients.find(c => c.id === viewingClient);
+                                if (currentClient) {
+                                  setRenamingClient(currentClient);
+                                  setNewClientRenameValue(currentClient.name);
+                                }
+                              }}
+                              style={{ background: 'none', border: 'none', color: G.muted, cursor: 'pointer', padding: '2px 6px', fontSize: '14px' }}
+                              title="Renomear Pasta"
+                            >✏️</button>
+                          )}
+                        </div>
+                      )}
+
+                      {viewingClient !== 'unassigned' && !renamingClient && (
                         <button 
                           onClick={() => setIsCreatingClient(true)}
                           style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
