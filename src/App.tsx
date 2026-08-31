@@ -796,7 +796,7 @@ async function enhanceImageForGemini(imageBlob) {
 
     canvas.width = width; 
     canvas.height = height;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (ctx) {
       // Filtro profissional inteligente...
       ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
@@ -1862,7 +1862,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               viewport = page.getViewport({ scale: scaleAttempt });
               canvas.width = viewport.width;
               canvas.height = viewport.height;
-              ctx = canvas.getContext("2d");
+              ctx = canvas.getContext("2d", { willReadFrequently: true });
               if (!ctx) continue;
 
               renderTask = page.render({ canvasContext: ctx, viewport });
@@ -1906,7 +1906,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             // Só gera a imagem contrastada pesada (tempCanvas e blob PNG) se for rodar o OCR local
             tempCanvas = document.createElement("canvas");
             tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
-            const tempCtx = tempCanvas.getContext("2d");
+            const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
             if (tempCtx) {
                tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
                tempCtx.drawImage(finalCanvasToUse, 0, 0);
@@ -2185,7 +2185,7 @@ async function runOCR(imageBlob, onProgress) {
       
       canvas.width = Math.floor(img.width * scale); 
       canvas.height = Math.floor(img.height * scale);
-      const ctx = canvas.getContext("2d");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
       // Filtro otimizado para fotos de celular (mais contraste para manuscritos)
       ctx.filter = 'grayscale(100%) contrast(200%) brightness(105%)';
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -3363,7 +3363,7 @@ export default function ScannerJuridico() {
         let canvas = document.createElement("canvas");
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        let ctx = canvas.getContext("2d");
+        let ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) continue;
         
         await page.render({ canvasContext: ctx, viewport }).promise;
@@ -3552,7 +3552,7 @@ export default function ScannerJuridico() {
             let canvas = document.createElement("canvas");
             canvas.width = viewport.width;
             canvas.height = viewport.height;
-            let ctx = canvas.getContext("2d");
+            let ctx = canvas.getContext("2d", { willReadFrequently: true });
             if (!ctx) {
               console.error(`[Recuperar páginas] Erro ao obter Context 2D para a pág ${pageNum}`);
               continue;
@@ -4045,7 +4045,9 @@ export default function ScannerJuridico() {
     setFile(null);
     setPreview(null);
     setResult(newItem); // Keep the updated/compiled document loaded in the result view!
-    setCroppedImage(null);
+    setIsCropping(false);
+    setCompletedCrop(null);
+    setCroppingPageIndex(null);
 
     // Joga pra aba scanner novamente para recomeçar o fluxo direto
     setTab("scanner"); 
