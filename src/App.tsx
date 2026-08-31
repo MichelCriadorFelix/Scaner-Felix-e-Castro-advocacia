@@ -990,7 +990,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 
         return fullText.trim();
         
-      } catch (e) {
+      } catch (e: any) {
+        if (window.lexscan_abort || e?.message === "ABORT_BY_USER") {
+          console.log("[extractPageWithGemini] Interrupção imediata solicitada pelo usuário.");
+          throw new Error("ABORT_BY_USER");
+        }
         console.warn(`[Matriz Falha] Chave ${i + 1} (..${keyHash}) - Modelo ${modelName}:`, e.message || e);
         lastError = e;
         
@@ -1880,19 +1884,17 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           const baseViewport = page.getViewport({ scale: 1.0 });
           const maxBaseDim = Math.max(baseViewport.width, baseViewport.height) || 800;
           
-          // Alvos em pixels: 2200px é o "Sweet Spot" perfeito para o Gemini 3.6/3.5 ler manuscritos, laudos e números miúdos com perfeição
-          const targetGold = goldStandard ? 2200 : 1800;
+          // Alvos em pixels: 1600px é a resolução ideal para o Gemini Flash ler qualquer documento sem estourar memória do navegador
+          const targetGold = goldStandard ? 1600 : 1300;
           let attemptScales: number[] = [];
 
           if (attempt === 1) {
-            // Escala ideal calibrada para ~2200px e fallback de ~1600px
-            const idealScale = Math.min(2.5, Math.max(0.7, targetGold / maxBaseDim));
-            const subScale = Math.min(2.0, Math.max(0.5, (targetGold * 0.75) / maxBaseDim));
+            const idealScale = Math.min(2.0, Math.max(0.4, targetGold / maxBaseDim));
+            const subScale = Math.min(1.5, Math.max(0.3, (targetGold * 0.75) / maxBaseDim));
             attemptScales = Math.abs(idealScale - subScale) < 0.1 ? [idealScale] : [idealScale, subScale];
           } else if (attempt === 2) {
-            const safeScale = Math.min(1.6, Math.max(0.4, 1400 / maxBaseDim));
-            const safeSubScale = Math.min(1.2, Math.max(0.3, 1100 / maxBaseDim));
-            attemptScales = [safeScale, safeSubScale];
+            const safeScale = Math.min(1.4, Math.max(0.35, 1200 / maxBaseDim));
+            attemptScales = [safeScale];
           } else {
             const emergencyScale = Math.min(1.0, Math.max(0.25, 900 / maxBaseDim));
             attemptScales = [emergencyScale];
@@ -1910,7 +1912,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               if (!ctx) continue;
 
               renderTask = page.render({ canvasContext: ctx, viewport });
-              await withTimeout(renderTask.promise, 20000, `Timeout na renderização com escala ${scaleAttempt.toFixed(2)}`);
+              // Timeout elástico de 45s para renderização sem falhas mesmo em PDFs pesados
+              await withTimeout(renderTask.promise, 45000, `Timeout na renderização com escala ${scaleAttempt.toFixed(2)}`);
               finalCanvasToUse = canvas;
               renderSuccess = true;
               break;
@@ -2965,21 +2968,30 @@ export default function ScannerJuridico() {
     window.lexscan_abort = false;
     setCurrentQueueIndex(0);
     
+    let stoppedEarly = false;
     for (let i = 0; i < queue.length; i++) {
       if (window.lexscan_abort) {
-        showToast("⏸ Processamento em lote pausado.", "info");
+        stoppedEarly = true;
         break;
       }
       setCurrentQueueIndex(i);
       const currentFile = queue[i];
       await performSingleProcess(currentFile, i + 1, queue.length);
+      if (window.lexscan_abort) {
+        stoppedEarly = true;
+        break;
+      }
     }
     
     setProcessing(false);
     setIsAborting(false);
     setCurrentQueueIndex(-1);
     setQueue([]);
-    showToast(`✓ Lote concluído!`, "success");
+    if (stoppedEarly) {
+      showToast("⏸ Processamento em lote pausado. O progresso foi salvo!", "info");
+    } else {
+      showToast(`✓ Lote concluído!`, "success");
+    }
     setTab("history");
   };
 
@@ -3070,12 +3082,14 @@ export default function ScannerJuridico() {
   };
 
   const performSingleProcess = async (f, current, total) => {
+    if (window.lexscan_abort) return;
     setProgress(0);
     setProgressMsg(`[${current}/${total}] Processando: ${f.name}`);
 
     try {
       let extracted;
       const onProgress = (p, msg) => { 
+        if (window.lexscan_abort) return;
         setProgress(p); 
         setProgressMsg(`[${current}/${total}] ${msg || "Extraindo..."}`); 
       };
@@ -3084,6 +3098,10 @@ export default function ScannerJuridico() {
         extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, false, goldStandard);
       } else {
         extracted = await extractImageHybrid(f, onProgress, aiMode, false, goldStandard);
+      }
+
+      if (window.lexscan_abort) {
+        console.log(`[performSingleProcess] Abort após extração de ${f.name}`);
       }
 
       // Otimização Heurística para todos os casos (limpeza final)
