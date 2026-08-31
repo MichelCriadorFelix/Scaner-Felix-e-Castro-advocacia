@@ -2,5 +2,5 @@
   "name": "Scaner Felix e Castro Advocacia Especializada",
   "description": "Scanner Jurídico Inteligente: OCR de alta precisão, gestão de documentos por clientes e compilação de laudos médicos.",
   "requestFramePermissions": ["camera"],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

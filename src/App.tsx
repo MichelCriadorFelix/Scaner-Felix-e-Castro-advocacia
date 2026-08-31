@@ -910,10 +910,12 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
   for (let i = 0; i < finalSortedKeys.length; i++) {
+    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
     
     for (let m = 0; m < modelsToTry.length; m++) {
+      if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
       const modelName = modelsToTry[m];
       try {
         console.log(`[Auto-Failover Matrix] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Tentando modelo: ${modelName}`);
@@ -940,6 +942,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           let chunksReceived = 0;
           
           for await (const chunk of responseStream) {
+            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
             fullText += chunk.text;
             chunksReceived++;
             if (onProgress) {
@@ -1761,8 +1764,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
 
   for (let i = startIdx; i <= endIdx; i++) {
     if (window.lexscan_abort) {
-        window.lexscan_abort = false;
-        fullText += `\n\n[PROCESSO INTERROMPIDO PELO USUÁRIO NA PÁGINA ${i-1}]\n\n`;
+        console.log(`[extractPDFHybrid] Abort detectado antes da pág ${i}`);
+        fullText += `\n\n[PROCESSO PAUSADO PELO USUÁRIO NA PÁGINA ${Math.max(1, i-1)}]\n\n`;
         break;
     }
 
@@ -1772,17 +1775,23 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
     const maxPageAttempts = 3;
 
     for (let attempt = 1; attempt <= maxPageAttempts; attempt++) {
+      if (window.lexscan_abort) break;
       let finalCanvasToUse: any = null;
       let tempCanvas: any = null;
       try {
         if (attempt > 1) {
-          // Breve recuo exponencial/estratégico para limpar memória, conexões ou limites de taxa
-          const delayTime = 2500 * (attempt - 1);
+          // Breve recuo exponencial/estratégico com verificação de abort contínua
+          const delayTime = 2000 * (attempt - 1);
           onProgress(
             Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-            `Pág ${i}/${endIdx}: Estabilizando conexões... Tentativa de reparo ${attempt}/${maxPageAttempts} em ${delayTime / 1000}s...`
+            `Pág ${i}/${endIdx}: Estabilizando conexões... Tentativa ${attempt}/${maxPageAttempts}...`
           );
-          await new Promise(r => setTimeout(r, delayTime));
+          const startSleep = Date.now();
+          while (Date.now() - startSleep < delayTime) {
+            if (window.lexscan_abort) break;
+            await new Promise(r => setTimeout(r, 100));
+          }
+          if (window.lexscan_abort) break;
         }
 
         onProgress(
@@ -2045,7 +2054,11 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         }
         
         if (page && page.cleanup) page.cleanup();
-      } catch (pageErr) {
+      } catch (pageErr: any) {
+        if (window.lexscan_abort || pageErr?.message === "ABORT_BY_USER") {
+          console.log(`[Pág ${i}] Interrompido a pedido do usuário.`);
+          break;
+        }
         console.warn(`[Pág ${i}] Falha capturada na tentativa ${attempt}:`, pageErr);
         lastPageError = pageErr;
         if (finalCanvasToUse) {
@@ -2055,6 +2068,13 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           try { tempCanvas.width = 0; tempCanvas.height = 0; } catch (e) {}
         }
       }
+    }
+
+    if (window.lexscan_abort) {
+      if (!fullText.includes("[PROCESSO PAUSADO PELO USUÁRIO")) {
+        fullText += `\n\n[PROCESSO PAUSADO PELO USUÁRIO NA PÁGINA ${Math.max(1, i-1)}]\n\n`;
+      }
+      break;
     }
 
     if (!pageSuccess) {
@@ -2247,6 +2267,7 @@ export default function ScannerJuridico() {
   const [preview, setPreview] = useState(null);
   const [drag, setDrag] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [isAborting, setIsAborting] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
@@ -2918,18 +2939,25 @@ export default function ScannerJuridico() {
     if (queue.length === 0) return;
     
     setProcessing(true);
+    setIsAborting(false);
+    window.lexscan_abort = false;
     setCurrentQueueIndex(0);
     
     for (let i = 0; i < queue.length; i++) {
+      if (window.lexscan_abort) {
+        showToast("⏸ Processamento em lote pausado.", "info");
+        break;
+      }
       setCurrentQueueIndex(i);
       const currentFile = queue[i];
       await performSingleProcess(currentFile, i + 1, queue.length);
     }
     
     setProcessing(false);
+    setIsAborting(false);
     setCurrentQueueIndex(-1);
     setQueue([]);
-    showToast(`✓ Lote de ${queue.length} concluído!`, "success");
+    showToast(`✓ Lote concluído!`, "success");
     setTab("history");
   };
 
@@ -2937,9 +2965,15 @@ export default function ScannerJuridico() {
     if (queue.length === 0) return;
     
     setProcessing(true);
+    setIsAborting(false);
+    window.lexscan_abort = false;
     setCurrentQueueIndex(0);
     
     for (let i = 0; i < queue.length; i++) {
+      if (window.lexscan_abort) {
+        showToast("⏸ Envio em lote pausado.", "info");
+        break;
+      }
       setCurrentQueueIndex(i);
       const f = queue[i];
       setProgress(Math.round(((i) / queue.length) * 100));
@@ -3104,6 +3138,7 @@ export default function ScannerJuridico() {
     }
     if (!file) return;
     setProcessing(true);
+    setIsAborting(false);
     setProgress(0);
     setProgressMsg("Iniciando...");
 
@@ -3198,12 +3233,18 @@ export default function ScannerJuridico() {
       setHistory(prev => [item, ...prev]);
 
       setResult(item);
-      showToast("✓ Texto extraído com sucesso!");
-    } catch (err) {
+      if (window.lexscan_abort || (extracted && extracted.text.includes("[PROCESSO PAUSADO"))) {
+        showToast("⏸ Processo pausado. O progresso foi salvo com sucesso!", "info");
+      } else {
+        showToast("✓ Texto extraído com sucesso!");
+      }
+    } catch (err: any) {
       console.error(err);
       showToast(err.message || "Erro ao processar arquivo", "error");
     } finally {
       setProcessing(false);
+      setIsAborting(false);
+      window.lexscan_abort = false;
     }
   };
 
@@ -5619,8 +5660,33 @@ export default function ScannerJuridico() {
                       Arquivo {currentQueueIndex + 1} de {queue.length}
                     </div>
                   )}
-                  <button onClick={() => { window.lexscan_abort = true; }} style={{ marginTop: '14px', background: G.card, border: `1px solid ${G.border}`, borderRadius: '8px', padding: '10px 16px', color: G.text, cursor: 'pointer', fontSize: '13px', width: '100%', fontWeight: 500, transition: 'all 0.2s', ':hover': { borderColor: G.accent } }}>
-                     ⏹ Pausar / Salvar Progresso Atual
+                  <button 
+                    id="btn-pause-ocr"
+                    onClick={() => { 
+                      window.lexscan_abort = true; 
+                      setIsAborting(true);
+                      setProgressMsg("⏹ Pausando processo e salvando páginas já processadas...");
+                    }} 
+                    disabled={isAborting}
+                    style={{ 
+                      marginTop: '14px', 
+                      background: isAborting ? 'rgba(239, 68, 68, 0.25)' : 'rgba(239, 68, 68, 0.10)', 
+                      border: `1px solid ${isAborting ? '#ef4444' : 'rgba(239, 68, 68, 0.35)'}`, 
+                      borderRadius: '8px', 
+                      padding: '11px 16px', 
+                      color: isAborting ? '#fca5a5' : '#f87171', 
+                      cursor: isAborting ? 'not-allowed' : 'pointer', 
+                      fontSize: '13px', 
+                      width: '100%', 
+                      fontWeight: 600, 
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      transition: 'all 0.2s',
+                      boxShadow: isAborting ? '0 0 14px rgba(239, 68, 68, 0.4)' : 'none'
+                    }}>
+                     {isAborting ? "⏳ Interrompendo e Salvando Progresso..." : "⏹ Pausar / Salvar Progresso Atual"}
                   </button>
                 </div>
               )}
