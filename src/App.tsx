@@ -703,6 +703,13 @@ async function loadPDFJS() {
   return window.pdfjsLib;
 }
 
+// Configuração otimizada para abertura de documentos PDF com fontes jurídicas e mapas de caracteres
+const PDFJS_BASE_OPTIONS = {
+  cMapUrl: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/",
+  cMapPacked: true,
+  standardFontDataUrl: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/",
+};
+
 // ── Banco de API Keys & Auto-Failover ────────────────────────
 function getAvailableGeminiKeys() {
   const rawKeys = [];
@@ -1732,7 +1739,7 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi = false, goldStandard = true) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
   let fullText = "";
   let confidenceTotal = 0;
   let pagesEvaluated = 0;
@@ -1837,8 +1844,28 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           let viewport = null;
           let renderSuccess = false;
 
-          // Escala adaptativa progressiva para economia de heap/buffers caso esteja falhando
-          const attemptScales = attempt === 1 ? (goldStandard ? [2.0, 1.5] : [1.5, 1.0]) : attempt === 2 ? [1.25, 1.0] : [0.75];
+          // Cálculo dinâmico inteligente de resolução alvo (DPI adaptativo)
+          // Evita estouro de memória (OOM / Timeout) em PDFs que já possuem dimensões gigantescas escaneadas
+          const baseViewport = page.getViewport({ scale: 1.0 });
+          const maxBaseDim = Math.max(baseViewport.width, baseViewport.height) || 800;
+          
+          // Alvos em pixels: 2200px é o "Sweet Spot" perfeito para o Gemini 3.6/3.5 ler manuscritos, laudos e números miúdos com perfeição
+          const targetGold = goldStandard ? 2200 : 1800;
+          let attemptScales: number[] = [];
+
+          if (attempt === 1) {
+            // Escala ideal calibrada para ~2200px e fallback de ~1600px
+            const idealScale = Math.min(2.5, Math.max(0.7, targetGold / maxBaseDim));
+            const subScale = Math.min(2.0, Math.max(0.5, (targetGold * 0.75) / maxBaseDim));
+            attemptScales = Math.abs(idealScale - subScale) < 0.1 ? [idealScale] : [idealScale, subScale];
+          } else if (attempt === 2) {
+            const safeScale = Math.min(1.6, Math.max(0.4, 1400 / maxBaseDim));
+            const safeSubScale = Math.min(1.2, Math.max(0.3, 1100 / maxBaseDim));
+            attemptScales = [safeScale, safeSubScale];
+          } else {
+            const emergencyScale = Math.min(1.0, Math.max(0.25, 900 / maxBaseDim));
+            attemptScales = [emergencyScale];
+          }
           
           for (let scaleAttempt of attemptScales) {
             let canvas = document.createElement("canvas");
@@ -1846,20 +1873,23 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             let renderTask = null;
             try {
               viewport = page.getViewport({ scale: scaleAttempt });
-              canvas.width = viewport.width;
-              canvas.height = viewport.height;
+              canvas.width = Math.floor(viewport.width);
+              canvas.height = Math.floor(viewport.height);
               ctx = canvas.getContext("2d", { willReadFrequently: true });
               if (!ctx) continue;
 
               renderTask = page.render({ canvasContext: ctx, viewport });
-              await withTimeout(renderTask.promise, 35000, `Timeout na renderização com escala ${scaleAttempt}`);
+              await withTimeout(renderTask.promise, 20000, `Timeout na renderização com escala ${scaleAttempt.toFixed(2)}`);
               finalCanvasToUse = canvas;
               renderSuccess = true;
               break;
             } catch (renderErr) {
-              console.warn(`[Pág ${i}] Renderização falhou com escala ${scaleAttempt} na tentativa ${attempt}`, renderErr);
+              console.warn(`[Pág ${i}] Renderização falhou com escala ${scaleAttempt.toFixed(2)} na tentativa ${attempt}:`, renderErr);
               if (renderTask) {
-                try { renderTask.cancel(); } catch (cancelErr) {}
+                try { 
+                  renderTask.cancel();
+                  await renderTask.promise.catch(() => {});
+                } catch (cancelErr) {}
               }
               canvas.width = 0; canvas.height = 0;
             }
@@ -3330,7 +3360,7 @@ export default function ScannerJuridico() {
       setProgress(20);
       setProgressMsg("Carregando páginas no visualizador...");
       const arrayBuffer = await fileSource.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
       
       const loadedPages = [];
       // Otimização de memória: se tiver muitas páginas, reduzimos a resolução de importação
@@ -3484,7 +3514,7 @@ export default function ScannerJuridico() {
       
       console.log("[Recuperar páginas] Gerando ArrayBuffer para o PDF...");
       const arrayBuffer = await fileSource.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
       console.log("[Recuperar páginas] PDF carregado na biblioteca. Total de páginas:", pdf.numPages);
       
       let updatedText = currentText;
@@ -3534,10 +3564,14 @@ export default function ScannerJuridico() {
             setProgressMsg(`[Pág ${pageNum}] Restaurada via Texto Digital Nativo...`);
             cleanAiText = pageText;
           } else {
-            let viewport = page.getViewport({ scale: goldStandard ? 2.0 : 1.5 });
+            const rawVp = page.getViewport({ scale: 1.0 });
+            const maxDim = Math.max(rawVp.width, rawVp.height) || 800;
+            const targetDim = goldStandard ? 2200 : 1800;
+            const adaptiveScale = Math.min(2.5, Math.max(0.7, targetDim / maxDim));
+            let viewport = page.getViewport({ scale: adaptiveScale });
             let canvas = document.createElement("canvas");
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
             let ctx = canvas.getContext("2d", { willReadFrequently: true });
             if (!ctx) {
               console.error(`[Recuperar páginas] Erro ao obter Context 2D para a pág ${pageNum}`);
