@@ -2321,6 +2321,93 @@ async function runOCR(imageBlob, onProgress) {
   };
 }
 
+// ── Sistema de Cache Inteligente por Hash SHA-256 ────────────────────────────
+async function calculateDocumentHash(file: File | Blob): Promise<string> {
+  try {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    const name = (file as any)?.name || 'document';
+    return `fallback_${name}_${file.size}_${file.type}`;
+  }
+}
+
+interface CachedDocumentOCR {
+  hash: string;
+  text: string;
+  confidence: number;
+  chars_count: number;
+  words_count: number;
+  timestamp: number;
+  fileName?: string;
+}
+
+const OCR_CACHE_PREFIX = "lexscan_hash_cache_";
+const OCR_CACHE_INDEX_KEY = "lexscan_hash_cache_index";
+
+function getCachedOCR(hash: string): CachedDocumentOCR | null {
+  if (!hash) return null;
+  try {
+    const raw = localStorage.getItem(`${OCR_CACHE_PREFIX}${hash}`);
+    if (!raw) return null;
+    const parsed: CachedDocumentOCR = JSON.parse(raw);
+    if (!parsed || !parsed.text || parsed.text.trim().length === 0) return null;
+    
+    // Segurança: Não aceita cache com erro crítico ou processo pausado
+    if (
+      parsed.confidence < 75 ||
+      /ERRO\s+CR[ÍI]TICO|P[ÁA]GINA\s+PULADA|PROCESSO PAUSADO PELO USUÁRIO/i.test(parsed.text)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCachedOCR(hash: string, text: string, confidence: number, fileName?: string): void {
+  if (!hash || !text || text.trim().length === 0) return;
+  // Segurança: Nunca salvar no cache resultados incompletos ou com erro
+  if (
+    confidence < 75 ||
+    /ERRO\s+CR[ÍI]TICO|P[ÁA]GINA\s+PULADA|PROCESSO PAUSADO PELO USUÁRIO/i.test(text)
+  ) {
+    return;
+  }
+
+  try {
+    const entry: CachedDocumentOCR = {
+      hash,
+      text,
+      confidence,
+      chars_count: text.length,
+      words_count: text.split(/\s+/).filter(Boolean).length,
+      timestamp: Date.now(),
+      fileName
+    };
+    localStorage.setItem(`${OCR_CACHE_PREFIX}${hash}`, JSON.stringify(entry));
+
+    // Mantém índice LRU (limita a até 300 documentos no cache local)
+    let index: string[] = [];
+    try {
+      index = JSON.parse(localStorage.getItem(OCR_CACHE_INDEX_KEY) || "[]");
+    } catch(e) {}
+    index = index.filter((h: string) => h !== hash);
+    index.unshift(hash);
+    if (index.length > 300) {
+      const removed = index.slice(300);
+      removed.forEach((h: string) => localStorage.removeItem(`${OCR_CACHE_PREFIX}${h}`));
+      index = index.slice(0, 300);
+    }
+    localStorage.setItem(OCR_CACHE_INDEX_KEY, JSON.stringify(index));
+  } catch (e) {
+    console.warn("[OCR Cache] Não foi possível gravar no cache local:", e);
+  }
+}
+
 // ── Integração Bancos de Dados ────────────────────────────────────────────────
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || import.meta.env.SUPABASE_PUBLISHABLE_KEY || '';
@@ -3133,35 +3220,57 @@ export default function ScannerJuridico() {
     setTab("history");
   };
 
-  const performSingleProcess = async (f, current, total) => {
+  const performSingleProcess = async (f, current, total, forceRefresh = false) => {
     if (window.lexscan_abort) return;
     setProgress(0);
-    setProgressMsg(`[${current}/${total}] Processando: ${f.name}`);
+    setProgressMsg(`[${current}/${total}] Analisando arquivo: ${f.name}`);
 
     try {
       let extracted;
-      const onProgress = (p, msg) => { 
+      const fileHash = await calculateDocumentHash(f);
+      const cached = !forceRefresh ? getCachedOCR(fileHash) : null;
+
+      if (cached) {
+        setProgress(60);
+        setProgressMsg(`[${current}/${total}] ⚡ Documento em cache! Carregamento instantâneo: ${f.name}`);
+        extracted = {
+          text: cached.text,
+          confidence: cached.confidence,
+          fromCache: true
+        };
+        showToast(`⚡ "${f.name}" carregado instantaneamente do cache!`, "info");
+      } else {
+        const onProgress = (p, msg) => { 
+          if (window.lexscan_abort) return;
+          setProgress(p); 
+          setProgressMsg(`[${current}/${total}] ${msg || "Extraindo..."}`); 
+        };
+
+        if (f.type === "application/pdf") {
+          extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, forceRefresh, goldStandard);
+        } else {
+          extracted = await extractImageHybrid(f, onProgress, aiMode, forceRefresh, goldStandard);
+        }
+
+        if (window.lexscan_abort) {
+          console.log(`[performSingleProcess] Abort após extração de ${f.name}`);
+        }
+
+        // Otimização Heurística para todos os casos (limpeza final)
+        if (extracted && extracted.text) {
+          extracted.text = optimizeRawText(extracted.text, aiMode);
+          // Grava no cache hash para reaproveitamento futuro imediato
+          setCachedOCR(fileHash, extracted.text, extracted.confidence, f.name);
+        }
+      }
+
+      const onProgressSave = (p, msg) => {
         if (window.lexscan_abort) return;
-        setProgress(p); 
-        setProgressMsg(`[${current}/${total}] ${msg || "Extraindo..."}`); 
+        setProgress(p);
+        setProgressMsg(`[${current}/${total}] ${msg}`);
       };
 
-      if (f.type === "application/pdf") {
-        extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, false, goldStandard);
-      } else {
-        extracted = await extractImageHybrid(f, onProgress, aiMode, false, goldStandard);
-      }
-
-      if (window.lexscan_abort) {
-        console.log(`[performSingleProcess] Abort após extração de ${f.name}`);
-      }
-
-      // Otimização Heurística para todos os casos (limpeza final)
-      if (extracted && extracted.text) {
-        extracted.text = optimizeRawText(extracted.text, aiMode);
-      }
-
-      onProgress(85, "Salvando na nuvem...");
+      onProgressSave(85, "Salvando na nuvem...");
 
       let fileUrl = null;
       let finalId = Date.now().toString() + "_" + current;
@@ -3169,7 +3278,7 @@ export default function ScannerJuridico() {
       
       // Se for imagem, a pedido do usuário, converter para PDF nativamente antes de salvar
       if (f.type.startsWith("image/")) {
-         onProgress(88, "Convertendo Imagem para PDF...");
+         onProgressSave(88, "Convertendo Imagem para PDF...");
          try {
             finalFileForUpload = await convertSingleImageToPDF(f);
          } catch(e) {
@@ -3211,6 +3320,9 @@ export default function ScannerJuridico() {
         text: extracted.text,
         confidence: extracted.confidence,
         words: extracted.text.split(/\s+/).length,
+        chars: extracted.text.length,
+        fromCache: extracted.fromCache || false,
+        fileHash,
         fileUrl,
         preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
         localBlobUrl: URL.createObjectURL(finalFileForUpload)
@@ -3223,7 +3335,7 @@ export default function ScannerJuridico() {
     }
   };
 
-  const process = async () => {
+  const process = async (forceRefresh = false) => {
     if (queue.length > 0) {
       processBatch();
       return;
@@ -3236,29 +3348,46 @@ export default function ScannerJuridico() {
 
     try {
       let extracted;
-      const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
+      const fileHash = await calculateDocumentHash(file);
+      const cached = !forceRefresh ? getCachedOCR(fileHash) : null;
 
-      window.lexscan_abort = false;
-
-      if (file.type === "application/pdf") {
-        extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, false, goldStandard);
+      if (cached) {
+        setProgress(50);
+        setProgressMsg(`⚡ Arquivo reconhecido! Carregando do Cache...`);
+        extracted = {
+          text: cached.text,
+          confidence: cached.confidence,
+          fromCache: true
+        };
+        showToast(`⚡ Documento carregado instantaneamente do cache!`, "info");
       } else {
-        extracted = await extractImageHybrid(file, onProgress, aiMode, false, goldStandard);
+        const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
+
+        window.lexscan_abort = false;
+
+        if (file.type === "application/pdf") {
+          extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, forceRefresh, goldStandard);
+        } else {
+          extracted = await extractImageHybrid(file, onProgress, aiMode, forceRefresh, goldStandard);
+        }
+
+        // Otimização Heurística para todos os casos (limpeza final)
+        if (extracted && extracted.text) {
+          extracted.text = optimizeRawText(extracted.text, aiMode);
+          // Grava no cache hash
+          setCachedOCR(fileHash, extracted.text, extracted.confidence, file.name);
+        }
       }
 
-      // Otimização Heurística para todos os casos (limpeza final)
-      if (extracted && extracted.text) {
-        extracted.text = optimizeRawText(extracted.text, aiMode);
-      }
-
-      onProgress(80, "Verificando nuvem...");
+      const onProgressSave = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
+      onProgressSave(80, "Verificando nuvem...");
 
       let fileUrl = null;
       let finalId = Date.now().toString();
       let finalFileForUpload = file;
 
       if (file.type.startsWith("image/")) {
-         onProgress(88, "Convertendo Imagem para PDF...");
+         onProgressSave(88, "Convertendo Imagem para PDF...");
          try {
             finalFileForUpload = await convertSingleImageToPDF(file);
          } catch(e) {
@@ -3267,7 +3396,7 @@ export default function ScannerJuridico() {
       }
 
       if (supabase) {
-        onProgress(85, "Armazenando PDF na Nuvem...");
+        onProgressSave(85, "Armazenando PDF na Nuvem...");
         
         const ext = finalFileForUpload.name.split('.').pop() || 'jpg';
         const rawName = finalFileForUpload.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -3282,7 +3411,7 @@ export default function ScannerJuridico() {
            return;
         }
 
-        onProgress(95, "Sincronizando com o banco GED...");
+        onProgressSave(95, "Sincronizando com o banco GED...");
         const docRecord = {
            client_id: selectedClient || null,
            name: finalFileForUpload.name,
@@ -3302,7 +3431,7 @@ export default function ScannerJuridico() {
         }
       }
 
-      onProgress(100, "Concluído!");
+      onProgressSave(100, "Concluído!");
 
       const item = {
         id: finalId,
@@ -3315,6 +3444,8 @@ export default function ScannerJuridico() {
         confidence: extracted.confidence,
         chars: extracted.text.length,
         words: extracted.text.split(/\s+/).filter(Boolean).length,
+        fromCache: extracted.fromCache || false,
+        fileHash,
         ts: Date.now(),
         clientId: selectedClient || "unassigned"
       };
@@ -3328,7 +3459,7 @@ export default function ScannerJuridico() {
       if (window.lexscan_abort || (extracted && extracted.text.includes("[PROCESSO PAUSADO"))) {
         showToast("⏸ Processo pausado. O progresso foi salvo com sucesso!", "info");
       } else {
-        showToast("✓ Texto extraído com sucesso!");
+        showToast(extracted.fromCache ? "⚡ Documento carregado do cache instantâneo!" : "✓ Texto extraído com sucesso!");
       }
     } catch (err: any) {
       console.error(err);
@@ -4214,7 +4345,7 @@ export default function ScannerJuridico() {
     }
   };
 
-  const processHistoryItem = async (item) => {
+  const processHistoryItem = async (item, forceRefresh = false) => {
     setProcessing(true);
     setTab("scanner");
     setProgress(0);
@@ -4249,23 +4380,39 @@ export default function ScannerJuridico() {
       const fileToProcess = new File([blob], item.name, { type: item.type });
 
       let extracted;
-      const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
+      const fileHash = await calculateDocumentHash(fileToProcess);
+      const cached = !forceRefresh ? getCachedOCR(fileHash) : null;
 
-      window.lexscan_abort = false;
-
-      if (fileToProcess.type === "application/pdf") {
-        extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
+      if (cached) {
+        setProgress(60);
+        setProgressMsg("⚡ Recuperado do cache de alta fidelidade!");
+        extracted = {
+          text: cached.text,
+          confidence: cached.confidence,
+          fromCache: true
+        };
+        showToast("⚡ Documento carregado instantaneamente do cache!", "info");
       } else {
-        extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, false, goldStandard);
-      }
+        const onProgress = (p, msg) => { setProgress(p); setProgressMsg(msg || ""); };
 
-      if (extracted && extracted.text) {
-        extracted.text = optimizeRawText(extracted.text, true);
+        window.lexscan_abort = false;
+
+        if (fileToProcess.type === "application/pdf") {
+          extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, forceRefresh, goldStandard);
+        } else {
+          extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, forceRefresh, goldStandard);
+        }
+
+        if (extracted && extracted.text) {
+          extracted.text = optimizeRawText(extracted.text, true);
+          setCachedOCR(fileHash, extracted.text, extracted.confidence, item.name);
+        }
       }
       
-      onProgress(90, "Atualizando banco de dados...");
+      setProgress(90);
+      setProgressMsg("Atualizando banco de dados...");
       
-      if (supabase) {
+      if (supabase && extracted && extracted.text) {
         await supabase.from("lexscan_documents").update({
           extracted_text: extracted.text,
           confidence: extracted.confidence,
@@ -4279,7 +4426,9 @@ export default function ScannerJuridico() {
         text: extracted.text,
         confidence: extracted.confidence,
         words: extracted.text.split(/\s+/).filter(Boolean).length,
-        chars: extracted.text.length
+        chars: extracted.text.length,
+        fromCache: extracted.fromCache || false,
+        fileHash
       };
 
       setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
@@ -4288,7 +4437,7 @@ export default function ScannerJuridico() {
          localStorage.setItem("lexscan_history", JSON.stringify(localH));
       }
       setResult(updatedItem);
-      showToast("OCR processado com sucesso!");
+      showToast(extracted.fromCache ? "⚡ OCR carregado do cache instantâneo!" : "✓ OCR processado com sucesso!");
     } catch(err) {
       console.error(err);
       showToast("Erro: " + (err.message || "processar OCR do item arquivado."), "error");
@@ -4329,9 +4478,6 @@ export default function ScannerJuridico() {
         const item = docs[i];
         setProgress(0);
         setProgressMsg(`[${i + 1}/${docs.length}] Analisando: ${item.name}...`);
-        
-        // Pequena pausa entre itens para respeitar RPM (1.5s)
-        if (i > 0) await new Promise(r => setTimeout(r, 1500));
 
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
@@ -4359,24 +4505,43 @@ export default function ScannerJuridico() {
           }
 
           const fileToProcess = new File([blob], item.name, { type: item.type });
+          const fileHash = await calculateDocumentHash(fileToProcess);
+          const cached = getCachedOCR(fileHash);
     
           let extracted;
-          const onProgress = (p, msg) => { 
-             setProgress(p); 
-             setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
-          };
-    
-          window.lexscan_abort = false;
 
-          if (fileToProcess.type === "application/pdf") {
-            extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
+          if (cached) {
+            setProgress(60);
+            setProgressMsg(`[${i + 1}/${docs.length}] ⚡ Em cache! ${item.name}`);
+            extracted = {
+              text: cached.text,
+              confidence: cached.confidence,
+              fromCache: true
+            };
           } else {
-            extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, false, goldStandard);
+            // Pequena pausa entre itens para respeitar RPM (1.5s) se for chamar API
+            if (i > 0) await new Promise(r => setTimeout(r, 1500));
+
+            const onProgress = (p, msg) => { 
+               setProgress(p); 
+               setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
+            };
+      
+            window.lexscan_abort = false;
+
+            if (fileToProcess.type === "application/pdf") {
+              extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
+            } else {
+              extracted = await extractImageHybrid(fileToProcess, onProgress, aiMode, false, goldStandard);
+            }
+      
+            if (extracted && extracted.text) {
+              extracted.text = optimizeRawText(extracted.text, true);
+              setCachedOCR(fileHash, extracted.text, extracted.confidence, item.name);
+            }
           }
     
           if (extracted && extracted.text) {
-            extracted.text = optimizeRawText(extracted.text, true);
-            
             if (supabase) {
               await supabase.from("lexscan_documents").update({
                 extracted_text: extracted.text,
@@ -4391,7 +4556,9 @@ export default function ScannerJuridico() {
               text: extracted.text,
               confidence: extracted.confidence,
               words: extracted.text.split(/\s+/).filter(Boolean).length,
-              chars: extracted.text.length
+              chars: extracted.text.length,
+              fromCache: extracted.fromCache || false,
+              fileHash
             };
       
             setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
@@ -5937,7 +6104,25 @@ export default function ScannerJuridico() {
                 <>
                   <div className="result-card">
                     <div className="result-header">
-                      <span className="result-title">Texto Extraído</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className="result-title">Texto Extraído</span>
+                        {result.fromCache && (
+                          <span style={{
+                            fontSize: '10px',
+                            fontWeight: '700',
+                            background: 'rgba(59, 130, 246, 0.15)',
+                            color: '#60a5fa',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            padding: '2px 8px',
+                            borderRadius: '6px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}>
+                            ⚡ Cache SHA-256 (0 tokens)
+                          </span>
+                        )}
+                      </div>
                       <span className="result-meta">{result.words} palavras · {result.chars} chars · Suporte Ilimitado (+500k)</span>
                     </div>
 
@@ -6134,7 +6319,7 @@ export default function ScannerJuridico() {
                           ➕ Adicionar Páginas
                         </button>
                       )}
-                      {(!result.text || result.text.trim() === "") && !processing && (
+                      {(!result.text || result.text.trim() === "") && !processing ? (
                         <button 
                           className="dl-btn primary" 
                           onClick={() => processHistoryItem(result)}
@@ -6142,6 +6327,23 @@ export default function ScannerJuridico() {
                         >
                           🧠 Extrair Texto (OCR)
                         </button>
+                      ) : (
+                        !processing && (
+                          <button
+                            className="dl-btn"
+                            onClick={() => {
+                              if (file) {
+                                process(true);
+                              } else {
+                                processHistoryItem(result, true);
+                              }
+                            }}
+                            style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.4)', color: '#eab308' }}
+                            title="Refazer leitura completa do documento com Inteligência Artificial, ignorando o cache"
+                          >
+                            🔄 Forçar Releitura (IA)
+                          </button>
+                        )
                       )}
                       </>
                       )}
