@@ -37,19 +37,66 @@ const css = `
   }
 
   .app {
-    max-width: 480px;
+    width: 100%;
     margin: 0 auto;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
     position: relative;
-    box-shadow: 0 0 40px rgba(0,0,0,0.5);
+    transition: max-width 0.2s ease;
   }
 
-  /* Optimize for mobile devices without hover */
-  @media (max-width: 480px) {
-    .app { box-shadow: none; }
-    .header { padding: 16px 16px 12px; }
+  /* Celular / Mobile (Padrão nativo para smartphones) */
+  @media (max-width: 767px) {
+    .app {
+      max-width: 480px;
+      box-shadow: none;
+    }
+    .header {
+      padding: 16px 16px 12px;
+    }
+  }
+
+  /* Computador / Windows / Desktop e Tablets Maiores */
+  @media (min-width: 768px) {
+    .app {
+      max-width: 1200px;
+      border-left: 1px solid ${G.border};
+      border-right: 1px solid ${G.border};
+      box-shadow: 0 0 60px rgba(0, 0, 0, 0.45);
+    }
+    .header {
+      padding: 18px 32px 14px;
+    }
+    .header-top {
+      margin-bottom: 14px;
+    }
+    .logo {
+      font-size: 22px;
+    }
+    .logo span {
+      font-size: 12px;
+    }
+    .tabs {
+      max-width: 460px;
+    }
+    .tab {
+      flex-direction: row;
+      justify-content: center;
+      gap: 8px;
+      font-size: 13.5px;
+      padding: 9px 18px;
+    }
+    .content {
+      padding: 24px 32px 40px;
+    }
+    .action-buttons-grid {
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .action-card-full {
+      grid-column: span 1;
+    }
   }
 
   button {
@@ -583,10 +630,23 @@ const css = `
     transition: width .5s ease;
   }
 
+  /* Folders Grid */
+  .folders-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  @media (min-width: 768px) {
+    .folders-grid {
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+  }
+
   /* Folder Header Controls & Batch Actions Bar */
   .folder-controls-bar {
     display: flex;
-    gap: 10px;
+    gap: 12px;
     align-items: center;
     margin-bottom: 12px;
   }
@@ -596,7 +656,7 @@ const css = `
   }
   .folder-sort-box {
     width: auto;
-    min-width: 175px;
+    min-width: 190px;
     flex-shrink: 0;
   }
   @media (max-width: 640px) {
@@ -615,27 +675,30 @@ const css = `
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid ${G.border};
     border-radius: 12px;
-    padding: 12px 14px;
-    margin-top: 4px;
-    margin-bottom: 6px;
+    padding: 14px 16px;
+    margin-top: 6px;
+    margin-bottom: 14px;
+    box-sizing: border-box;
   }
   .folder-actions-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
   }
   .folder-actions-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     width: 100%;
+    box-sizing: border-box;
   }
   .folder-action-btn {
     height: 42px;
     width: 100%;
+    min-width: 0;
     padding: 0 10px;
     border-radius: 8px;
     font-size: 12.5px;
@@ -645,13 +708,14 @@ const css = `
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 7px;
+    gap: 6px;
     white-space: nowrap;
     transition: all 0.15s ease;
     border: none;
     text-decoration: none;
     user-select: none;
     box-sizing: border-box;
+    text-align: center;
   }
   .folder-action-btn.primary {
     background: #0284c7;
@@ -681,28 +745,36 @@ const css = `
     transform: translateY(0);
   }
 
-  @media (max-width: 900px) {
+  /* Em tablets ou janelas intermediárias */
+  @media (max-width: 960px) and (min-width: 641px) {
+    .folder-actions-grid {
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .folder-action-btn {
+      height: 42px;
+      font-size: 12px;
+      padding: 0 10px;
+    }
+  }
+
+  /* No celular (smartphones) - mantendo simetria 2x2 perfeita */
+  @media (max-width: 640px) {
+    .folder-actions-card {
+      padding: 10px 12px;
+    }
     .folder-actions-grid {
       grid-template-columns: repeat(2, 1fr);
       gap: 8px;
     }
     .folder-action-btn {
-      height: 42px;
-      font-size: 12px;
-      padding: 0 8px;
-    }
-  }
-
-  @media (max-width: 480px) {
-    .folder-actions-grid {
-      grid-template-columns: repeat(2, 1fr);
-      gap: 6px;
-    }
-    .folder-action-btn {
-      height: 40px;
+      min-height: 42px;
+      height: auto;
       font-size: 11px;
-      padding: 0 4px;
+      padding: 6px 4px;
       gap: 4px;
+      white-space: normal;
+      line-height: 1.25;
     }
   }
 
@@ -6765,7 +6837,7 @@ export default function ScannerJuridico() {
                     />
                   </div>
 
-                  <div className="folders-grid" style={{ display: 'grid', gap: '12px' }}>
+                  <div className="folders-grid">
                     {clientSearch.trim() === "" && (
                       <div 
                         className="folder-card"
@@ -7003,10 +7075,10 @@ export default function ScannerJuridico() {
                             <button 
                               onClick={processFolderOCR}
                               className="folder-action-btn secondary"
-                              title="Executar reconhecimento de texto (OCR) nos documentos da pasta"
+                              title="Executar reconhecimento de texto (OCR) em lote em todos os documentos da pasta"
                             >
                               <span>🧠</span>
-                              <span>Processar OCR</span>
+                              <span>Processar OCR em Lote</span>
                             </button>
                             <button 
                               onClick={compileFolderTXT}
@@ -7025,7 +7097,7 @@ export default function ScannerJuridico() {
                   {clients.filter(c => c.parentId === viewingClient).length > 0 && (
                     <div style={{ padding: '8px 0' }}>
                       <div style={{ fontSize: '12px', fontWeight: 600, color: G.muted, padding: '0 8px', marginBottom: '8px', textTransform: 'uppercase' }}>Subpastas</div>
-                      <div className="folders-grid" style={{ display: 'grid', gap: '8px' }}>
+                      <div className="folders-grid" style={{ marginBottom: '16px' }}>
                         {clients.filter(c => c.parentId === viewingClient).map(c => {
                           const docsCount = history.filter(h => h.clientId === c.id).length;
                           const subfoldersCount = clients.filter(sub => sub.parentId === c.id).length;
