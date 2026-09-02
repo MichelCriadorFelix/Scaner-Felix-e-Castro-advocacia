@@ -376,6 +376,8 @@ const css = `
     align-items: center;
     justify-content: center;
     gap: 6px;
+    white-space: nowrap;
+    min-width: 120px;
   }
   .dl-btn:hover { border-color: ${G.accent}; color: ${G.accent}; }
   .dl-btn.primary { background: ${G.accent}; border-color: ${G.accent}; color: #0d0f14; font-weight: 700; }
@@ -579,6 +581,96 @@ const css = `
     height: 100%;
     border-radius: 2px;
     transition: width .5s ease;
+  }
+
+  /* Folder Header Controls & Batch Actions Bar */
+  .folder-controls-bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .folder-search-box {
+    flex: 1;
+    min-width: 0;
+  }
+  .folder-sort-box {
+    width: auto;
+    min-width: 175px;
+    flex-shrink: 0;
+  }
+  @media (max-width: 640px) {
+    .folder-controls-bar {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .folder-sort-box {
+      width: 100%;
+      min-width: 100%;
+    }
+  }
+
+  .folder-actions-card {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid ${G.border};
+    border-radius: 12px;
+    padding: 12px;
+    margin-top: 4px;
+    margin-bottom: 6px;
+  }
+  .folder-actions-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .folder-actions-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .folder-action-btn {
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
+    transition: all 0.2s;
+    border: none;
+    text-decoration: none;
+    user-select: none;
+  }
+  .folder-action-btn:hover {
+    transform: translateY(-1px);
+    opacity: 0.92;
+  }
+  .folder-action-btn:active {
+    transform: translateY(0);
+  }
+
+  @media (max-width: 640px) {
+    .folder-actions-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .folder-action-btn {
+      width: 100%;
+      padding: 0 8px;
+      font-size: 11.5px;
+      height: 40px;
+    }
   }
 `;
 
@@ -6790,79 +6882,105 @@ export default function ScannerJuridico() {
                       </div>
                     )}
 
-                    <div style={{ marginBottom: '12px' }}>
-                      <input
-                        type="text"
-                        placeholder="🔍 Pesquisar documento..."
-                        value={docSearch}
-                        onChange={e => setDocSearch(e.target.value)}
-                        style={{
-                          width: '100%',
-                          padding: '10px 12px',
-                          borderRadius: '10px',
-                          border: `1px solid ${G.border}`,
-                          background: G.bg,
-                          color: G.text,
-                          fontSize: '13px',
-                          outline: 'none',
-                        }}
-                      />
-                    </div>
-                    
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '10px', color: G.muted, marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Organizar por:</label>
+                    {/* Barra de Busca e Ordenação Responsiva */}
+                    <div className="folder-controls-bar">
+                      <div className="folder-search-box">
+                        <input
+                          type="text"
+                          placeholder="🔍 Pesquisar documento na pasta..."
+                          value={docSearch}
+                          onChange={e => setDocSearch(e.target.value)}
+                          style={{
+                            width: '100%',
+                            height: '38px',
+                            padding: '0 12px',
+                            borderRadius: '10px',
+                            border: `1px solid ${G.border}`,
+                            background: G.bg,
+                            color: G.text,
+                            fontSize: '13px',
+                            outline: 'none',
+                          }}
+                        />
+                      </div>
+                      
+                      <div className="folder-sort-box">
                         <select 
                           value={sortOrder}
                           onChange={(e) => setSortOrder(e.target.value)}
-                          style={{ width: '100%', background: G.bg, color: G.text, border: `1px solid ${G.border}`, padding: '8px', borderRadius: '8px', fontSize: '13px', outline: 'none', cursor: 'pointer' }}
+                          aria-label="Organizar documentos por"
+                          style={{ 
+                            width: '100%', 
+                            height: '38px',
+                            background: G.bg, 
+                            color: G.text, 
+                            border: `1px solid ${G.border}`, 
+                            padding: '0 10px', 
+                            borderRadius: '10px', 
+                            fontSize: '13px', 
+                            outline: 'none', 
+                            cursor: 'pointer' 
+                          }}
                         >
-                          <option value="date-desc">🕒 Mais Recentes</option>
-                          <option value="date-asc">🕒 Mais Antigos</option>
                           <option value="name-asc">🔤 Nome (1, 2, 10...)</option>
                           <option value="name-desc">🔤 Nome (Z-A)</option>
+                          <option value="date-desc">🕒 Mais Recentes</option>
+                          <option value="date-asc">🕒 Mais Antigos</option>
                         </select>
                       </div>
+                    </div>
 
-                      <div style={{ display: 'flex', gap: '8px', alignSelf: 'flex-end' }}>
-                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
-                          <button 
-                            onClick={processFolderOCR}
-                            style={{ background: G.accent, color: '#000', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-                            title="Gerar OCR para documentos sem texto ou falhos"
-                          >
-                            <span>🧠</span> Lote de OCR
-                          </button>
-                        )}
-                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
-                          <button 
-                            onClick={compileFolderTXT}
-                            style={{ background: G.surface, color: G.text, border: `1px solid ${G.border}`, padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-                            title="Baixar Texto Compilado de toda a pasta"
-                          >
-                            <span>📑</span> Compilar
-                          </button>
-                        )}
-                        {history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length > 0 && (
-                          <>
+                    {/* Barra de Ações em Lote da Pasta (Clean & Totalmente Responsiva) */}
+                    {(() => {
+                      const folderTotalDocs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length;
+                      if (folderTotalDocs === 0) return null;
+                      return (
+                        <div className="folder-actions-card">
+                          <div className="folder-actions-header">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: G.text, letterSpacing: '0.04em' }}>⚡ AÇÕES EM LOTE</span>
+                              <span style={{ fontSize: '11px', color: G.muted }}>({folderTotalDocs} {folderTotalDocs === 1 ? 'arquivo' : 'arquivos'})</span>
+                            </div>
+                            <span style={{ fontSize: '10px', color: '#0284c7', fontWeight: 600 }}>Padrão INSS &lt; 5MB • e-Proc &lt; 12MB</span>
+                          </div>
+
+                          <div className="folder-actions-grid">
                             <button 
                               onClick={() => downloadFolderPDFsZip('lite')}
-                              style={{ background: '#0284c7', color: '#fff', border: 'none', padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', boxShadow: '0 2px 4px rgba(2, 132, 199, 0.25)' }}
+                              className="folder-action-btn"
+                              style={{ background: '#0284c7', color: '#fff', boxShadow: '0 2px 5px rgba(2, 132, 199, 0.3)' }}
                               title="Baixar todos os documentos em versão Lite de alta qualidade (Arquivos <5MB para INSS e <12MB para e-Proc)"
                             >
                               <span>🪶</span> ZIP Lite (INSS/e-Proc)
                             </button>
                             <button 
                               onClick={() => downloadFolderPDFsZip('original')}
-                              style={{ background: G.surface, color: G.text, border: `1px solid ${G.border}`, padding: '9px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                              className="folder-action-btn"
+                              style={{ background: G.card, color: G.text, border: `1px solid ${G.border}` }}
                               title="Baixar todos os arquivos originais sem compressão em um arquivo ZIP"
                             >
                               <span>📦</span> ZIP Original
                             </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
+                            <button 
+                              onClick={processFolderOCR}
+                              className="folder-action-btn"
+                              style={{ background: G.accent, color: '#000' }}
+                              title="Gerar OCR para documentos sem texto ou falhos na pasta"
+                            >
+                              <span>🧠</span> OCR em Lote
+                            </button>
+                            <button 
+                              onClick={compileFolderTXT}
+                              className="folder-action-btn"
+                              style={{ background: G.card, color: G.text, border: `1px solid ${G.border}` }}
+                              title="Baixar Texto Compilado de toda a pasta em um arquivo TXT"
+                            >
+                              <span>📑</span> Compilar TXT
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {clients.filter(c => c.parentId === viewingClient).length > 0 && (
