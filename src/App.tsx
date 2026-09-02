@@ -615,7 +615,7 @@ const css = `
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid ${G.border};
     border-radius: 12px;
-    padding: 12px;
+    padding: 12px 14px;
     margin-top: 4px;
     margin-bottom: 6px;
   }
@@ -628,48 +628,87 @@ const css = `
     gap: 6px;
   }
   .folder-actions-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    width: 100%;
   }
   .folder-action-btn {
-    height: 38px;
-    padding: 0 14px;
+    height: 42px;
+    width: 100%;
+    padding: 0 10px;
     border-radius: 8px;
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 600;
     font-family: 'DM Sans', sans-serif;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 7px;
     white-space: nowrap;
-    transition: all 0.2s;
+    transition: all 0.15s ease;
     border: none;
     text-decoration: none;
     user-select: none;
+    box-sizing: border-box;
   }
-  .folder-action-btn:hover {
+  .folder-action-btn.primary {
+    background: #0284c7;
+    color: #ffffff;
+    border: 1px solid #0284c7;
+    box-shadow: 0 2px 5px rgba(2, 132, 199, 0.25);
+  }
+  .folder-action-btn.primary:hover {
+    background: #0369a1;
+    border-color: #0369a1;
     transform: translateY(-1px);
-    opacity: 0.92;
+    box-shadow: 0 4px 10px rgba(2, 132, 199, 0.35);
+  }
+  .folder-action-btn.secondary {
+    background: ${G.card};
+    color: ${G.text};
+    border: 1px solid ${G.border};
+  }
+  .folder-action-btn.secondary:hover {
+    background: ${G.surface};
+    border-color: ${G.accent};
+    color: ${G.accent};
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
   }
   .folder-action-btn:active {
     transform: translateY(0);
   }
 
-  @media (max-width: 640px) {
+  @media (max-width: 900px) {
     .folder-actions-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, 1fr);
       gap: 8px;
     }
     .folder-action-btn {
-      width: 100%;
+      height: 42px;
+      font-size: 12px;
       padding: 0 8px;
-      font-size: 11.5px;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .folder-actions-grid {
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+    }
+    .folder-action-btn {
       height: 40px;
+      font-size: 11px;
+      padding: 0 4px;
+      gap: 4px;
+    }
+  }
+
+  @media (max-width: 340px) {
+    .folder-actions-grid {
+      grid-template-columns: 1fr;
     }
   }
 `;
@@ -5267,7 +5306,7 @@ export default function ScannerJuridico() {
     }
 
     const folderName = viewingClient === 'unassigned' ? 'Geral' : clients.find(c => c.id === viewingClient)?.name || 'Pasta';
-    showToast(isLite ? "Preparando ZIP Lite otimizado para INSS/e-Proc..." : "Preparando download dos arquivos originais...");
+    showToast(isLite ? "Preparando download Lite otimizado para INSS/e-Proc..." : "Preparando download dos arquivos originais...");
     
     setTab("scanner");
     setProcessing(true);
@@ -5308,7 +5347,7 @@ export default function ScannerJuridico() {
                 fileToAdd = await compressImage(blob, 'lite');
               }
             } catch (cErr) {
-              console.warn(`[ZIP Lite] Falha ao comprimir ${entryName}, utilizando original:`, cErr);
+              console.warn(`[Download Lite] Falha ao comprimir ${entryName}, utilizando original:`, cErr);
               fileToAdd = blob;
             }
           }
@@ -5338,7 +5377,7 @@ export default function ScannerJuridico() {
             entryName += ".pdf";
           }
           
-          // Prevenção de duplicatas no ZIP (Collision detection)
+          // Prevenção de duplicatas no arquivo compactado
           let finalEntryName = entryName;
           let counter = 1;
           while (zip.file(finalEntryName)) {
@@ -5353,12 +5392,12 @@ export default function ScannerJuridico() {
 
           zip.file(finalEntryName, fileToAdd);
         } catch (err) {
-          console.error("Erro no ZIP item:", doc.name, err);
+          console.error("Erro no item:", doc.name, err);
         }
       }
 
       setProgress(95);
-      setProgressMsg("Gerando arquivo ZIP final...");
+      setProgressMsg("Finalizando e iniciando download...");
       const content = await zip.generateAsync({ type: "blob" });
       
       const link = document.createElement("a");
@@ -5374,9 +5413,9 @@ export default function ScannerJuridico() {
         const origMb = (totalOriginalSize / (1024 * 1024)).toFixed(1);
         const liteMb = (totalLiteSize / (1024 * 1024)).toFixed(1);
         const redPerc = Math.max(0, Math.round(((totalOriginalSize - totalLiteSize) / totalOriginalSize) * 100));
-        showToast(`✓ ZIP Lite baixado! De ${origMb}MB para ${liteMb}MB (-${redPerc}%) - Apto para INSS e e-Proc`, "success");
+        showToast(`✓ Download Lite concluído! De ${origMb}MB para ${liteMb}MB (-${redPerc}%) - Apto para INSS e e-Proc`, "success");
       } else {
-        showToast("Download ZIP concluído!", "success");
+        showToast("✓ Download concluído com sucesso!", "success");
       }
     } catch (err) {
       console.error(err);
@@ -6930,7 +6969,7 @@ export default function ScannerJuridico() {
                       </div>
                     </div>
 
-                    {/* Barra de Ações em Lote da Pasta (Clean & Totalmente Responsiva) */}
+                    {/* Barra de Ações em Lote da Pasta (Clean, Simétrica & Responsiva) */}
                     {(() => {
                       const folderTotalDocs = history.filter(h => (viewingClient === 'unassigned' ? (!h.clientId || h.clientId === 'unassigned') : h.clientId === viewingClient)).length;
                       if (folderTotalDocs === 0) return null;
@@ -6938,44 +6977,44 @@ export default function ScannerJuridico() {
                         <div className="folder-actions-card">
                           <div className="folder-actions-header">
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <span style={{ fontSize: '11px', fontWeight: 700, color: G.text, letterSpacing: '0.04em' }}>⚡ AÇÕES EM LOTE</span>
-                              <span style={{ fontSize: '11px', color: G.muted }}>({folderTotalDocs} {folderTotalDocs === 1 ? 'arquivo' : 'arquivos'})</span>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: G.text, letterSpacing: '0.04em' }}>⚡ AÇÕES DA PASTA</span>
+                              <span style={{ fontSize: '11px', color: G.muted }}>({folderTotalDocs} {folderTotalDocs === 1 ? 'documento' : 'documentos'})</span>
                             </div>
-                            <span style={{ fontSize: '10px', color: '#0284c7', fontWeight: 600 }}>Padrão INSS &lt; 5MB • e-Proc &lt; 12MB</span>
+                            <span style={{ fontSize: '10px', color: '#0284c7', fontWeight: 600 }}>Otimizado para INSS &lt; 5MB • e-Proc &lt; 12MB</span>
                           </div>
 
                           <div className="folder-actions-grid">
                             <button 
                               onClick={() => downloadFolderPDFsZip('lite')}
-                              className="folder-action-btn"
-                              style={{ background: '#0284c7', color: '#fff', boxShadow: '0 2px 5px rgba(2, 132, 199, 0.3)' }}
+                              className="folder-action-btn primary"
                               title="Baixar todos os documentos em versão Lite de alta qualidade (Arquivos <5MB para INSS e <12MB para e-Proc)"
                             >
-                              <span>🪶</span> ZIP Lite (INSS/e-Proc)
+                              <span>🪶</span>
+                              <span>Baixar Todos (Lite)</span>
                             </button>
                             <button 
                               onClick={() => downloadFolderPDFsZip('original')}
-                              className="folder-action-btn"
-                              style={{ background: G.card, color: G.text, border: `1px solid ${G.border}` }}
-                              title="Baixar todos os arquivos originais sem compressão em um arquivo ZIP"
+                              className="folder-action-btn secondary"
+                              title="Baixar todos os arquivos originais sem compressão"
                             >
-                              <span>📦</span> ZIP Original
+                              <span>📦</span>
+                              <span>Baixar Originais</span>
                             </button>
                             <button 
                               onClick={processFolderOCR}
-                              className="folder-action-btn"
-                              style={{ background: G.accent, color: '#000' }}
-                              title="Gerar OCR para documentos sem texto ou falhos na pasta"
+                              className="folder-action-btn secondary"
+                              title="Executar reconhecimento de texto (OCR) nos documentos da pasta"
                             >
-                              <span>🧠</span> OCR em Lote
+                              <span>🧠</span>
+                              <span>Processar OCR</span>
                             </button>
                             <button 
                               onClick={compileFolderTXT}
-                              className="folder-action-btn"
-                              style={{ background: G.card, color: G.text, border: `1px solid ${G.border}` }}
-                              title="Baixar Texto Compilado de toda a pasta em um arquivo TXT"
+                              className="folder-action-btn secondary"
+                              title="Compilar e baixar todo o texto extraído da pasta em arquivo TXT"
                             >
-                              <span>📑</span> Compilar TXT
+                              <span>📑</span>
+                              <span>Baixar Textos (TXT)</span>
                             </button>
                           </div>
                         </div>
