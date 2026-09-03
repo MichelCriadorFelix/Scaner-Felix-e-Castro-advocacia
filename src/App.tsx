@@ -2123,7 +2123,11 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
     });
   }
 
-  // Montagem do Relatório Formatado Curado e Saneado
+function buildAuditFormattedReport(
+  curationRules: CurationRule[],
+  substantiveAlertsToInclude: string[],
+  degradedOcrDocs: string[]
+): string {
   let formattedReport = `══════════════════════════════════════════════════════════════════════════════\n`;
   formattedReport += `📋 RELATÓRIO DE AUDITORIA & CURADORIA PRÉ-PETIÇÃO (FÉLIX & CASTRO)\n`;
   formattedReport += `   Status: ✅ COMPILADO 100% SANEADO E CURADO PARA PETICIONAMENTO\n`;
@@ -2139,9 +2143,9 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
     formattedReport += `✅ SANEAMENTO PREVENTIVO: Documentos em conformidade cadastral unificada.\n\n`;
   }
 
-  if (substantiveAlerts.length > 0) {
+  if (substantiveAlertsToInclude.length > 0) {
     formattedReport += `🟠 ALERTAS ESTRATÉGICOS DE MÉRITO (PARA AVALIAÇÃO DA EQUIPE JURÍDICA):\n`;
-    substantiveAlerts.forEach(a => {
+    substantiveAlertsToInclude.forEach(a => {
       formattedReport += `${a}\n\n`;
     });
   }
@@ -2157,6 +2161,12 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   formattedReport += `══════════════════════════════════════════════════════════════════════════════\n`;
   formattedReport += `TEXTO INTEGRAL DOS DOCUMENTOS CURADOS E SANEADOS:\n`;
   formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
+
+  return formattedReport;
+}
+
+  // Montagem do Relatório Formatado Curado e Saneado
+  const formattedReport = buildAuditFormattedReport(curationRules, substantiveAlerts, degradedOcrDocs);
 
   return {
     criticalDiscrepancies,
@@ -3280,6 +3290,11 @@ export default function ScannerJuridico() {
   const [compilationCurrentIndex, setCompilationCurrentIndex] = useState(0);
   const [compilationStatusText, setCompilationStatusText] = useState("");
   const [compilationLogs, setCompilationLogs] = useState<string[]>([]);
+  const [pendingStrategicReview, setPendingStrategicReview] = useState<{
+    alerts: string[];
+    resolve: (selectedAlerts: string[]) => void;
+  } | null>(null);
+  const [selectedStrategicAlerts, setSelectedStrategicAlerts] = useState<number[]>([]);
 
   useEffect(() => {
     if (!movingItem) {
@@ -5831,20 +5846,57 @@ export default function ScannerJuridico() {
       await new Promise(r => setTimeout(r, 300));
     }
 
+    let activeSubstantiveAlerts = auditResult.substantiveAlerts;
+
     if (auditResult.substantiveAlerts.length > 0) {
+      setCompilationProgress(50);
+      setCompilationStatusText("Aguardando decisão estratégica do advogado (Mérito / CNIS)...");
       setCompilationLogs(prev => [
         ...prev,
-        `[${new Date().toLocaleTimeString()}] 🟠 ALERTAS DE MÉRITO: ${auditResult.substantiveAlerts.length} orientações estratégicas incluídas no cabeçalho do compilado para a petição inicial.`
+        `[${new Date().toLocaleTimeString()}] ⚠️ DECISÃO ESTRATÉGICA DO ADVOGADO NECESSÁRIA:`,
+        `[${new Date().toLocaleTimeString()}] ↳ A IA detectou ${auditResult.substantiveAlerts.length} apontamento(s) de mérito (requerimentos posteriores no CNIS / DERs).`,
+        `[${new Date().toLocaleTimeString()}] ❓ Selecione no painel acima se deseja OMITIR (compilado 100% limpo para petição da DER mais vantajosa) ou MANTER no cabeçalho.`
       ]);
+
+      setSelectedStrategicAlerts(auditResult.substantiveAlerts.map((_, i) => i));
+
+      const chosenAlerts = await new Promise<string[]>((resolve) => {
+        setPendingStrategicReview({
+          alerts: auditResult.substantiveAlerts,
+          resolve
+        });
+      });
+
+      setPendingStrategicReview(null);
+      activeSubstantiveAlerts = chosenAlerts;
+
+      if (activeSubstantiveAlerts.length === 0) {
+        setCompilationLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] 🎯 Decisão do Advogado: Alertas de mérito OMITIDOS! Compilado será entregue 100% limpo e focado na DER selecionada pelo patrono.`
+        ]);
+      } else {
+        setCompilationLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] 📋 Decisão do Advogado: ${activeSubstantiveAlerts.length} alerta(s) de mérito MANTIDO(S) no cabeçalho do relatório.`
+        ]);
+      }
+      await new Promise(r => setTimeout(r, 350));
     }
 
     // Monta o texto consolidado com o relatório de auditoria e o corpo já curado
+    const finalHeaderReport = buildAuditFormattedReport(
+      auditResult.curationRules,
+      activeSubstantiveAlerts,
+      auditResult.degradedOcrDocs
+    );
+
     let rawCompiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
     rawCompiledText += `Pasta: ${folderName}\n`;
     rawCompiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
     rawCompiledText += `Quantidade de Documentos: ${sortedDocs.length}\n`;
     rawCompiledText += `======================================================\n\n`;
-    rawCompiledText += auditResult.formattedReport;
+    rawCompiledText += finalHeaderReport;
     rawCompiledText += docsBodyText;
 
     // Etapa 3: Harmonização Global com IA (Gemini 3.5 Flash)
@@ -7946,6 +7998,136 @@ export default function ScannerJuridico() {
                   }} />
                 </div>
               </div>
+
+              {/* Painel Interativo de Decisão Estratégica do Advogado */}
+              {pendingStrategicReview && (
+                <div style={{
+                  background: 'linear-gradient(180deg, rgba(201, 168, 76, 0.09) 0%, rgba(201, 168, 76, 0.02) 100%)',
+                  border: `1.5px solid ${G.accent}`,
+                  borderRadius: '12px',
+                  padding: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                    <span style={{ fontSize: '22px', lineHeight: 1 }}>⚖️</span>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: G.accent }}>
+                          Decisão Estratégica do Advogado (Mérito & CNIS)
+                        </h4>
+                        <span style={{
+                          fontSize: '10px',
+                          background: 'rgba(238, 212, 159, 0.15)',
+                          color: '#eed49f',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          fontWeight: 600,
+                          border: '1px solid rgba(238, 212, 159, 0.3)'
+                        }}>
+                          Ação Necessária
+                        </span>
+                      </div>
+                      <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: G.text, lineHeight: '1.45' }}>
+                        A IA identificou novos NBs/requerimentos no CNIS posteriores à DER pretendida. Como você pode optar pela <strong>DER mais vantajosa (ex: DER 2025 para maximizar atrasados)</strong>, defina se deseja exibir esses alertas no cabeçalho ou suprimi-los para entregar o compilado limpo para a petição:
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Lista de Alertas Detectados */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+                    {pendingStrategicReview.alerts.map((al, idx) => {
+                      const isChecked = selectedStrategicAlerts.includes(idx);
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => {
+                            setSelectedStrategicAlerts(prev =>
+                              prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]
+                            );
+                          }}
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: '8px',
+                            background: isChecked ? 'rgba(201, 168, 76, 0.12)' : 'rgba(0,0,0,0.3)',
+                            border: `1px solid ${isChecked ? G.accent : G.border}`,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '10px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {}}
+                            style={{ marginTop: '2px', accentColor: G.accent, cursor: 'pointer' }}
+                          />
+                          <div style={{ fontSize: '11px', color: '#e2e8f0', whiteSpace: 'pre-line', lineHeight: '1.4' }}>
+                            {al}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Botões de Ação */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', paddingTop: '4px' }}>
+                    <button
+                      onClick={() => {
+                        pendingStrategicReview.resolve([]);
+                      }}
+                      style={{
+                        flex: '1 1 240px',
+                        background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '8px',
+                        padding: '10px 16px',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)',
+                        transition: 'transform 0.1s ease'
+                      }}
+                    >
+                      <span>🎯 Omitir Alertas (Compilado 100% Limpo para Petição)</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const chosen = pendingStrategicReview.alerts.filter((_, i) => selectedStrategicAlerts.includes(i));
+                        pendingStrategicReview.resolve(chosen);
+                      }}
+                      style={{
+                        flex: '1 1 180px',
+                        background: 'rgba(255,255,255,0.06)',
+                        border: `1px solid ${G.border}`,
+                        color: G.text,
+                        borderRadius: '8px',
+                        padding: '10px 16px',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <span>📋 Manter Alertas Selecionados</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Real-time terminal logs */}
               <div>
