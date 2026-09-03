@@ -1154,65 +1154,57 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       console.log(`[Gemini 3.5 Flash] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando requisição...`);
       const ai = new GoogleGenAI({ apiKey });
       
-      // Timeout ultra-rápido: se a chave não começar a responder em 8s, pula imediatamente para a próxima
-      const fetchPromise = (async () => {
-        let timer: any = null;
-        let rejectPromise: ((reason?: any) => void) | null = null;
-        
-        const timeoutPromise = new Promise((_, reject) => {
-          rejectPromise = reject;
-          timer = setTimeout(() => {
-            reject(new Error("Timeout: Gemini não iniciou em 8s (chave lenta/ocupada)."));
-          }, 8000);
-        });
+      let initialTimeoutTimer: any = null;
+      let isStreamingStarted = false;
 
-        const resetInactivityTimer = () => {
-          if (timer) clearTimeout(timer);
-          timer = setTimeout(() => {
-            if (rejectPromise) {
-              rejectPromise(new Error("Timeout de inatividade: IA parou de transmitir por mais de 10s."));
-            }
-          }, 10000);
-        };
-
-        const streamPromise = (async () => {
-          try {
-            const responseStream = await ai.models.generateContentStream({
-              model: modelName,
-              contents: {
-                parts: [
-                  { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                  { inlineData: { data: base64, mimeType: blob.type } }
-                ]
-              },
-              config: {
-                systemInstruction: prompt,
-                temperature: 0.1,
-                maxOutputTokens: 16383,
-              }
-            });
-
-            let fullText = "";
-            let chunksReceived = 0;
-            
-            for await (const chunk of responseStream) {
-              if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-              resetInactivityTimer();
-              fullText += chunk.text;
-              chunksReceived++;
-              if (onProgress) {
-                const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
-                onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
-              }
-            }
-            return { text: fullText.trim(), usedKey: apiKey };
-          } finally {
-            if (timer) clearTimeout(timer);
+      const fetchPromise = new Promise<any>(async (resolve, reject) => {
+        initialTimeoutTimer = setTimeout(() => {
+          if (!isStreamingStarted) {
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 8s (chave ocupada/lenta)."));
           }
-        })();
+        }, 8000);
 
-        return await Promise.race([streamPromise, timeoutPromise]);
-      })();
+        try {
+          const responseStream = await ai.models.generateContentStream({
+            model: modelName,
+            contents: {
+              parts: [
+                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { inlineData: { data: base64, mimeType: blob.type } }
+              ]
+            },
+            config: {
+              systemInstruction: prompt,
+              temperature: 0.1,
+              maxOutputTokens: 16383,
+            }
+          });
+
+          let fullText = "";
+          let chunksReceived = 0;
+          
+          for await (const chunk of responseStream) {
+            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+            if (!isStreamingStarted) {
+              isStreamingStarted = true;
+              if (initialTimeoutTimer) {
+                clearTimeout(initialTimeoutTimer);
+                initialTimeoutTimer = null;
+              }
+            }
+            fullText += chunk.text;
+            chunksReceived++;
+            if (onProgress) {
+              const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+              onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
+            }
+          }
+          resolve({ text: fullText.trim(), usedKey: apiKey });
+        } catch (streamErr: any) {
+          if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
+          reject(streamErr);
+        }
+      });
 
       let resultData: any = await fetchPromise;
 
@@ -1325,25 +1317,17 @@ SUA MISSÃO:
 
       const ai = new GoogleGenAI({ apiKey });
 
-      let timer: any = null;
-      let rejectPromise: ((reason?: any) => void) | null = null;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        rejectPromise = reject;
-        timer = setTimeout(() => {
-          reject(new Error("Timeout: Gemini não iniciou em 12s (alternando chave)."));
-        }, 12000);
-      });
+      let initialTimeoutTimer: any = null;
+      let isStreamingStarted = false;
 
-      const resetInactivityTimer = () => {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          if (rejectPromise) {
-            rejectPromise(new Error("Timeout: Gemini pausou a transmissão por mais de 12s."));
+      const fetchPromise = new Promise<string>(async (resolve, reject) => {
+        // Se a chave não responder o primeiro byte em 10 segundos, cancela e pula para a próxima chave
+        initialTimeoutTimer = setTimeout(() => {
+          if (!isStreamingStarted) {
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 10s (chave ocupada/lenta)."));
           }
-        }, 12000);
-      };
+        }, 10000);
 
-      const streamPromise = (async () => {
         try {
           const responseStream = await ai.models.generateContentStream({
             model: modelName,
@@ -1364,7 +1348,17 @@ SUA MISSÃO:
 
           for await (const chunk of responseStream) {
             if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-            resetInactivityTimer();
+            
+            // Assim que o primeiro fragmento chega, cancela o timeout inicial!
+            // A chave está transmitindo ativamente e NÃO PODE ser interrompida por timer fixo.
+            if (!isStreamingStarted) {
+              isStreamingStarted = true;
+              if (initialTimeoutTimer) {
+                clearTimeout(initialTimeoutTimer);
+                initialTimeoutTimer = null;
+              }
+            }
+
             fullText += chunk.text;
             chunksReceived++;
             if (onProgress) {
@@ -1372,13 +1366,15 @@ SUA MISSÃO:
               onProgress(fakePercent, `Gemini 3.5 Flash: Transcrevendo documento nativo (${chunksReceived} fragmentos)...`);
             }
           }
-          return fullText.trim();
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      })();
 
-      const resultText = await Promise.race([streamPromise, timeoutPromise]);
+          resolve(fullText.trim());
+        } catch (streamErr: any) {
+          if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
+          reject(streamErr);
+        }
+      });
+
+      const resultText = await fetchPromise;
       if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
       return resultText;
 
