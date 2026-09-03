@@ -1107,10 +1107,9 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Prioridade absoluta: Gemini 3.5 Flash (Padrão GOD de alta fidelidade sem versões lite)
+  // Modelo oficial exclusivo: Gemini 3.5 Flash (Padrão de alta fidelidade e estabilidade)
   const modelsToTry = [
-    "gemini-3.5-flash",
-    "gemini-3.7-flash"
+    "gemini-3.5-flash"
   ];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
@@ -1587,10 +1586,9 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  // Prioridade absoluta: Gemini 3.5 Flash (Padrão GOD)
+  // Modelo oficial exclusivo: Gemini 3.5 Flash
   const modelsToTry = [
-    "gemini-3.5-flash",
-    "gemini-3.7-flash"
+    "gemini-3.5-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -1756,8 +1754,7 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-3.5-flash",
-    "gemini-3.7-flash"
+    "gemini-3.5-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -1883,8 +1880,7 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-3.5-flash",
-      "gemini-3.7-flash"
+      "gemini-3.5-flash"
     ];
     let success = false;
 
