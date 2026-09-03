@@ -8143,7 +8143,7 @@ export default function ScannerJuridico() {
                                 {(item.fileUrl || item.localBlobUrl) && (
                                    <button onClick={(e) => { e.stopPropagation(); forceDownload(item.fileUrl || item.localBlobUrl, item.name, supabase); }} className="icon-btn" title="Baixar Original" style={{border: 'none', background: 'transparent', cursor: 'pointer', padding: 0}}>⬇️</button>
                                 )}
-                                {/* Botão de Refazer OCR (Sempre disponível para correção manual) */}
+                                {/* Botão de Refazer OCR (Sempre força releitura direta via IA Jurídica ignorando cache) */}
                                 <button 
                                   className="icon-btn" 
                                   style={{
@@ -8152,8 +8152,8 @@ export default function ScannerJuridico() {
                                     border: !hasOcr ? 'none' : `1px solid ${G.border}`,
                                     fontWeight: 'bold'
                                   }} 
-                                  title="Refazer OCR via IA Jurídica (Correção)" 
-                                  onClick={(e) => { e.stopPropagation(); processHistoryItem(item); }}
+                                  title="Refazer OCR via IA Jurídica (Forçar Releitura sem Cache)" 
+                                  onClick={(e) => { e.stopPropagation(); processHistoryItem(item, true); }}
                                 >
                                   {!hasOcr ? '🔍 OCR' : '🔄'}
                                 </button>
