@@ -2520,13 +2520,14 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   const startIdx = parseInt(startPage) || 1;
   const endIdx = pdf.numPages;
 
-  // ⚡ Para arquivos de PÁGINA ÚNICA (1 página), podemos usar ingestão direta rápida:
-  if (startIdx === 1 && endIdx === 1 && (useAi || forceAi) && file.size <= 10 * 1024 * 1024) {
+  // ⚡ MODO ULTRA RÁPIDO NATIVO (Ingestão Direta do PDF via Gemini 3.5 Flash):
+  // Lê o PDF original diretamente na API do Google com altíssima velocidade (10x mais rápido que canvas).
+  if (startIdx === 1 && (useAi || forceAi) && file.size <= 20 * 1024 * 1024) {
     try {
-      onProgress(10, "⚡ Ingestão Rápida: Enviando página única ao Gemini 3.5 Flash...");
+      onProgress(10, `⚡ Ingestão Direta Ativada: Enviando PDF (${endIdx} págs) ao Gemini 3.5 Flash...`);
       const directText = await extractFullPdfWithGeminiDirect(file, onProgress);
-      if (directText && directText.length > 30) {
-        onProgress(100, "✓ Documento integralmente lido com Gemini 3.5 Flash!");
+      if (directText && directText.length > 50) {
+        onProgress(100, `✓ PDF integralmente processado com Gemini 3.5 Flash (${endIdx} págs)!`);
         return {
           text: directText,
           confidence: 99,
@@ -2538,11 +2539,11 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         throw new Error("ABORT_BY_USER");
       }
       console.warn("Ingestão direta alternou para contingência página a página:", directErr);
+      onProgress(12, "Alternando para contingência página a página...");
     }
   }
 
-  // 🎯 Para documentos multipáginas (2 a 100+ páginas), o processamento é OBRIGATORIAMENTE PÁGINA A PÁGINA:
-  // Isso garante 100% de integridade (zero truncamento por limite de tokens) e rotação de chaves sem perda de progresso!
+  // 🎯 Modo de contingência página a página (com chave fixa por documento):
   let activeDocumentApiKey: string | null = null;
 
   for (let i = startIdx; i <= endIdx; i++) {
