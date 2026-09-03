@@ -1915,6 +1915,48 @@ interface PrePetitionAuditResult {
   formattedReport: string;
 }
 
+function buildAuditFormattedReport(
+  curationRules: CurationRule[],
+  substantiveAlertsToInclude: string[],
+  degradedOcrDocs: string[]
+): string {
+  let formattedReport = `══════════════════════════════════════════════════════════════════════════════\n`;
+  formattedReport += `📋 RELATÓRIO DE AUDITORIA & CURADORIA PRÉ-PETIÇÃO (FÉLIX & CASTRO)\n`;
+  formattedReport += `   Status: ✅ COMPILADO 100% SANEADO E CURADO PARA PETICIONAMENTO\n`;
+  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
+
+  if (curationRules.length > 0) {
+    formattedReport += `✅ CORREÇÕES & SANEAMENTOS APLICADOS AUTOMATICAMENTE NO COMPILADO:\n`;
+    curationRules.forEach(cr => {
+      formattedReport += `${cr.summaryReport}\n`;
+    });
+    formattedReport += `\n`;
+  } else {
+    formattedReport += `✅ SANEAMENTO PREVENTIVO: Documentos em conformidade cadastral unificada.\n\n`;
+  }
+
+  if (substantiveAlertsToInclude.length > 0) {
+    formattedReport += `🟠 ALERTAS ESTRATÉGICOS DE MÉRITO (PARA AVALIAÇÃO DA EQUIPE JURÍDICA):\n`;
+    substantiveAlertsToInclude.forEach(a => {
+      formattedReport += `${a}\n\n`;
+    });
+  }
+
+  if (degradedOcrDocs.length > 0) {
+    formattedReport += `🟡 DOCUMENTOS COM LEITURA DEGRADADA (RECOMENDA-SE CONFERÊNCIA FÍSICA):\n`;
+    degradedOcrDocs.forEach(d => {
+      formattedReport += `${d}\n`;
+    });
+    formattedReport += `\n`;
+  }
+
+  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n`;
+  formattedReport += `TEXTO INTEGRAL DOS DOCUMENTOS CURADOS E SANEADOS:\n`;
+  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
+
+  return formattedReport;
+}
+
 function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): PrePetitionAuditResult {
   const criticalDiscrepancies: string[] = [];
   const substantiveAlerts: string[] = [];
@@ -2123,48 +2165,6 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
       run: (t: string) => t.replace(/(?:Cart[óo]rio|Registro|Of[íi]cio\s+de)?\s*Buarque de Hollanda[^\n]*?(?:\r?\n|$)/gi, "\n")
     });
   }
-
-function buildAuditFormattedReport(
-  curationRules: CurationRule[],
-  substantiveAlertsToInclude: string[],
-  degradedOcrDocs: string[]
-): string {
-  let formattedReport = `══════════════════════════════════════════════════════════════════════════════\n`;
-  formattedReport += `📋 RELATÓRIO DE AUDITORIA & CURADORIA PRÉ-PETIÇÃO (FÉLIX & CASTRO)\n`;
-  formattedReport += `   Status: ✅ COMPILADO 100% SANEADO E CURADO PARA PETICIONAMENTO\n`;
-  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
-
-  if (curationRules.length > 0) {
-    formattedReport += `✅ CORREÇÕES & SANEAMENTOS APLICADOS AUTOMATICAMENTE NO COMPILADO:\n`;
-    curationRules.forEach(cr => {
-      formattedReport += `${cr.summaryReport}\n`;
-    });
-    formattedReport += `\n`;
-  } else {
-    formattedReport += `✅ SANEAMENTO PREVENTIVO: Documentos em conformidade cadastral unificada.\n\n`;
-  }
-
-  if (substantiveAlertsToInclude.length > 0) {
-    formattedReport += `🟠 ALERTAS ESTRATÉGICOS DE MÉRITO (PARA AVALIAÇÃO DA EQUIPE JURÍDICA):\n`;
-    substantiveAlertsToInclude.forEach(a => {
-      formattedReport += `${a}\n\n`;
-    });
-  }
-
-  if (degradedOcrDocs.length > 0) {
-    formattedReport += `🟡 DOCUMENTOS COM LEITURA DEGRADADA (RECOMENDA-SE CONFERÊNCIA FÍSICA):\n`;
-    degradedOcrDocs.forEach(d => {
-      formattedReport += `${d}\n`;
-    });
-    formattedReport += `\n`;
-  }
-
-  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n`;
-  formattedReport += `TEXTO INTEGRAL DOS DOCUMENTOS CURADOS E SANEADOS:\n`;
-  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
-
-  return formattedReport;
-}
 
   // Montagem do Relatório Formatado Curado e Saneado
   const formattedReport = buildAuditFormattedReport(curationRules, substantiveAlerts, degradedOcrDocs);
