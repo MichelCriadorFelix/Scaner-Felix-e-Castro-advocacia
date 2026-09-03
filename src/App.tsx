@@ -2497,8 +2497,26 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   const endIdx = pdf.numPages;
 
   let activeDocumentApiKey = null;
-  const BATCH_SIZE = 15;
+  const BATCH_SIZE = 5; // Limite baixo para não engasgar a API e tomar 503
   let currentBatch = [];
+
+  const processOCRFallback = async (batchItem) => {
+    onProgress(
+      Math.round(((batchItem.pageNum - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+      `Pág ${batchItem.pageNum}: Falha geral na IA. Acionando OCR Local...`
+    );
+    if (!tesseractWorker) {
+      tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
+    }
+    try {
+      const res = await withTimeout(tesseractWorker.recognize(batchItem.blob), 60000, `OCR timeout ${batchItem.pageNum}`);
+      fullText += `[PÁGINA ${batchItem.pageNum} - OCR LOCAL (Contingência)]\n` + res.data.text.trim() + "\n\n══════════════════════════════════════════════════\n\n";
+      confidenceTotal += Math.round(res.data.confidence);
+      pagesEvaluated++;
+    } catch (e) {
+      fullText += `[PÁGINA ${batchItem.pageNum} - FALHA NA EXTRAÇÃO (Incrível)]\n\n`;
+    }
+  };
 
   const flushBatch = async () => {
     if (currentBatch.length === 0) return;
@@ -2507,7 +2525,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       const endP = currentBatch[currentBatch.length - 1].pageNum;
       onProgress(
         Math.round(((startP - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-        `Enviando Lote ${startP}-${endP} (${currentBatch.length} págs) para Gemini 3.5 Flash...`
+        `Enviando Lote ${startP}-${endP} (${currentBatch.length} págs) para IA Jurídica...`
       );
       
       const batchResult = await extractBatchOfImagesWithGemini(currentBatch, onProgress, goldStandard, activeDocumentApiKey);
@@ -2520,9 +2538,24 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       confidenceTotal += 99 * currentBatch.length;
       pagesEvaluated += currentBatch.length;
     } catch (batchErr) {
-      console.error(`Erro no lote`, batchErr);
+      console.warn(`Erro crítico no lote. Ativando failover para página por página...`, batchErr);
       if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-      fullText += `\n\n[ERRO AO PROCESSAR LOTE VIA GEMINI]\n\n`;
+      
+      for (const item of currentBatch) {
+         if (window.lexscan_abort) break;
+         try {
+           onProgress(
+              Math.round(((item.pageNum - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+              `Pág ${item.pageNum}: Retentativa Individual via IA...`
+           );
+           const singleResult = await extractPageWithGemini(item.blob, onProgress, goldStandard, activeDocumentApiKey);
+           fullText += `[PÁGINA ${item.pageNum} - RECUPERADO VIA GEMINI 3.5 FLASH]\n` + singleResult + "\n\n══════════════════════════════════════════════════\n\n";
+           confidenceTotal += 99;
+           pagesEvaluated++;
+         } catch (singleErr) {
+           await processOCRFallback(item);
+         }
+      }
     }
     currentBatch = [];
   };
@@ -2630,7 +2663,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             currentBatch.push({ pageNum: i, base64, blob: enhancedBlob });
             pageSuccess = true;
             
-            if (currentBatch.length >= BATCH_SIZE) {
+            if (currentBatch.length >= BATCH_SIZE || i === endIdx) {
                await flushBatch();
             }
             
@@ -2638,7 +2671,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             break;
           } else {
              await flushBatch();
-             // OCR Local... (simplificado, mas funcional)
+             
              tempCanvas = document.createElement("canvas");
              tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
              const tempCtx = tempCanvas.getContext("2d");
@@ -2648,18 +2681,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
              }
              const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
              
-             onProgress(
-              Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-              `Pág ${i}: Executando OCR Local...`
-             );
-             if (!tesseractWorker) {
-                tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
-             }
-             const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `OCR timeout ${i}`);
-             fullText += `[PÁGINA ${i} - OCR LOCAL]\n` + res.data.text.trim() + "\n\n══════════════════════════════════════════════════\n\n";
-             confidenceTotal += Math.round(res.data.confidence);
-             pagesEvaluated++;
+             await processOCRFallback({ pageNum: i, blob });
              pageSuccess = true;
+             
              if (page && page.cleanup) page.cleanup();
              break;
           }
@@ -2670,11 +2694,11 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
     }
     
     if (!pageSuccess) {
-      await flushBatch();
-      fullText += `[PÁGINA ${i} - FALHA NA EXTRAÇÃO]\n\n`;
+       fullText += `[PÁGINA ${i} - FALHA ESTRUTURAL AO LER PDF]\n\n`;
     }
   }
 
+  // Ensure any remaining batch is flushed
   await flushBatch();
 
   if (tesseractWorker) {
