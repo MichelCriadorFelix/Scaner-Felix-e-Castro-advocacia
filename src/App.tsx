@@ -5040,28 +5040,63 @@ export default function ScannerJuridico() {
     }
   };
 
-  const processFolderOCR = async () => {
-    const docs = history.filter(h => {
-       const isFolderItem = viewingClient === 'unassigned' 
-         ? (!h.clientId || h.clientId === 'unassigned') 
-         : h.clientId === viewingClient;
-       
+  const processFolderOCR = async (forceAll: boolean = false) => {
+    // 1. Garante que os textos dos documentos da pasta estão carregados do banco
+    const folderItems = history.filter(h => viewingClient === 'unassigned' 
+      ? (!h.clientId || h.clientId === 'unassigned') 
+      : h.clientId === viewingClient
+    );
+
+    if (folderItems.length === 0) {
+      showToast("Nenhum documento encontrado nesta pasta.", "info");
+      return;
+    }
+
+    const missingTexts = folderItems.filter(d => !d.text || d.text.trim() === "");
+    if (missingTexts.length > 0 && supabase) {
+      showToast("Carregando textos do banco de dados...", "info");
+      try {
+        const { data, error } = await supabase
+          .from('lexscan_documents')
+          .select('id, extracted_text')
+          .in('id', missingTexts.map(d => d.id));
+        
+        if (!error && data) {
+          const map: Record<string, string> = {};
+          data.forEach(r => { map[r.id] = r.extracted_text || ""; });
+          folderItems.forEach(item => {
+            if (map[item.id] !== undefined) item.text = map[item.id];
+          });
+          setHistory(prev => prev.map(h => map[h.id] !== undefined ? { ...h, text: map[h.id] } : h));
+        }
+      } catch (err) {
+        console.warn("Erro ao sincronizar textos para OCR em lote:", err);
+      }
+    }
+
+    // 2. Filtra os documentos que realmente precisam de processamento ou reparo
+    let docs = folderItems.filter(h => {
        const text = h.text || '';
        const hasCriticalError = /ERRO\s+CR[ÍI]TICO|P[ÁA]GINA\s+PULADA/i.test(text);
-       
-       // Detecta páginas incompletas que só têm carimbos de cabeçalho/rodapé do INSS sem corpo real de texto
        const hasIncompletePages = /\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]\s*(?:Autenticado por:[^\n]*\s*)*(?:Anexo ID:\s*\d+\s*)*(?:P[áa]gina\s+\d+\s+de\s+\d+\s*)*(?:Emitido em:[^\n]*\s*)*\s*(?=\[P[ÁA]GINA|\s*$)/i.test(text);
-
        const hasOcrBruto = /\[OCR BRUTO|\[P[ÁA]GINA\s+\d+\s+-\s+OCR BRUTO/i.test(text);
        const conf = getRealConfidence(text, h.confidence);
        const isComplete = !hasCriticalError && !hasIncompletePages && !hasOcrBruto && conf >= 85 && (h.words > 30 || h.chars > 150);
        
-       return isFolderItem && !isComplete;
+       return !isComplete;
     });
-    
+
     if (docs.length === 0) {
-       showToast("Todos os documentos já possuem OCR extraído com IA ou texto digital nativo.", "info");
-       return;
+      const confirmReExtract = window.confirm(
+        `Todos os ${folderItems.length} documentos da pasta já possuem textos extraídos no banco de dados.\n\n` +
+        `• Se você deseja apenas o arquivo final com o relatório de auditoria, clique em CANCELAR e use o botão 'Baixar Textos (TXT)'.\n\n` +
+        `• Deseja FORÇAR a re-extração completa de todos os ${folderItems.length} documentos via IA Jurídica (Gemini 3.5 Flash)?`
+      );
+      if (!confirmReExtract) {
+        showToast("Você já pode clicar em 'Baixar Textos (TXT)' para gerar o compilado auditado!", "success");
+        return;
+      }
+      docs = folderItems;
     }
 
     setTab("scanner");
