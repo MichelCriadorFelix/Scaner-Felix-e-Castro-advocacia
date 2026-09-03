@@ -1162,9 +1162,9 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         initialTimeoutTimer = setTimeout(() => {
           if (!isStreamingStarted) {
             isDead = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 20s (servidores ocupados)."));
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 12s (servidores ocupados)."));
           }
-        }, 20000);
+        }, 12000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
@@ -1318,9 +1318,9 @@ REGRAS:
         initialTimeoutTimer = setTimeout(() => {
           if (!isStreamingStarted) {
             isDead = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 60s."));
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 12s."));
           }
-        }, 60000);
+        }, 12000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
