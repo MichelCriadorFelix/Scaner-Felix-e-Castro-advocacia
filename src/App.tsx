@@ -2507,12 +2507,12 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             break;
           }
 
-          // Decide previamente se vai direto para a IA (como Padrão Ouro)
-          let shouldGoToAi = (useAi || forceAi) && (forceAi || goldStandard);
+          // Quando o modo de IA estiver ativo, vai 100% DIRETO para a IA Jurídica (Gemini) sem passar por Tesseract
+          let shouldGoToAi = Boolean(useAi || forceAi);
           let blob: Blob | null = null;
 
           if (!shouldGoToAi) {
-            // Só gera a imagem contrastada pesada (tempCanvas e blob PNG) se for rodar o OCR local
+            // Só gera a imagem contrastada pesada se o usuário desligou a IA manualmente (Modo Offline)
             tempCanvas = document.createElement("canvas");
             tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
             const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
@@ -2529,61 +2529,24 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           }
 
           if (useAi || forceAi) {
-            let ocrRes = { text: "", confidence: 0 };
+            // ── 100% VIA IA JURÍDICA (GEMINI 3.5 FLASH) ──────────────────────────────────
+            onProgress(
+              Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+              `Pág ${i}: Extraindo via IA Jurídica (Gemini 3.5 Flash - Tentativa ${attempt})...`
+            );
+            
+            const enhancedForAi = await enhanceImageForGemini(finalCanvasToUse);
+            // Destruímos finalCanvasToUse imediatamente para liberar a RAM antes da chamada à API
+            finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
 
-            // OCR local como teste prévio (apenas se não estiver forçando IA diretamente ou usando Padrão Ouro)
-            if (!shouldGoToAi && blob) {
-              onProgress(
-                Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-                `Pág ${i}: Rodando validação de OCR Local (Tentativa ${attempt})...`
-              );
-              try {
-                if (!tesseractWorker) {
-                   tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
-                }
-                const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `Timeout OCR local na página ${i}`);
-                ocrRes = { text: res.data.text.trim(), confidence: Math.round(res.data.confidence) };
-              } catch (err) {
-                console.warn(`[Pág ${i}] Erro no Tesseract local, relegando fluxo...`, err);
-                ocrRes = { text: "", confidence: 0 };
-                if (tesseractWorker) {
-                  await tesseractWorker.terminate().catch(()=>null);
-                  tesseractWorker = null;
-                }
-              }
-              if (ocrRes.confidence >= 99) {
-                fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + ocrRes.text + "\n\n";
-                confidenceTotal += 100;
-                pageSuccess = true;
-                
-                // Cleanup
-                finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
-                if (page && page.cleanup) page.cleanup();
-                break;
-              } else {
-                shouldGoToAi = true;
-              }
-            }
+            const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
+            fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
+            confidenceTotal += 99;
+            pageSuccess = true;
 
-            if (shouldGoToAi) {
-              onProgress(
-                Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-                `Pág ${i}: Extraindo via IA Jurídica (Tentativa ${attempt})...`
-              );
-              
-              const enhancedForAi = await enhanceImageForGemini(finalCanvasToUse);
-              // Destruímos finalCanvasToUse imediatamente para liberar a RAM antes da chamada à API
-              finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
-
-              const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
-              fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
-              confidenceTotal += 99;
-              pageSuccess = true;
-
-              // Cleanup
-              if (page && page.cleanup) page.cleanup();
-              break;
-            }
+            // Cleanup
+            if (page && page.cleanup) page.cleanup();
+            break;
           } else {
             // Apenas OCR local pura
             onProgress(
@@ -2909,34 +2872,20 @@ async function fetchItemBlob(item: any, supabaseContext: any = null): Promise<Bl
 }
 
 async function extractImageHybrid(file, onProgress, useAi, forceAi = false, goldStandard = true) {
-  if (forceAi || goldStandard) {
-      onProgress(20, "Forçando extração via IA Jurídica (Padrão Ouro)...");
+  if (useAi || forceAi) {
+      onProgress(20, "Extraindo via IA Jurídica (Gemini 3.5 Flash)...");
       try {
           const enhancedForAi = await enhanceImageForGemini(file);
           const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
-      } catch(e) {
-          let errMsg = e.message || "Erro desconhecido";
-          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n`, confidence: 0 };
+      } catch(e: any) {
+          let errMsg = e?.message || "Erro desconhecido";
+          return { text: `[ERRO CRÍTICO NA IMAGEM - FALHA IA: ${errMsg}]\n`, confidence: 0 };
       }
   }
 
-  onProgress(10, "Avaliando qualidade da imagem via OCR Local...");
+  onProgress(10, "Avaliando qualidade da imagem via OCR Local (Modo sem IA)...");
   const ocrRes = await runOCR(file, (p) => onProgress(10 + Math.round(p * 40), `Avaliando OCR: ${Math.round(p*100)}%`));
-  
-  if (useAi && ocrRes.confidence < 99) {
-      onProgress(70, `Qualidade insuficiente (${ocrRes.confidence}%). Acionando IA Jurídica...`);
-      try {
-          // Melhora o contraste de imagem nativa/foto antes de extrair com Gemini
-          const enhancedForAi = await enhanceImageForGemini(file);
-          const aiText = await extractPageWithGemini(enhancedForAi, onProgress);
-          return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
-      } catch(e) {
-          let errMsg = e.message || "Erro desconhecido";
-          // Se falhar a IA, marcamos como 0 para permitir lote posterior
-          return { text: `[OCR BRUTO (FALHA IA: ${errMsg})]\n` + ocrRes.text, confidence: 0 };
-      }
-  }
   
   if (ocrRes.confidence >= 99) {
       return { text: `[TEXTO DIGITAL NATIVO]\n` + ocrRes.text, confidence: 100 };
@@ -5103,14 +5052,15 @@ export default function ScannerJuridico() {
        // Detecta páginas incompletas que só têm carimbos de cabeçalho/rodapé do INSS sem corpo real de texto
        const hasIncompletePages = /\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]\s*(?:Autenticado por:[^\n]*\s*)*(?:Anexo ID:\s*\d+\s*)*(?:P[áa]gina\s+\d+\s+de\s+\d+\s*)*(?:Emitido em:[^\n]*\s*)*\s*(?=\[P[ÁA]GINA|\s*$)/i.test(text);
 
+       const hasOcrBruto = /\[OCR BRUTO|\[P[ÁA]GINA\s+\d+\s+-\s+OCR BRUTO/i.test(text);
        const conf = getRealConfidence(text, h.confidence);
-       const isComplete = !hasCriticalError && !hasIncompletePages && conf >= 85 && (h.words > 30 || h.chars > 150);
+       const isComplete = !hasCriticalError && !hasIncompletePages && !hasOcrBruto && conf >= 85 && (h.words > 30 || h.chars > 150);
        
        return isFolderItem && !isComplete;
     });
     
     if (docs.length === 0) {
-       showToast("Todos os documentos já possuem OCR extraído ou confiança satisfatória (>= 85%).", "info");
+       showToast("Todos os documentos já possuem OCR extraído com IA ou texto digital nativo.", "info");
        return;
     }
 
@@ -5152,10 +5102,11 @@ export default function ScannerJuridico() {
           const fileToProcess = new File([blob], item.name, { type: item.type });
           const fileHash = await calculateDocumentHash(fileToProcess);
           const cached = getCachedOCR(fileHash);
+          const cachedHasOcrBruto = cached && /\[OCR BRUTO|\[P[ÁA]GINA\s+\d+\s+-\s+OCR BRUTO/i.test(cached.text);
     
           let extracted;
 
-          if (cached) {
+          if (cached && !cachedHasOcrBruto) {
             setProgress(60);
             setProgressMsg(`[${i + 1}/${docs.length}] ⚡ Em cache! ${item.name}`);
             extracted = {
