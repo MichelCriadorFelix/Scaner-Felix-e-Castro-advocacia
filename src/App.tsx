@@ -1261,7 +1261,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 }
 
 // ── Ingestão Direta e Nativa de PDF via Gemini 3.5 Flash (Sistemática do AI Studio / Chat) ──────────
-async function extractFullPdfWithGeminiDirect(file: Blob, onProgress: (pct: number, msg: string) => void) {
+async function extractFullPdfWithGeminiDirect(file: Blob, numPages: number, onProgress: (pct: number, msg: string) => void) {
   const allKeys = getAvailableGeminiKeys();
   let lastError = null;
 
@@ -1292,127 +1292,149 @@ async function extractFullPdfWithGeminiDirect(file: Blob, onProgress: (pct: numb
     reader.readAsDataURL(file);
   });
 
-  const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
+  const modelName = "gemini-3.5-flash";
+  const BATCH_SIZE = 15;
+  let fullCompiledText = "";
+
+  for (let startPage = 1; startPage <= numPages; startPage += BATCH_SIZE) {
+    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+    
+    const endPage = Math.min(startPage + BATCH_SIZE - 1, numPages);
+    
+    const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
 Você recebeu o arquivo PDF original completo de uma peça processual ou documento jurídico oficial.
 
-SUA MISSÃO:
-1. Analise o documento em sua totalidade, página por página, na ordem exata (Página 1, Página 2, até a última página).
-2. Para CADA PÁGINA identificada no documento, inicie OBRIGATORIAMENTE com um marcador de cabeçalho padronizado:
+SUA MISSÃO PARA ESTA ETAPA (MUITO IMPORTANTE):
+TRANSCREVA APENAS AS PÁGINAS ${startPage} ATÉ A PÁGINA ${endPage} DESTE DOCUMENTO. 
+NÃO TRANSCREVA AS PÁGINAS ANTERIORES NEM AS POSTERIORES! FOQUE ESTRITAMENTE NESTE INTERVALO DE PÁGINAS.
+
+REGRAS GERAIS:
+1. Para CADA PÁGINA identificada no intervalo, inicie OBRIGATORIAMENTE com um marcador de cabeçalho padronizado:
    [PÁGINA X - RECUPERADO VIA GEMINI 3.5 FLASH]
-   (onde X é o número sequencial da página: 1, 2, 3, etc.)
-3. Transcreva todo o conteúdo literal de cada página:
+   (onde X é o número sequencial da página real do documento)
+2. Transcreva todo o conteúdo literal de cada página:
    - Nomes completos, CPFs, RGs, NBs (números de benefício), datas, carimbos, assinaturas, autenticações de protocolo e notas de rodapé.
    - Tabelas financeiras, vínculos do CNIS, cálculos ou laudos médicos devem ser transcritos integralmente em tabelas Markdown estruturadas completas.
    - Não resuma, não omita trechos e não use elipses "[...]".
-4. Ao final de cada página, insira a linha divisória:
+3. Ao final de cada página transcrita, insira a linha divisória:
    ══════════════════════════════════════════════════`;
 
-  const modelName = "gemini-3.5-flash";
+    let batchSuccess = false;
 
-  for (let i = 0; i < finalSortedKeys.length; i++) {
-    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-    const apiKey = finalSortedKeys[i];
-    const keyHash = apiKey.slice(-6);
+    for (let i = 0; i < finalSortedKeys.length; i++) {
+      if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+      const apiKey = finalSortedKeys[i];
+      const keyHash = apiKey.slice(-6);
 
-    try {
-      console.log(`[Gemini 3.5 Flash - Direct PDF] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Ingestão nativa iniciada...`);
-      if (onProgress) onProgress(20, `Gemini 3.5 Flash: Lendo PDF nativo sem canvas (Chave ..${keyHash})...`);
+      try {
+        console.log(`[Gemini 3.5 Flash - Direct PDF] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Ingestão lote ${startPage}-${endPage}...`);
+        
+        const basePercent = Math.round(((startPage - 1) / numPages) * 100);
+        if (onProgress) onProgress(basePercent + 5, `Lendo lote ${startPage}-${endPage} de ${numPages} (Chave ..${keyHash})...`);
 
-      const ai = new GoogleGenAI({ apiKey });
+        const ai = new GoogleGenAI({ apiKey });
 
-      let initialTimeoutTimer: any = null;
-      let isStreamingStarted = false;
-      let isDead = false;
+        let initialTimeoutTimer: any = null;
+        let isStreamingStarted = false;
+        let isDead = false;
 
-      const fetchPromise = new Promise<string>(async (resolve, reject) => {
-        initialTimeoutTimer = setTimeout(() => {
-          if (!isStreamingStarted) {
-            isDead = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 30s (servidores ocupados)."));
-          }
-        }, 30000);
-
-        try {
-          const responseStream = await ai.models.generateContentStream({
-            model: modelName,
-            contents: {
-              parts: [
-                { text: prompt },
-                { inlineData: { data: base64, mimeType: "application/pdf" } }
-              ]
-            },
-            config: {
-              temperature: 0.1,
-              maxOutputTokens: 32768,
-            }
-          });
-
-          let fullText = "";
-          let chunksReceived = 0;
-
-          for await (const chunk of responseStream) {
-            if (isDead) break;
-            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-            
+        const fetchPromise = new Promise<string>(async (resolve, reject) => {
+          initialTimeoutTimer = setTimeout(() => {
             if (!isStreamingStarted) {
-              isStreamingStarted = true;
-              if (initialTimeoutTimer) {
-                clearTimeout(initialTimeoutTimer);
-                initialTimeoutTimer = null;
+              isDead = true;
+              reject(new Error("Timeout: Gemini não conectou nos primeiros 30s (servidores ocupados)."));
+            }
+          }, 30000);
+
+          try {
+            const responseStream = await ai.models.generateContentStream({
+              model: modelName,
+              contents: {
+                parts: [
+                  { text: prompt },
+                  { inlineData: { data: base64, mimeType: "application/pdf" } }
+                ]
+              },
+              config: {
+                temperature: 0.1,
+                maxOutputTokens: 32768,
+              }
+            });
+
+            let fullText = "";
+            let chunksReceived = 0;
+
+            for await (const chunk of responseStream) {
+              if (isDead) break;
+              if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+              
+              if (!isStreamingStarted) {
+                isStreamingStarted = true;
+                if (initialTimeoutTimer) {
+                  clearTimeout(initialTimeoutTimer);
+                  initialTimeoutTimer = null;
+                }
+              }
+
+              fullText += chunk.text;
+              chunksReceived++;
+              if (onProgress) {
+                const chunkFake = Math.min(100, (basePercent + 10) + Math.floor(chunksReceived * 0.5));
+                onProgress(chunkFake, `Transcrevendo lote ${startPage}-${endPage}... (${chunksReceived} partes)`);
               }
             }
 
-            fullText += chunk.text;
-            chunksReceived++;
-            if (onProgress) {
-              const fakePercent = Math.min(96, 25 + Math.floor(chunksReceived * 1.5));
-              onProgress(fakePercent, `Gemini 3.5 Flash: Transcrevendo documento nativo (${chunksReceived} fragmentos)...`);
-            }
+            if (!isDead) resolve(fullText.trim());
+          } catch (streamErr: any) {
+            if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
+            if (!isDead) reject(streamErr);
           }
+        });
 
-          if (!isDead) resolve(fullText.trim());
-        } catch (streamErr: any) {
-          if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
-          if (!isDead) reject(streamErr);
+        const resultText = await fetchPromise;
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+        
+        fullCompiledText += resultText + "\n\n";
+        batchSuccess = true;
+        break; // Sucesso neste lote, sai do loop de chaves
+
+      } catch (e: any) {
+        if (window.lexscan_abort || e?.message === "ABORT_BY_USER") throw new Error("ABORT_BY_USER");
+        console.warn(`[Direct PDF Falhou Lote ${startPage}-${endPage}] Chave ${i + 1} (..${keyHash}):`, e.message || e);
+        lastError = e;
+        
+        const errorStr = (e.message || "").toLowerCase();
+        let errorType = null;
+        if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden") || errorStr.includes("permission")) {
+          errorType = 'blocked'; 
+        } else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("key is invalid")) {
+          errorType = 'invalid';
+        } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
+          errorType = 'quota_exceeded';
+        } else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found") || errorStr.includes("timeout")) {
+          errorType = 'server_error';
+        } else {
+          errorType = 'error';
         }
-      });
 
-      const resultText = await fetchPromise;
-      if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-      return resultText;
+        if (errorType === 'blocked' || errorType === 'invalid' || errorType === 'error') {
+           if (window.setKeyError) window.setKeyError(keyHash, errorType);
+        } else if (errorType === 'quota_exceeded') {
+           if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
+        } else if (errorType === 'server_error') {
+           if (window.setKeyError) window.setKeyError(keyHash, 'active');
+        }
 
-    } catch (e: any) {
-      if (window.lexscan_abort || e?.message === "ABORT_BY_USER") throw new Error("ABORT_BY_USER");
-      console.warn(`[Direct PDF Falhou] Chave ${i + 1} (..${keyHash}):`, e.message || e);
-      lastError = e;
-      
-      const errorStr = (e.message || "").toLowerCase();
-      let errorType = null;
-      if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden") || errorStr.includes("permission")) {
-        errorType = 'blocked'; 
-      } else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("key is invalid")) {
-        errorType = 'invalid';
-      } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
-        errorType = 'quota_exceeded';
-      } else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found") || errorStr.includes("timeout")) {
-        errorType = 'server_error';
-      } else {
-        errorType = 'error';
+        await new Promise(r => setTimeout(r, 200));
       }
+    }
 
-      if (errorType === 'blocked' || errorType === 'invalid' || errorType === 'error') {
-         if (window.setKeyError) window.setKeyError(keyHash, errorType);
-      } else if (errorType === 'quota_exceeded') {
-         if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
-      } else if (errorType === 'server_error') {
-         if (window.setKeyError) window.setKeyError(keyHash, 'active');
-      }
-
-      await new Promise(r => setTimeout(r, 200));
+    if (!batchSuccess) {
+      throw lastError || new Error(`Falha na extração direta de PDF no lote ${startPage}-${endPage}.`);
     }
   }
 
-  throw lastError || new Error("Falha na extração direta de PDF via Gemini 3.5 Flash.");
+  return fullCompiledText.trim();
 }
 
 // Auxiliar para verificar se o canvas da página renderizada é totalmente em branco (ex: verso de certidão, folha vazia)
@@ -2546,7 +2568,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   if (startIdx === 1 && (useAi || forceAi) && file.size <= 20 * 1024 * 1024) {
     try {
       onProgress(10, `⚡ Ingestão Direta Ativada: Enviando PDF (${endIdx} págs) ao Gemini 3.5 Flash...`);
-      const directText = await extractFullPdfWithGeminiDirect(file, onProgress);
+      const directText = await extractFullPdfWithGeminiDirect(file, endIdx, onProgress);
       if (directText && directText.length > 50) {
         onProgress(100, `✓ PDF integralmente processado com Gemini 3.5 Flash (${endIdx} págs)!`);
         return {
