@@ -1079,7 +1079,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
 
   // ORDENAÇÃO INTELIGENTE (Load-Balancing Dinâmico): 
   // Prioriza chaves com MENOR número de requisições realizadas (usage crescente).
-  candidateKeysInfo.sort((a, b) => a.usage - b.usage);
+  candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
 
   let finalSortedKeys = candidateKeysInfo.map(info => info.key);
 
@@ -1142,39 +1142,36 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Modelo oficial exclusivo: gemini-3.5-flash
-  const modelName = "gemini-3.5-flash";
+  const MODEL_NAME = "gemini-3.5-flash";
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
     
+    console.log(`[Gemini 3.5 Flash - Página] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando página...`);
+    const ai = new GoogleGenAI({ apiKey });
+    
     try {
-      console.log(`[Gemini 3.5 Flash] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando requisição...`);
-      const ai = new GoogleGenAI({ apiKey });
-      
-      let initialTimeoutTimer: any = null;
       let isStreamingStarted = false;
-      let isDead = false;
+      let isTimedOut = false;
+      let initialTimer: any = null;
 
-      const fetchPromise = new Promise<any>(async (resolve, reject) => {
-        initialTimeoutTimer = setTimeout(() => {
+      const streamPromise = new Promise<string>(async (resolve, reject) => {
+        initialTimer = setTimeout(() => {
           if (!isStreamingStarted) {
-            isDead = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 12s (servidores ocupados)."));
+            isTimedOut = true;
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 20s."));
           }
-        }, 12000);
+        }, 20000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
-            model: modelName,
-            contents: {
-              parts: [
-                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                { inlineData: { data: base64, mimeType: blob.type } }
-              ]
-            },
+            model: MODEL_NAME,
+            contents: [
+              { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+              { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+            ],
             config: {
               systemInstruction: prompt,
               temperature: 0.1,
@@ -1186,77 +1183,76 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           let chunksReceived = 0;
           
           for await (const chunk of responseStream) {
-            if (isDead) break;
-            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+            if (isTimedOut || window.lexscan_abort) break;
             if (!isStreamingStarted) {
               isStreamingStarted = true;
-              if (initialTimeoutTimer) {
-                clearTimeout(initialTimeoutTimer);
-                initialTimeoutTimer = null;
+              if (initialTimer) {
+                clearTimeout(initialTimer);
+                initialTimer = null;
               }
             }
-            fullText += chunk.text;
+            fullText += chunk.text || "";
             chunksReceived++;
             if (onProgress) {
               const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
               onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
             }
           }
-          if (!isDead) resolve({ text: fullText.trim(), usedKey: apiKey });
-        } catch (streamErr: any) {
-          if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
-          if (!isDead) reject(streamErr);
+
+          if (initialTimer) clearTimeout(initialTimer);
+          if (!isTimedOut && fullText.trim()) {
+            resolve(fullText.trim());
+          } else if (!isTimedOut) {
+            reject(new Error("Resposta vazia da IA."));
+          }
+        } catch (streamErr) {
+          if (initialTimer) clearTimeout(initialTimer);
+          reject(streamErr);
         }
       });
 
-      let resultData: any = await fetchPromise;
-
-      // Registrar sucesso no uso da chave para o dashboard
-      if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-
-      return resultData;
-      
-    } catch (e: any) {
-      if (window.lexscan_abort || e?.message === "ABORT_BY_USER") {
-        console.log("[extractPageWithGemini] Interrupção imediata solicitada pelo usuário.");
-        throw new Error("ABORT_BY_USER");
-      }
-      console.warn(`[Gemini 3.5 Flash Falhou] Chave ${i + 1} (..${keyHash}):`, e.message || e);
-      lastError = e;
-      
-      const errorStr = (e.message || "").toLowerCase();
-      
-      // Identificar tipo exato do erro para atualizar o dashboard
-      let errorType = null;
-      if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden") || errorStr.includes("permission")) {
-        errorType = 'blocked'; 
-      } else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("key is invalid")) {
-        errorType = 'invalid';
-      } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
-        errorType = 'quota_exceeded';
-        console.warn(`⏳ Rate limit atingido na chave ..${keyHash}. Alternando instantaneamente para próxima chave.`);
-      } else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found") || errorStr.includes("timeout")) {
-        errorType = 'server_error';
-      } else {
-        errorType = 'error';
+      let textOutput = "";
+      try {
+        textOutput = await streamPromise;
+      } catch (streamFail: any) {
+        console.warn(`[Gemini 3.5 Flash] Streaming falhou, tentando chamada direta com chave ..${keyHash}:`, streamFail?.message || streamFail);
+        const directRes = await ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: [
+            { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+            { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+          ],
+          config: {
+            systemInstruction: prompt,
+            temperature: 0.1,
+            maxOutputTokens: 16383,
+          }
+        });
+        textOutput = directRes?.text?.trim() || "";
       }
 
-      console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}).`);
-      
-      if (errorType === 'blocked' || errorType === 'invalid' || errorType === 'error') {
-         if (window.setKeyError) window.setKeyError(keyHash, errorType);
-      } else if (errorType === 'quota_exceeded') {
-         if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
-      } else if (errorType === 'server_error') {
-         if (window.setKeyError) window.setKeyError(keyHash, 'server_error');
+      if (textOutput) {
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+        if (window.setKeyError) window.setKeyError(keyHash, 'ok');
+        return { text: textOutput, usedKey: apiKey };
       }
-      
-      // Chave seguinte chamada imediatamente sem atrasos
-      await new Promise(r => setTimeout(r, 100));
+    } catch (modelErr: any) {
+      lastError = modelErr;
+      console.warn(`[Gemini 3.5 Flash] Erro com chave ..${keyHash}:`, modelErr?.message || modelErr);
     }
+
+    const errorStr = (lastError?.message || "").toLowerCase();
+    let errorType = 'error';
+    if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
+    else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
+    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
+    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout")) errorType = 'server_error';
+    
+    console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}).`);
+    if (window.setKeyError) window.setKeyError(keyHash, errorType);
+    await new Promise(r => setTimeout(r, 100));
   }
 
-  // Se esgotar tudo (Todos Modelos x Todas Chaves)
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
@@ -1287,12 +1283,25 @@ async function extractBatchOfImagesWithGemini(images, onProgress, goldStandard =
 
   const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
 Sua missão é transcrever perfeitamente as imagens fornecidas, que correspondem a um lote de páginas de um documento.
-REGRAS:
-1. Para cada imagem, você deverá inserir o cabeçalho: [PÁGINA X - RECUPERADO VIA GEMINI 3.5 FLASH] onde X é o número da página informado antes da imagem.
-2. Transcreva literalmente, integralmente. Não resuma.
-3. Insira ══════════════════════════════════════════════════ ao final de cada página transcrita.`;
+REGRAS CRÍTICAS:
+1. Para cada imagem/página do lote, inicie a transcrição da respectiva página com o cabeçalho exato: [PÁGINA X - RECUPERADO VIA IA JURÍDICA] (substitua X pelo número exato da página).
+2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
+3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const modelName = "gemini-3.5-flash";
+  const MODEL_NAME = "gemini-3.5-flash";
+
+  const parts: any[] = [
+    { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
+  ];
+  for (const img of images) {
+    parts.push({ text: `--- PÁGINA ${img.pageNum} ---` });
+    parts.push({
+      inlineData: {
+        data: img.base64,
+        mimeType: img.blob?.type || "image/jpeg"
+      }
+    });
+  }
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1300,74 +1309,107 @@ REGRAS:
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
     
+    console.log(`[Gemini 3.5 Flash - Batch] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando lote de ${images.length} páginas...`);
+    const ai = new GoogleGenAI({ apiKey });
+    
     try {
-      console.log(`[Gemini 3.5 Flash - Batch] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando lote de ${images.length} páginas...`);
-      const ai = new GoogleGenAI({ apiKey });
-      
-      const parts = [{ text: prompt }];
-      for (const img of images) {
-         parts.push({ text: `Página ${img.pageNum}:` });
-         parts.push({ inlineData: { data: img.base64, mimeType: img.blob.type } });
-      }
-
       let isStreamingStarted = false;
-      let isDead = false;
-      let initialTimeoutTimer = null;
+      let isTimedOut = false;
+      let initialTimer: any = null;
 
-      const fetchPromise = new Promise(async (resolve, reject) => {
-        initialTimeoutTimer = setTimeout(() => {
+      const streamPromise = new Promise<string>(async (resolve, reject) => {
+        initialTimer = setTimeout(() => {
           if (!isStreamingStarted) {
-            isDead = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 12s."));
+            isTimedOut = true;
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 20s."));
           }
-        }, 12000);
+        }, 20000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
-            model: modelName,
-            contents: { parts },
-            config: { systemInstruction: prompt, temperature: 0.1, maxOutputTokens: 16383 }
+            model: MODEL_NAME,
+            contents: parts,
+            config: {
+              systemInstruction: prompt,
+              temperature: 0.1,
+              maxOutputTokens: 16383
+            }
           });
 
           let fullText = "";
+          let chunksCount = 0;
           for await (const chunk of responseStream) {
-            if (isDead) break;
-            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+            if (isTimedOut || window.lexscan_abort) break;
             if (!isStreamingStarted) {
-               isStreamingStarted = true;
-               clearTimeout(initialTimeoutTimer);
+              isStreamingStarted = true;
+              if (initialTimer) {
+                clearTimeout(initialTimer);
+                initialTimer = null;
+              }
             }
             if (chunk && chunk.text) {
-               fullText += chunk.text;
+              fullText += chunk.text;
+              chunksCount++;
+              if (onProgress) {
+                onProgress(
+                  null,
+                  `Recebendo lote de ${images.length} págs via IA (${chunksCount} partes)...`
+                );
+              }
             }
           }
-          resolve({ text: fullText, usedKey: apiKey });
+
+          if (initialTimer) clearTimeout(initialTimer);
+          if (!isTimedOut && fullText.trim()) {
+            resolve(fullText.trim());
+          } else if (!isTimedOut) {
+            reject(new Error("Resposta vazia da IA no lote."));
+          }
         } catch (streamErr) {
+          if (initialTimer) clearTimeout(initialTimer);
           reject(streamErr);
         }
       });
 
-      const res = await fetchPromise;
-      incrementKeyUsage(keyHash);
-      if (window.setKeyError) window.setKeyError(keyHash, 'ok');
-      return res;
-
-    } catch (e) {
-      lastError = e;
-      const errorStr = (e.message || "").toLowerCase();
-      let errorType = null;
-      if (errorStr.includes("403") || errorStr.includes("denied")) errorType = 'blocked';
-      else if (errorStr.includes("invalid")) errorType = 'invalid';
-      else if (errorStr.includes("429") || errorStr.includes("quota")) errorType = 'quota_exceeded';
-      else if (errorStr.includes("503") || errorStr.includes("timeout")) errorType = 'server_error';
-      else errorType = 'error';
-      
-      if (window.setKeyError) {
-         window.setKeyError(keyHash, errorType);
+      let textOutput = "";
+      try {
+        textOutput = await streamPromise;
+      } catch (streamFail: any) {
+        console.warn(`[Gemini 3.5 Flash Batch] Streaming falhou, tentando chamada direta:`, streamFail?.message || streamFail);
+        const directRes = await ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: parts,
+          config: {
+            systemInstruction: prompt,
+            temperature: 0.1,
+            maxOutputTokens: 16383
+          }
+        });
+        textOutput = directRes?.text?.trim() || "";
       }
-      await new Promise(r => setTimeout(r, 200));
+
+      if (textOutput) {
+        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+        if (window.setKeyError) window.setKeyError(keyHash, 'ok');
+        return { text: textOutput, usedKey: apiKey };
+      }
+    } catch (modelErr: any) {
+      lastError = modelErr;
+      console.warn(`[Gemini 3.5 Flash Batch] Erro com chave ..${keyHash}:`, modelErr?.message || modelErr);
     }
+
+    const errorStr = (lastError?.message || "").toLowerCase();
+    let errorType = 'error';
+    if (errorStr.includes("403") || errorStr.includes("denied")) errorType = 'blocked';
+    else if (errorStr.includes("invalid")) errorType = 'invalid';
+    else if (errorStr.includes("429") || errorStr.includes("quota")) errorType = 'quota_exceeded';
+    else if (errorStr.includes("503") || errorStr.includes("timeout")) errorType = 'server_error';
+    
+    console.warn(`[Batch Failover] Chave ..${keyHash} falhou (${errorType}):`, lastError?.message);
+    if (window.setKeyError) window.setKeyError(keyHash, errorType);
+    await new Promise(r => setTimeout(r, 100));
   }
+
   throw lastError || new Error("Falha na extração do lote de imagens.");
 }
 
@@ -2497,7 +2539,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   const endIdx = pdf.numPages;
 
   let activeDocumentApiKey = null;
-  const BATCH_SIZE = 5; // Limite baixo para não engasgar a API e tomar 503
+  const BATCH_SIZE = 10; // Processamento sempre em lotes para documentos multipáginas
   let currentBatch = [];
 
   const processOCRFallback = async (batchItem) => {
@@ -2514,7 +2556,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       confidenceTotal += Math.round(res.data.confidence);
       pagesEvaluated++;
     } catch (e) {
-      fullText += `[PÁGINA ${batchItem.pageNum} - FALHA NA EXTRAÇÃO (Incrível)]\n\n`;
+      fullText += `[PÁGINA ${batchItem.pageNum} - FALHA NA EXTRAÇÃO]\n\n`;
     }
   };
 
@@ -2525,7 +2567,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       const endP = currentBatch[currentBatch.length - 1].pageNum;
       onProgress(
         Math.round(((startP - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-        `Enviando Lote ${startP}-${endP} (${currentBatch.length} págs) para IA Jurídica...`
+        `Enviando Lote ${startP}-${endP} (${currentBatch.length} págs) para Gemini 3.5 Flash...`
       );
       
       const batchResult = await extractBatchOfImagesWithGemini(currentBatch, onProgress, goldStandard, activeDocumentApiKey);
@@ -2538,23 +2580,13 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       confidenceTotal += 99 * currentBatch.length;
       pagesEvaluated += currentBatch.length;
     } catch (batchErr) {
-      console.warn(`Erro crítico no lote. Ativando failover para página por página...`, batchErr);
+      console.warn(`Falha na extração em lote do Gemini 3.5 Flash:`, batchErr);
       if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
       
+      // Sem chamadas individuais de IA para documentos multipáginas; aciona contingência local
       for (const item of currentBatch) {
          if (window.lexscan_abort) break;
-         try {
-           onProgress(
-              Math.round(((item.pageNum - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-              `Pág ${item.pageNum}: Retentativa Individual via IA...`
-           );
-           const singleResult = await extractPageWithGemini(item.blob, onProgress, goldStandard, activeDocumentApiKey);
-           fullText += `[PÁGINA ${item.pageNum} - RECUPERADO VIA GEMINI 3.5 FLASH]\n` + singleResult + "\n\n══════════════════════════════════════════════════\n\n";
-           confidenceTotal += 99;
-           pagesEvaluated++;
-         } catch (singleErr) {
-           await processOCRFallback(item);
-         }
+         await processOCRFallback(item);
       }
     }
     currentBatch = [];
