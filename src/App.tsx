@@ -1,4 +1,5 @@
 // @ts-nocheck
+// Félix & Castro - Scanner e Compilador Jurídico v2.4 (Fix: buildAuditFormattedReport + Batch Select)
 import { useState, useRef, useEffect, useCallback } from "react";
 import ReactCrop from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
