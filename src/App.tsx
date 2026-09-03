@@ -1248,7 +1248,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       } else if (errorType === 'quota_exceeded') {
          if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
       } else if (errorType === 'server_error') {
-         if (window.setKeyError) window.setKeyError(keyHash, 'active');
+         if (window.setKeyError) window.setKeyError(keyHash, 'server_error');
       }
       
       // Chave seguinte chamada imediatamente sem atrasos
@@ -1342,9 +1342,9 @@ REGRAS GERAIS:
           initialTimeoutTimer = setTimeout(() => {
             if (!isStreamingStarted) {
               isDead = true;
-              reject(new Error("Timeout: Gemini não conectou nos primeiros 30s (servidores ocupados)."));
+              reject(new Error("Timeout: Gemini não conectou nos primeiros 60s (servidores ocupados/arquivos pesados)."));
             }
-          }, 30000);
+          }, 60000);
 
           try {
             const responseStream = await ai.models.generateContentStream({
@@ -1422,7 +1422,7 @@ REGRAS GERAIS:
         } else if (errorType === 'quota_exceeded') {
            if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
         } else if (errorType === 'server_error') {
-           if (window.setKeyError) window.setKeyError(keyHash, 'active');
+           if (window.setKeyError) window.setKeyError(keyHash, 'server_error');
         }
 
         await new Promise(r => setTimeout(r, 200));
@@ -1430,11 +1430,15 @@ REGRAS GERAIS:
     }
 
     if (!batchSuccess) {
+      if (startPage > 1) {
+        console.warn(`Interrompido no lote ${startPage}-${endPage}. Retornando texto das páginas anteriores.`);
+        return { text: fullCompiledText.trim(), lastProcessedPage: startPage - 1 };
+      }
       throw lastError || new Error(`Falha na extração direta de PDF no lote ${startPage}-${endPage}.`);
     }
   }
 
-  return fullCompiledText.trim();
+  return { text: fullCompiledText.trim(), lastProcessedPage: numPages };
 }
 
 // Auxiliar para verificar se o canvas da página renderizada é totalmente em branco (ex: verso de certidão, folha vazia)
@@ -2560,7 +2564,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
     return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
   };
 
-  const startIdx = parseInt(startPage) || 1;
+  let startIdx = parseInt(startPage) || 1;
   const endIdx = pdf.numPages;
 
   // ⚡ MODO ULTRA RÁPIDO NATIVO (Ingestão Direta do PDF via Gemini 3.5 Flash):
@@ -2568,14 +2572,22 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   if (startIdx === 1 && (useAi || forceAi) && file.size <= 20 * 1024 * 1024) {
     try {
       onProgress(10, `⚡ Ingestão Direta Ativada: Enviando PDF (${endIdx} págs) ao Gemini 3.5 Flash...`);
-      const directText = await extractFullPdfWithGeminiDirect(file, endIdx, onProgress);
-      if (directText && directText.length > 50) {
-        onProgress(100, `✓ PDF integralmente processado com Gemini 3.5 Flash (${endIdx} págs)!`);
-        return {
-          text: directText,
-          confidence: 99,
-          fromCache: false
-        };
+      const directResult = await extractFullPdfWithGeminiDirect(file, endIdx, onProgress);
+      
+      if (directResult && directResult.text.length > 50) {
+        if (directResult.lastProcessedPage === endIdx) {
+          onProgress(100, `✓ PDF integralmente processado com Gemini 3.5 Flash (${endIdx} págs)!`);
+          return {
+            text: directResult.text,
+            confidence: 99,
+            fromCache: false
+          };
+        } else {
+          console.warn(`Ingestão direta completou até a pág ${directResult.lastProcessedPage}, caindo para contingência...`);
+          onProgress(50, `Lotes exauridos. Alternando para contingência a partir da pág ${directResult.lastProcessedPage + 1}...`);
+          fullText += directResult.text + "\n\n";
+          startIdx = directResult.lastProcessedPage + 1;
+        }
       }
     } catch (directErr: any) {
       if (window.lexscan_abort || directErr?.message === "ABORT_BY_USER") {
