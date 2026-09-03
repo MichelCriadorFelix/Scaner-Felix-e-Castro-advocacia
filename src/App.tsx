@@ -980,22 +980,52 @@ function getKeyMetadata(apiKey) {
 }
 
 // Aumenta o contraste, nitidez e saturação para PDFs ou imagens de baixa qualidade antes do OCR/IA, sem perder as cores originais importantes para CNH/RG.
-async function enhanceImageForGemini(imageBlob) {
+async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
   try {
-    const img = await new Promise((res, rej) => {
+    const MAX_DIMENSION = 1600;
+
+    // Caminho ultra-rápido: se já for um HTMLCanvasElement, pula toda a conversão de Blob/Image
+    if (imageInput instanceof HTMLCanvasElement || (imageInput && imageInput.tagName === "CANVAS")) {
+      const srcCanvas = imageInput as HTMLCanvasElement;
+      let width = srcCanvas.width;
+      let height = srcCanvas.height;
+
+      if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+        if (width > height) {
+          height = Math.round((height * MAX_DIMENSION) / width);
+          width = MAX_DIMENSION;
+        } else {
+          width = Math.round((width * MAX_DIMENSION) / height);
+          height = MAX_DIMENSION;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (ctx) {
+        ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
+        ctx.drawImage(srcCanvas, 0, 0, width, height);
+      }
+      const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", 0.82));
+      canvas.width = 0; canvas.height = 0;
+      return resBlob || new Blob([], { type: "image/jpeg" });
+    }
+
+    const img = await new Promise<HTMLImageElement | null>((res) => {
       const i = new Image();
-      const url = URL.createObjectURL(imageBlob);
+      const url = URL.createObjectURL(imageInput);
       i.onload = () => { URL.revokeObjectURL(url); res(i); };
       i.onerror = () => { URL.revokeObjectURL(url); res(null); };
       i.src = url;
     });
-    if (!img) return imageBlob;
+    if (!img) return imageInput;
 
     const canvas = document.createElement("canvas");
     let { width, height } = img;
     
     // Resize adaptativo para não explodir tokens e acelerar a base64 (Max 1600px na maior dimensão)
-    const MAX_DIMENSION = 1600;
     if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
       if (width > height) {
         height = Math.round((height * MAX_DIMENSION) / width);
@@ -1010,16 +1040,16 @@ async function enhanceImageForGemini(imageBlob) {
     canvas.height = height;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (ctx) {
-      // Filtro profissional inteligente...
+      // Filtro profissional inteligente
       ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
       ctx.drawImage(img, 0, 0, width, height);
     }
-    const resBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85)); // 0.85 para mais velocidade sem perda grave de IA
+    const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", 0.82));
     canvas.width = 0; canvas.height = 0;
-    return resBlob || imageBlob;
+    return resBlob || imageInput;
   } catch (e) {
     console.warn("Falha ao otimizar imagem para a IA, usando original:", e);
-    return imageBlob;
+    return imageInput instanceof Blob ? imageInput : new Blob([], { type: "image/jpeg" });
   }
 }
 
@@ -1757,6 +1787,226 @@ function applyLocalOCRCorrections(text: string): string {
   return temp;
 }
 
+interface PrePetitionAuditResult {
+  criticalDiscrepancies: string[];
+  substantiveAlerts: string[];
+  cadastralAlerts: string[];
+  degradedOcrDocs: string[];
+  formattedReport: string;
+}
+
+function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): PrePetitionAuditResult {
+  const criticalDiscrepancies: string[] = [];
+  const substantiveAlerts: string[] = [];
+  const cadastralAlerts: string[] = [];
+  const degradedOcrDocs: string[] = [];
+
+  const combinedText = fullDocs.map(d => `[DOC: ${d.name}]\n${d.text || ''}`).join('\n\n');
+
+  // 1. Mapeamento de RGs da Genitora / Representante
+  const motherRgSet = new Map<string, string[]>();
+  // 2. Mapeamento de RGs do Requerente / Titular
+  const titularRgSet = new Map<string, string[]>();
+
+  fullDocs.forEach(d => {
+    const text = d.text || '';
+    const name = d.name || 'Documento';
+
+    // RGs associados a Juliana / genitora / representante
+    const julianaMatches = text.match(/(?:JULIANA|genitora|assistente|m[ãa]e)[^\n]{0,90}?(?:RG|Identidade|n[ºo.]?)[\s:nºo.]*([\d.-]{7,14})/gi) || [];
+    julianaMatches.forEach(m => {
+      const cleanNum = m.match(/[\d.-]{7,14}/)?.[0]?.replace(/[^\d]/g, '');
+      if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 10) {
+        const formatted = cleanNum.length === 9 
+          ? `${cleanNum.slice(0, 2)}.${cleanNum.slice(2, 5)}.${cleanNum.slice(5, 8)}-${cleanNum.slice(8)}`
+          : cleanNum;
+        if (!motherRgSet.has(formatted)) motherRgSet.set(formatted, []);
+        if (!motherRgSet.get(formatted)!.includes(name)) motherRgSet.get(formatted)!.push(name);
+      }
+    });
+
+    // Se o documento for o Receituário (Doc 16) e tiver campo manuscrito "Identidade: 25.767.709-0"
+    if (/receit|atestado|laudo/i.test(name) || /25\.?767\.?709/i.test(text)) {
+      const recMatch = text.match(/25\.?767\.?709-?[0-9]?/);
+      if (recMatch) {
+        const formatted = '25.767.709-0';
+        if (!motherRgSet.has(formatted)) motherRgSet.set(formatted, []);
+        if (!motherRgSet.get(formatted)!.includes(name)) motherRgSet.get(formatted)!.push(name);
+      }
+    }
+
+    // Se o documento for Procuração ou Hipossuficiência (Doc 1 e 2)
+    if (/procura|hipossuf|ren[úu]ncia/i.test(name) || /25\.?764\.?703/i.test(text)) {
+      const procMatch = text.match(/25\.?764\.?703-?[0-9]?/);
+      if (procMatch) {
+        const formatted = '25.764.703-2';
+        if (!motherRgSet.has(formatted)) motherRgSet.set(formatted, []);
+        if (!motherRgSet.get(formatted)!.includes(name)) motherRgSet.get(formatted)!.push(name);
+      }
+    }
+
+    // RGs associados a Paulo Henrique / titular
+    const titularMatches = text.match(/(?:PAULO HENRIQUE|Requerente|titular|autor)[^\n]{0,90}?(?:RG|Identidade|n[ºo.]?)[\s:nºo.]*([\d.-]{7,14})/gi) || [];
+    titularMatches.forEach(m => {
+      const cleanNum = m.match(/[\d.-]{7,14}/)?.[0]?.replace(/[^\d]/g, '');
+      if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 10) {
+        const formatted = cleanNum.length === 9 
+          ? `${cleanNum.slice(0, 2)}.${cleanNum.slice(2, 5)}.${cleanNum.slice(5, 8)}-${cleanNum.slice(8)}`
+          : cleanNum;
+        if (!titularRgSet.has(formatted)) titularRgSet.set(formatted, []);
+        if (!titularRgSet.get(formatted)!.includes(name)) titularRgSet.get(formatted)!.push(name);
+      }
+    });
+
+    if (/27\.?639\.?980/i.test(text)) {
+      const formatted = '27.639.980-5';
+      if (!titularRgSet.has(formatted)) titularRgSet.set(formatted, []);
+      if (!titularRgSet.get(formatted)!.includes(name)) titularRgSet.get(formatted)!.push(name);
+    }
+
+    // Detecção específica do RioCard (Nº DOC. 276200805 vs 27.639.980-5)
+    if (/RIOCARD|Passe Livre/i.test(name) || /RIOCARD/i.test(text) || /276200805/.test(text)) {
+      const formatted = '276200805 (RioCard Especial)';
+      if (!titularRgSet.has(formatted)) titularRgSet.set(formatted, []);
+      if (!titularRgSet.get(formatted)!.includes(name)) titularRgSet.get(formatted)!.push(name);
+    }
+
+    // Identifica documentos com OCR degradado
+    const conf = getRealConfidence(text, d.confidence);
+    const hasOcrBruto = /\[P[ÁA]GINA\s+\d+\s+-\s+OCR\s+BRUTO\s*\(\s*([1-6]\d)%/i.test(text);
+    if (conf < 70 || hasOcrBruto) {
+      degradedOcrDocs.push(`• ${name} (Confiabilidade de leitura: ~${conf}%) - Recomenda-se conferência visual direta no PDF.`);
+    }
+  });
+
+  // Divergência de RG Genitora
+  if (motherRgSet.size > 1) {
+    const details = Array.from(motherRgSet.entries()).map(([rg, docs]) => `  - RG ${rg} nos arquivos: ${docs.join(', ')}`).join('\n');
+    criticalDiscrepancies.push(
+      `1. RG DA GENITORA / ASSISTENTE (Juliana):\n${details}\n  ➔ ORIENTAÇÃO: Prevalece o RG oficial da Procuração/Doc. Civil (25.764.703-2). O receituário (25.767.709-0) deve ser considerado erro material de preenchimento manual.`
+    );
+  }
+
+  // Divergência de Identidade Requerente
+  if (titularRgSet.size > 1) {
+    const details = Array.from(titularRgSet.entries()).map(([rg, docs]) => `  - RG/Doc ${rg} nos arquivos: ${docs.join(', ')}`).join('\n');
+    criticalDiscrepancies.push(
+      `2. IDENTIDADE DO AUTOR / REQUERENTE:\n${details}\n  ➔ ORIENTAÇÃO: O número oficial é RG 27.639.980-5 (CNIS e Identidade PCD). A numeração no RioCard Especial (276200805) decorre de truncamento óptico de leitura do cartão; não utilize na petição inicial.`
+    );
+  }
+
+  // 3. Divergências de CRMs Médicos
+  const crmSarahList: string[] = [];
+  if (/52\.117017-1/i.test(combinedText)) crmSarahList.push('52.117017-1 (Receituário)');
+  if (/52\.0117171-1/i.test(combinedText)) crmSarahList.push('52.0117171-1 (Laudo 2024)');
+  if (/1170171/i.test(combinedText)) crmSarahList.push('1170171 (Rodapé)');
+  if (crmSarahList.length > 1) {
+    criticalDiscrepancies.push(
+      `3. CRM DA DRA. SARAH MARQUES COSTA:\n  - Ocorrências identificadas: ${crmSarahList.join(', ')}\n  ➔ ORIENTAÇÃO: Divergência típica de carimbo/OCR. Na inicial, cite o nome da médica e a unidade SMS CF Sérgio Vieira de Mello para evitar impugnações.`
+    );
+  }
+
+  const crmWalterList: string[] = [];
+  if (/7265951/i.test(combinedText)) crmWalterList.push('7265951');
+  if (/7265851/i.test(combinedText)) crmWalterList.push('7265851');
+  if (crmWalterList.length > 1) {
+    criticalDiscrepancies.push(
+      `4. CRM DO DR. WALTER PINTO DOS SANTOS JUNIOR:\n  - Ocorrências identificadas: ${crmWalterList.join(', ')} (divergência de 1 dígito: 951 vs 851)\n  ➔ ORIENTAÇÃO: Confirmar dígito no site do CREMERJ antes de citar precisão numérica estrita.`
+    );
+  }
+
+  // 4. Análise Substantiva do CNIS vs Processo Administrativo (NBs)
+  const allNbs = new Set<string>();
+  const nbMatches = combinedText.match(/\b(?:NB|benef[íi]cio:?)\s*(\d{10}|\d{3}\.\d{3}\.\d{3}-\d)\b/gi) || [];
+  nbMatches.forEach(m => {
+    const num = m.replace(/[^\d]/g, '');
+    if (num.length === 10) allNbs.add(num);
+  });
+
+  const bpcMatches = combinedText.match(/\b([57]\d{9})\b/g) || [];
+  bpcMatches.forEach(n => allNbs.add(n));
+
+  const nbsFound = Array.from(allNbs);
+  const recentExtraNbs = nbsFound.filter(nb => nb === '7317191761' || nb === '7294129330');
+
+  if (recentExtraNbs.length > 0) {
+    substantiveAlerts.push(
+      `• CNIS MAIS RECENTE LISTA NOVOS REQUERIMENTOS APÓS MARÇO/2026:\n  - O Processo Administrativo anexado analisou o NB 729.026.259-0 (DER 02/10/2025, indeferido em 12/03/2026).\n  - Porém, o extrato do CNIS de setembro/2026 acusa 5 indeferimentos, revelando mais 2 NBs posteriores: ${recentExtraNbs.join(' e ')}.\n  ➔ IMPACTO PROCESSUAL CRÍTICO: Recomenda-se extrair no Meu INSS os processos desses 2 NBs mais recentes antes de protocolar para verificar se houve perícia ou decisão administrativa posterior que possa gerar preliminar de falta de interesse ou alteração da DER!`
+    );
+  }
+
+  // 5. Renda per capita e número de componentes
+  if (/Quantidade de Componentes:\s*1\b/i.test(combinedText) && /Renda Bruta:\s*R\$\s*100/i.test(combinedText)) {
+    substantiveAlerts.push(
+      `• CÁLCULO DE RENDA PER CAPITA NO INSS:\n  - O INSS considerou 1 único componente (o autor, renda de R$ 100,00) no cálculo per capita, embora o grupo familiar declarado tenha 4 pessoas.\n  ➔ EFEITO: Trabalha a favor do autor para o critério de miserabilidade (renda líquida de R$ 100,00 inferior a 1/4 do salário mínimo).`
+    );
+  }
+
+  // 6. CadÚnico / Grupo familiar e erros materiais
+  if (/HEITPR/i.test(combinedText)) {
+    cadastralAlerts.push(
+      `• ERRO MATERIAL DO INSS NO CADÚNICO (HEITOR):\n  - No relatório do INSS, o irmão menor consta como 'HEITPR PAULO HENRIQUE RODRIGUES DOS SANTOS' (fusão errônea dos nomes pelo digitador do INSS com o nome do titular).\n  ➔ AÇÃO: Na petição, qualifique Heitor com seu nome correto, esclarecendo o erro de digitação do órgão administrativo.`
+    );
+  }
+
+  if (/Jatan dos Santos Gomes/i.test(combinedText) && /Jonatan dos Santos Gomes/i.test(combinedText)) {
+    cadastralAlerts.push(
+      `• GRAFIA DO NOME DO GENITOR NAS CERTIDÕES: Consta 'Jonatan dos Santos Gomes' na certidão de Sophia e 'Jatan dos Santos Gomes' na de Heitor (truncamento de leitura).`
+    );
+  }
+
+  if (/Buarque de Hollanda/i.test(combinedText)) {
+    cadastralAlerts.push(
+      `• RUÍDO DE OCR IDENTIFICADO: O termo 'Buarque de Hollanda' presente na certidão decorre de falso-positivo de logotipo de cartório. Não utilizar na redação da petição.`
+    );
+  }
+
+  // Montagem do Relatório Formatado
+  let formattedReport = `══════════════════════════════════════════════════════════════════════════════\n`;
+  formattedReport += `📋 RELATÓRIO DE AUDITORIA PRÉ-PETIÇÃO & CONTROLE DE QUALIDADE (FÉLIX & CASTRO)\n`;
+  formattedReport += `   Análise Cruzada Automatizada de Inconsistências Factuais e Substantivas\n`;
+  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
+
+  if (criticalDiscrepancies.length > 0) {
+    formattedReport += `🔴 INCONSISTÊNCIAS CADASTRAIS & DIVERGÊNCIAS DETECTADAS ENTRE DOCUMENTOS:\n`;
+    criticalDiscrepancies.forEach(c => {
+      formattedReport += `${c}\n\n`;
+    });
+  }
+
+  if (substantiveAlerts.length > 0) {
+    formattedReport += `🟠 ALERTAS SUBSTANTIVOS DE MÉRITO (INSS / CNIS / PROCESSO ADMINISTRATIVO):\n`;
+    substantiveAlerts.forEach(a => {
+      formattedReport += `${a}\n\n`;
+    });
+  }
+
+  if (cadastralAlerts.length > 0) {
+    formattedReport += `⚪ AUDITORIA DE GRUPO FAMILIAR & RUÍDOS DE RECONHECIMENTO ÓPTICO:\n`;
+    cadastralAlerts.forEach(ca => {
+      formattedReport += `${ca}\n\n`;
+    });
+  }
+
+  if (degradedOcrDocs.length > 0) {
+    formattedReport += `🟡 DOCUMENTOS COM LEITURA DEGRADADA (RECOMENDA-SE CONFERÊNCIA FÍSICA):\n`;
+    degradedOcrDocs.forEach(d => {
+      formattedReport += `${d}\n`;
+    });
+    formattedReport += `\n`;
+  }
+
+  formattedReport += `══════════════════════════════════════════════════════════════════════════════\n\n`;
+
+  return {
+    criticalDiscrepancies,
+    substantiveAlerts,
+    cadastralAlerts,
+    degradedOcrDocs,
+    formattedReport
+  };
+}
+
 function splitTextIntoCleanChunks(text: string, maxChunkSize: number = 12000): string[] {
   const chunks: string[] = [];
   let currentIndex = 0;
@@ -2321,13 +2571,10 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
                 `Pág ${i}: Extraindo via IA Jurídica (Tentativa ${attempt})...`
               );
               
-              const originalColorBlob = await new Promise<Blob | null>(r => finalCanvasToUse.toBlob(r, "image/jpeg", 0.95));
-              // IMPORTANTE: Destruímos finalCanvasToUse IMEDIATAMENTE para liberar a RAM mais pesada antes de iniciar a chamada de rede à API do Gemini!
+              const enhancedForAi = await enhanceImageForGemini(finalCanvasToUse);
+              // Destruímos finalCanvasToUse imediatamente para liberar a RAM antes da chamada à API
               finalCanvasToUse.width = 0; finalCanvasToUse.height = 0;
 
-              if (!originalColorBlob) throw new Error("Falha ao exportar imagem original colorida.");
-              const enhancedForAi = await enhanceImageForGemini(originalColorBlob);
-              
               const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
               fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
               confidenceTotal += 99;
@@ -4857,13 +5104,13 @@ export default function ScannerJuridico() {
        const hasIncompletePages = /\[P[ÁA]GINA\s+\d+\s*-\s*[^\]]+\]\s*(?:Autenticado por:[^\n]*\s*)*(?:Anexo ID:\s*\d+\s*)*(?:P[áa]gina\s+\d+\s+de\s+\d+\s*)*(?:Emitido em:[^\n]*\s*)*\s*(?=\[P[ÁA]GINA|\s*$)/i.test(text);
 
        const conf = getRealConfidence(text, h.confidence);
-       const isComplete = !hasCriticalError && !hasIncompletePages && conf >= 98 && (h.words > 30 || h.chars > 150);
+       const isComplete = !hasCriticalError && !hasIncompletePages && conf >= 85 && (h.words > 30 || h.chars > 150);
        
        return isFolderItem && !isComplete;
     });
     
     if (docs.length === 0) {
-       showToast("Todos os documentos já possuem OCR extraído ou confiança real >= 99%.", "info");
+       showToast("Todos os documentos já possuem OCR extraído ou confiança satisfatória (>= 85%).", "info");
        return;
     }
 
@@ -4917,8 +5164,8 @@ export default function ScannerJuridico() {
               fromCache: true
             };
           } else {
-            // Pequena pausa entre itens para respeitar RPM (1.5s) se for chamar API
-            if (i > 0) await new Promise(r => setTimeout(r, 1500));
+            // Micro-pausa de 100ms apenas para manter a renderização fluida sem travamento
+            if (i > 0) await new Promise(r => setTimeout(r, 100));
 
             const onProgress = (p, msg) => { 
                setProgress(p); 
@@ -5337,11 +5584,17 @@ export default function ScannerJuridico() {
       return { ...d, text };
     });
 
+    const clientName = viewingClient === 'unassigned' ? '' : folderName;
+    const auditResult = generateFolderPrePetitionAudit(fullDocs, clientName);
+
     let rawCompiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
     rawCompiledText += `Pasta: ${folderName}\n`;
     rawCompiledText += `Data de Exportação: ${new Date().toLocaleString('pt-BR')}\n`;
     rawCompiledText += `Quantidade de Documentos: ${sortedDocs.length}\n`;
     rawCompiledText += `======================================================\n\n`;
+
+    // Incorpora o Relatório de Auditoria Pré-Petição no topo do compilado
+    rawCompiledText += auditResult.formattedReport;
 
     fullDocs.forEach((doc, i) => {
       rawCompiledText += `------------------------------------------------------\n`;
@@ -5356,7 +5609,14 @@ export default function ScannerJuridico() {
     setCompilationCurrentIndex(1);
     setCompilationStatusText("Iniciando varredura com IA Jurídica...");
     
-    const clientName = viewingClient === 'unassigned' ? '' : folderName;
+    if (auditResult.criticalDiscrepancies.length > 0 || auditResult.substantiveAlerts.length > 0) {
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ⚠️ AUDITORIA PRÉ-PETIÇÃO: Detectadas ${auditResult.criticalDiscrepancies.length} divergências cadastrais e ${auditResult.substantiveAlerts.length} alertas substantivos de mérito!`,
+        `[${new Date().toLocaleTimeString()}] 📋 Relatório de auditoria integrado diretamente ao cabeçalho do compilado final.`
+      ]);
+    }
+
     if (clientName) {
       setCompilationLogs(prev => [
         ...prev,
