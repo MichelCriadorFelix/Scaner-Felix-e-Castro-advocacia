@@ -1137,9 +1137,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  // Modelo oficial exclusivo: Gemini 3.5 Flash (Padrão de alta fidelidade e estabilidade)
+  // Modelo oficial com failover resiliente contra 503 (serviço ocupado / instabilidade de datacenter):
   const modelsToTry = [
-    "gemini-3.5-flash"
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
   ];
 
   // Matriz de Auto-Failover Duplo: Roda as Chaves Híbridas cruzando com Modelos!
@@ -1674,9 +1676,10 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  // Modelo oficial exclusivo: Gemini 3.5 Flash
   const modelsToTry = [
-    "gemini-3.5-flash"
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -2443,19 +2446,19 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           const baseViewport = page.getViewport({ scale: 1.0 });
           const maxBaseDim = Math.max(baseViewport.width, baseViewport.height) || 800;
           
-          // Alvos em pixels: 1600px é a resolução ideal para o Gemini Flash ler qualquer documento sem estourar memória do navegador
-          const targetGold = goldStandard ? 1600 : 1300;
+          // Alvos em pixels: 1200px a 1400px é o ponto ótimo de alta legibilidade sem travar o canvas do navegador
+          const targetGold = goldStandard ? 1400 : 1100;
           let attemptScales: number[] = [];
 
           if (attempt === 1) {
-            const idealScale = Math.min(2.0, Math.max(0.4, targetGold / maxBaseDim));
-            const subScale = Math.min(1.5, Math.max(0.3, (targetGold * 0.75) / maxBaseDim));
+            const idealScale = Math.min(1.5, Math.max(0.4, targetGold / maxBaseDim));
+            const subScale = Math.min(1.2, Math.max(0.3, (targetGold * 0.75) / maxBaseDim));
             attemptScales = Math.abs(idealScale - subScale) < 0.1 ? [idealScale] : [idealScale, subScale];
           } else if (attempt === 2) {
-            const safeScale = Math.min(1.4, Math.max(0.35, 1200 / maxBaseDim));
+            const safeScale = Math.min(1.1, Math.max(0.35, 1000 / maxBaseDim));
             attemptScales = [safeScale];
           } else {
-            const emergencyScale = Math.min(1.0, Math.max(0.25, 900 / maxBaseDim));
+            const emergencyScale = Math.min(0.8, Math.max(0.25, 800 / maxBaseDim));
             attemptScales = [emergencyScale];
           }
           
@@ -2529,10 +2532,10 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           }
 
           if (useAi || forceAi) {
-            // ── 100% VIA IA JURÍDICA (GEMINI 3.5 FLASH) ──────────────────────────────────
+            // ── 100% VIA IA JURÍDICA (GEMINI MULTI-MODELO) ──────────────────────────────────
             onProgress(
               Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-              `Pág ${i}: Extraindo via IA Jurídica (Gemini 3.5 Flash - Tentativa ${attempt})...`
+              `Pág ${i}: Extraindo via IA Jurídica (Tentativa ${attempt})...`
             );
             
             const enhancedForAi = await enhanceImageForGemini(finalCanvasToUse);
@@ -2873,7 +2876,7 @@ async function fetchItemBlob(item: any, supabaseContext: any = null): Promise<Bl
 
 async function extractImageHybrid(file, onProgress, useAi, forceAi = false, goldStandard = true) {
   if (useAi || forceAi) {
-      onProgress(20, "Extraindo via IA Jurídica (Gemini 3.5 Flash)...");
+      onProgress(20, "Extraindo via IA Jurídica...");
       try {
           const enhancedForAi = await enhanceImageForGemini(file);
           const aiText = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
