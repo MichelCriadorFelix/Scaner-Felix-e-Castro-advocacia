@@ -3296,14 +3296,19 @@ export default function ScannerJuridico() {
   } | null>(null);
   const [selectedStrategicAlerts, setSelectedStrategicAlerts] = useState<number[]>([]);
 
+  // Seleção e Gestão de Documentos em Lote
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [isMovingBatch, setIsMovingBatch] = useState(false);
+
   useEffect(() => {
-    if (!movingItem) {
+    if (!movingItem && !isMovingBatch) {
       setMoveSearch("");
     }
-  }, [movingItem]);
+  }, [movingItem, isMovingBatch]);
 
   useEffect(() => {
     setDocSearch("");
+    setSelectedDocIds([]);
   }, [viewingClient]);
 
   const [toast, setToast] = useState(null);
@@ -5624,6 +5629,72 @@ export default function ScannerJuridico() {
     }
   };
 
+  const moveBatchDocumentsHandler = async (newClientId: string) => {
+    if (!supabase) {
+      showToast("Supabase não configurado", "error");
+      return;
+    }
+    if (selectedDocIds.length === 0) {
+      showToast("Nenhum documento selecionado", "error");
+      return;
+    }
+
+    const targetFolderName = newClientId === 'unassigned' 
+      ? 'Geral (Sem pasta)' 
+      : (clients.find(c => c.id === newClientId)?.name || 'Pasta de destino');
+
+    const totalToMove = selectedDocIds.length;
+    const idsToMove = [...selectedDocIds];
+
+    try {
+      showToast(`Movendo ${totalToMove} documento(s) para "${targetFolderName}"...`);
+      const { error } = await supabase
+        .from('lexscan_documents')
+        .update({ client_id: newClientId === 'unassigned' ? null : newClientId })
+        .in('id', idsToMove);
+
+      if (error) throw error;
+
+      setHistory(prev => prev.map(h => idsToMove.includes(h.id) ? { ...h, clientId: newClientId } : h));
+      setSelectedDocIds([]);
+      setIsMovingBatch(false);
+      showToast(`✓ ${totalToMove} documento(s) movido(s) com sucesso para "${targetFolderName}"!`, "success");
+    } catch (e) {
+      console.error("Erro ao mover documentos em lote:", e);
+      showToast("Erro ao mover documentos em lote", "error");
+    }
+  };
+
+  const deleteBatchDocumentsHandler = async () => {
+    if (!supabase) {
+      showToast("Supabase não configurado", "error");
+      return;
+    }
+    if (selectedDocIds.length === 0) return;
+
+    const totalToDelete = selectedDocIds.length;
+    const idsToDelete = [...selectedDocIds];
+
+    if (confirm(`Tem certeza que deseja excluir permanentemente os ${totalToDelete} documentos selecionados?`)) {
+      try {
+        showToast(`Excluindo ${totalToDelete} documento(s)...`);
+        const { error } = await supabase
+          .from('lexscan_documents')
+          .delete()
+          .in('id', idsToDelete);
+
+        if (error) throw error;
+
+        setHistory(prev => prev.filter(h => !idsToDelete.includes(h.id)));
+        setSelectedDocIds([]);
+        showToast(`✓ ${totalToDelete} documento(s) excluído(s) com sucesso!`, "success");
+      } catch (e) {
+        console.error("Erro ao excluir documentos em lote:", e);
+        showToast("Erro ao excluir documentos em lote", "error");
+      }
+    }
+  };
+
   const deleteClientHandler = async (id, name) => {
     if(confirm(`Excluir a pasta do cliente "${name}" e todos os seus arquivos?`)) {
       if (supabase) {
@@ -6517,19 +6588,25 @@ export default function ScannerJuridico() {
       {/* Toast */}
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
 
-      {/* Move Document Modal */}
-      {movingItem && (
+      {/* Move Document Modal (Individual ou em Lote) */}
+      {(movingItem || isMovingBatch) && (
         <div className="modal-overlay" style={{zIndex: 120}}>
-          <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '90%', maxWidth: '380px'}}>
-            <h3 style={{marginBottom: 12, fontSize: '16px', fontWeight: 600, color: G.accent, textAlign: 'center'}}>Mover Documento</h3>
-            <p style={{fontSize: '12px', color: G.muted, marginBottom: '16px', textAlign: 'center'}}>
-              Selecione o novo destino para: <br/> <strong>{movingItem.name}</strong>
+          <div style={{background: G.card, padding: '22px', borderRadius: '16px', width: '90%', maxWidth: '400px', border: `1px solid ${G.border}`, boxShadow: '0 16px 40px rgba(0,0,0,0.5)'}}>
+            <h3 style={{marginBottom: 8, fontSize: '17px', fontWeight: 600, color: G.accent, textAlign: 'center'}}>
+              {isMovingBatch ? `📁 Mover ${selectedDocIds.length} Documentos em Lote` : 'Mover Documento'}
+            </h3>
+            <p style={{fontSize: '12px', color: G.muted, marginBottom: '16px', textAlign: 'center', lineHeight: '1.4'}}>
+              {isMovingBatch ? (
+                <>Selecione a pasta de destino para encaminhar os <strong>{selectedDocIds.length} documentos selecionados</strong> de uma vez só:</>
+              ) : (
+                <>Selecione o novo destino para: <br/> <strong>{movingItem.name}</strong></>
+              )}
             </p>
             
             <div style={{ marginBottom: '12px' }}>
               <input
                 type="text"
-                placeholder="🔍 Pesquisar cliente..."
+                placeholder="🔍 Pesquisar pasta de destino..."
                 value={moveSearch}
                 onChange={e => setMoveSearch(e.target.value)}
                 style={{
@@ -6545,40 +6622,69 @@ export default function ScannerJuridico() {
               />
             </div>
 
-            <div style={{maxHeight: '40vh', overflowY: 'auto', display: 'grid', gap: '8px', marginBottom: '20px'}}>
+            <div style={{maxHeight: '42vh', overflowY: 'auto', display: 'grid', gap: '8px', marginBottom: '18px'}}>
               <button 
-                onClick={() => moveDocumentHandler(movingItem.id, 'unassigned')}
+                onClick={() => {
+                  if (isMovingBatch) {
+                    moveBatchDocumentsHandler('unassigned');
+                  } else {
+                    moveDocumentHandler(movingItem.id, 'unassigned');
+                  }
+                }}
                 style={{
-                  padding: '12px', borderRadius: '10px', background: movingItem.clientId === 'unassigned' ? G.accent : G.surface, 
-                  color: movingItem.clientId === 'unassigned' ? '#000' : G.text, border: `1px solid ${G.border}`, cursor: 'pointer', textAlign: 'left', fontSize: '13px'
+                  padding: '12px', borderRadius: '10px', 
+                  background: (!isMovingBatch && movingItem?.clientId === 'unassigned') ? G.accent : G.surface, 
+                  color: (!isMovingBatch && movingItem?.clientId === 'unassigned') ? '#000' : G.text, 
+                  border: `1px solid ${G.border}`, cursor: 'pointer', textAlign: 'left', fontSize: '13px',
+                  display: 'flex', alignItems: 'center', gap: '8px'
                 }}
               >
-                📁 Geral (Sem pasta)
+                <span>📁</span>
+                <span style={{ fontWeight: 500 }}>Geral (Sem pasta)</span>
               </button>
               {clients
                 .filter(c => c.name.toLowerCase().includes(moveSearch.toLowerCase()))
                 .map(c => (
                   <button 
                     key={c.id}
-                    onClick={() => moveDocumentHandler(movingItem.id, c.id)}
+                    onClick={() => {
+                      if (isMovingBatch) {
+                        moveBatchDocumentsHandler(c.id);
+                      } else {
+                        moveDocumentHandler(movingItem.id, c.id);
+                      }
+                    }}
                     style={{
                       padding: '12px', 
                       paddingLeft: c.parentId ? '32px' : '12px',
                       borderRadius: '10px', 
-                      background: movingItem.clientId === c.id ? G.accent : G.surface, 
-                      color: movingItem.clientId === c.id ? '#000' : G.text, 
+                      background: (!isMovingBatch && movingItem?.clientId === c.id) ? G.accent : G.surface, 
+                      color: (!isMovingBatch && movingItem?.clientId === c.id) ? '#000' : G.text, 
                       border: `1px solid ${G.border}`, 
                       cursor: 'pointer', 
                       textAlign: 'left', 
-                      fontSize: '13px'
+                      fontSize: '13px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
                     }}
                   >
-                    {c.parentId ? '↳ 📂' : '📂'} {c.name}
+                    <span>{c.parentId ? '↳ 📂' : '📂'}</span>
+                    <span style={{ fontWeight: 500 }}>{c.name}</span>
                   </button>
                 ))}
             </div>
 
-            <button className="modal-btn cancel" style={{width: '100%'}} onClick={() => setMovingItem(null)}>Cancelar</button>
+            <button 
+              className="modal-btn cancel" 
+              style={{width: '100%', padding: '10px', borderRadius: '8px', cursor: 'pointer'}} 
+              onClick={() => {
+                setMovingItem(null);
+                setIsMovingBatch(false);
+              }}
+            >
+              Cancelar
+            </button>
           </div>
         </div>
       )}
@@ -7729,29 +7835,207 @@ export default function ScannerJuridico() {
                       );
                     }
 
-                    return filteredDocs
-                      .sort((a, b) => {
-                        if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
-                        if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
-                        if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-                        if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
-                        return 0;
-                      })
-                      .map(item => (
-                      <div key={item.id} className="hist-card" onClick={() => loadFromHistory(item)}>
-                        <div className="hist-header">
-                          {item.preview && item.type && item.type.startsWith("image/")
-                            ? <img src={item.preview} alt="" className="hist-thumb" />
-                            : <div className="hist-thumb-placeholder" style={{ 
-                                background: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.08)' : `${G.bg}`, 
-                                borderColor: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.25)' : `${G.border}`,
-                                color: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? '#ef4444' : `${G.text}`,
-                                fontSize: '12px',
-                                fontWeight: '600'
-                              }}>
-                                {(item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'PDF' : '📄'}
-                              </div>
-                          }
+                    const sortedDocs = [...filteredDocs].sort((a, b) => {
+                      if (sortOrder === "date-desc") return new Date(b.ts).getTime() - new Date(a.ts).getTime();
+                      if (sortOrder === "date-asc") return new Date(a.ts).getTime() - new Date(b.ts).getTime();
+                      if (sortOrder === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                      if (sortOrder === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
+                      return 0;
+                    });
+
+                    const visibleDocIds = sortedDocs.map(d => d.id);
+                    const selectedVisibleCount = visibleDocIds.filter(id => selectedDocIds.includes(id)).length;
+                    const isAllVisibleSelected = visibleDocIds.length > 0 && selectedVisibleCount === visibleDocIds.length;
+
+                    return (
+                      <>
+                        {/* Barra de Ação em Lote Flutuante / Fixada quando há seleção */}
+                        {selectedDocIds.length > 0 ? (
+                          <div style={{
+                            background: 'linear-gradient(135deg, rgba(201, 168, 76, 0.16) 0%, rgba(201, 168, 76, 0.06) 100%)',
+                            border: `1.5px solid ${G.accent}`,
+                            borderRadius: '12px',
+                            padding: '12px 16px',
+                            marginBottom: '14px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            flexWrap: 'wrap',
+                            gap: '12px',
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.3)'
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isAllVisibleSelected}
+                                  onChange={() => {
+                                    if (isAllVisibleSelected) {
+                                      setSelectedDocIds(prev => prev.filter(id => !visibleDocIds.includes(id)));
+                                    } else {
+                                      setSelectedDocIds(prev => Array.from(new Set([...prev, ...visibleDocIds])));
+                                    }
+                                  }}
+                                  style={{ width: '18px', height: '18px', accentColor: G.accent, cursor: 'pointer' }}
+                                />
+                                <span style={{ fontSize: '13px', fontWeight: 700, color: G.accent }}>
+                                  {selectedDocIds.length} {selectedDocIds.length === 1 ? 'documento selecionado' : 'documentos selecionados'}
+                                </span>
+                              </label>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              <button
+                                onClick={() => setIsMovingBatch(true)}
+                                style={{
+                                  background: G.accent,
+                                  color: '#0d0f14',
+                                  border: 'none',
+                                  borderRadius: '8px',
+                                  padding: '8px 14px',
+                                  fontSize: '12px',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  boxShadow: '0 2px 8px rgba(201, 168, 76, 0.35)',
+                                  transition: 'all .2s'
+                                }}
+                                title="Encaminhar todos os documentos selecionados para outra pasta"
+                              >
+                                <span>📁</span>
+                                <span>Mover para Pasta ({selectedDocIds.length})</span>
+                              </button>
+
+                              <button
+                                onClick={deleteBatchDocumentsHandler}
+                                style={{
+                                  background: 'rgba(239, 68, 68, 0.15)',
+                                  color: '#f87171',
+                                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                                  borderRadius: '8px',
+                                  padding: '8px 12px',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px'
+                                }}
+                                title="Excluir documentos selecionados permanentemente"
+                              >
+                                <span>🗑️</span>
+                                <span>Excluir</span>
+                              </button>
+
+                              <button
+                                onClick={() => setSelectedDocIds([])}
+                                style={{
+                                  background: 'transparent',
+                                  color: G.muted,
+                                  border: `1px solid ${G.border}`,
+                                  borderRadius: '8px',
+                                  padding: '8px 12px',
+                                  fontSize: '12px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Desmarcar todos
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          /* Barra Discreta de Seleção Rápida */
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '4px 6px',
+                            marginBottom: '8px'
+                          }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', color: G.muted }}>
+                              <input
+                                type="checkbox"
+                                checked={isAllVisibleSelected}
+                                onChange={() => {
+                                  if (isAllVisibleSelected) {
+                                    setSelectedDocIds(prev => prev.filter(id => !visibleDocIds.includes(id)));
+                                  } else {
+                                    setSelectedDocIds(prev => Array.from(new Set([...prev, ...visibleDocIds])));
+                                  }
+                                }}
+                                style={{ width: '16px', height: '16px', accentColor: G.accent, cursor: 'pointer' }}
+                              />
+                              <span style={{ fontWeight: 500 }}>Selecionar todos os {sortedDocs.length} documentos</span>
+                            </label>
+
+                            <span style={{ fontSize: '11px', color: G.muted }}>
+                              Marque os documentos que deseja encaminhar em lote
+                            </span>
+                          </div>
+                        )}
+
+                        {sortedDocs.map(item => {
+                          const isSelected = selectedDocIds.includes(item.id);
+                          return (
+                            <div 
+                              key={item.id} 
+                              className="hist-card" 
+                              onClick={() => loadFromHistory(item)}
+                              style={{
+                                borderColor: isSelected ? G.accent : undefined,
+                                background: isSelected ? 'rgba(201, 168, 76, 0.05)' : undefined,
+                                boxShadow: isSelected ? `0 0 0 1px ${G.accent}` : undefined,
+                                transition: 'all 0.2s ease'
+                              }}
+                            >
+                              <div className="hist-header">
+                                {/* Caixinha de Seleção em Lote */}
+                                <div 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedDocIds(prev => 
+                                      prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id]
+                                    );
+                                  }}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    alignSelf: 'center',
+                                    padding: '6px 6px 6px 2px',
+                                    cursor: 'pointer',
+                                    flexShrink: 0
+                                  }}
+                                  title={isSelected ? "Desmarcar este documento" : "Selecionar este documento para mover em lote"}
+                                >
+                                  <input 
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => {}}
+                                    style={{
+                                      width: '18px',
+                                      height: '18px',
+                                      accentColor: G.accent,
+                                      cursor: 'pointer',
+                                      borderRadius: '4px'
+                                    }}
+                                  />
+                                </div>
+
+                                {item.preview && item.type && item.type.startsWith("image/")
+                                  ? <img src={item.preview} alt="" className="hist-thumb" />
+                                  : <div className="hist-thumb-placeholder" style={{ 
+                                      background: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.08)' : `${G.bg}`, 
+                                      borderColor: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.25)' : `${G.border}`,
+                                      color: (item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? '#ef4444' : `${G.text}`,
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}>
+                                      {(item.type && item.type.includes('pdf')) || item.name.toLowerCase().endsWith('.pdf') ? 'PDF' : '📄'}
+                                    </div>
+                                }
                           <div className="hist-info">
                             {renamingItem?.id === item.id ? (
                               <div style={{ display: 'flex', gap: '8px', marginBottom: '4px', width: '100%' }} onClick={(e) => e.stopPropagation()}>
@@ -7890,8 +8174,11 @@ export default function ScannerJuridico() {
                             : `(Documento com ${item.words || 0} palavras. Clique para carregar o conteúdo)`}
                         </div>
                       </div>
-                    ));
-                  })()}
+                    );
+                  })}
+                </>
+              );
+            })()}
                 </div>
               )}
             </div>
