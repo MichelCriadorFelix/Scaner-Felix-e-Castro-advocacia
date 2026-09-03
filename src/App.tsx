@@ -2520,16 +2520,13 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   const startIdx = parseInt(startPage) || 1;
   const endIdx = pdf.numPages;
 
-  // ⚡ MODO SUPER RÁPIDO NATIVO (PADRÃO CHAT / GEMINI DIRETO):
-  // Se estiver lendo do início, com IA ativada e o arquivo estiver dentro do limite de 20MB,
-  // enviamos o PDF ORIGINAL DIRETAMENTE ao Gemini 3.5 Flash em 1 única chamada!
-  // Isso elimina 100% da renderização lenta do navegador, timeouts de canvas e travamentos de memória.
-  if (startIdx === 1 && (useAi || forceAi) && file.size <= 20 * 1024 * 1024) {
+  // ⚡ Para arquivos de PÁGINA ÚNICA (1 página), podemos usar ingestão direta rápida:
+  if (startIdx === 1 && endIdx === 1 && (useAi || forceAi) && file.size <= 10 * 1024 * 1024) {
     try {
-      onProgress(10, "⚡ Ingestão Nativa Ativada: Enviando PDF integral ao Gemini 3.5 Flash...");
+      onProgress(10, "⚡ Ingestão Rápida: Enviando página única ao Gemini 3.5 Flash...");
       const directText = await extractFullPdfWithGeminiDirect(file, onProgress);
-      if (directText && directText.length > 50) {
-        onProgress(100, "✓ PDF integralmente lido com Gemini 3.5 Flash!");
+      if (directText && directText.length > 30) {
+        onProgress(100, "✓ Documento integralmente lido com Gemini 3.5 Flash!");
         return {
           text: directText,
           confidence: 99,
@@ -2540,12 +2537,12 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
       if (window.lexscan_abort || directErr?.message === "ABORT_BY_USER") {
         throw new Error("ABORT_BY_USER");
       }
-      console.warn("Ingestão direta alternou para contingência:", directErr);
-      onProgress(12, "Alternando para contingência página a página...");
+      console.warn("Ingestão direta alternou para contingência página a página:", directErr);
     }
   }
 
-  // 🎯 Chave ativa do documento: mantém a mesma chave para todas as páginas deste documento
+  // 🎯 Para documentos multipáginas (2 a 100+ páginas), o processamento é OBRIGATORIAMENTE PÁGINA A PÁGINA:
+  // Isso garante 100% de integridade (zero truncamento por limite de tokens) e rotação de chaves sem perda de progresso!
   let activeDocumentApiKey: string | null = null;
 
   for (let i = startIdx; i <= endIdx; i++) {
@@ -2623,7 +2620,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
             Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
             `Pág ${i}/${endIdx}: Lida instantaneamente (Texto Digital Nativo)!`
           );
-          fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n";
+          fullText += `[PÁGINA ${i} - TEXTO DIGITAL NATIVO]\n` + pageText + "\n\n══════════════════════════════════════════════════\n\n";
           confidenceTotal += 100;
           pagesEvaluated++;
           pageSuccess = true;
@@ -2747,7 +2744,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               activeDocumentApiKey = aiResult.usedKey;
             }
 
-            fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + aiText + "\n\n";
+            fullText += `[PÁGINA ${i} - RECUPERADO VIA GEMINI 3.5 FLASH]\n` + aiText + "\n\n══════════════════════════════════════════════════\n\n";
             confidenceTotal += 99;
             pageSuccess = true;
 
