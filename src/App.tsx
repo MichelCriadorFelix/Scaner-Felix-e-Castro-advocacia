@@ -1154,7 +1154,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       console.log(`[Gemini 3.5 Flash] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando requisição...`);
       const ai = new GoogleGenAI({ apiKey });
       
-      // Timeout dinâmico baseado em atividade: não interrompe enquanto a IA estiver ativamente gerando tokens
+      // Timeout ultra-rápido: se a chave não começar a responder em 8s, pula imediatamente para a próxima
       const fetchPromise = (async () => {
         let timer: any = null;
         let rejectPromise: ((reason?: any) => void) | null = null;
@@ -1162,17 +1162,17 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         const timeoutPromise = new Promise((_, reject) => {
           rejectPromise = reject;
           timer = setTimeout(() => {
-            reject(new Error("Timeout: A API do Gemini 3.5 Flash não respondeu em 45s."));
-          }, 45000);
+            reject(new Error("Timeout: Gemini não iniciou em 8s (chave lenta/ocupada)."));
+          }, 8000);
         });
 
         const resetInactivityTimer = () => {
           if (timer) clearTimeout(timer);
           timer = setTimeout(() => {
             if (rejectPromise) {
-              rejectPromise(new Error("Timeout de inatividade: IA parou de transmitir fragmentos por mais de 25s."));
+              rejectPromise(new Error("Timeout de inatividade: IA parou de transmitir por mais de 10s."));
             }
-          }, 25000);
+          }, 10000);
         };
 
         const streamPromise = (async () => {
@@ -1239,8 +1239,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         errorType = 'invalid';
       } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
         errorType = 'quota_exceeded';
-        console.warn(`⏳ Rate limit atingido na chave ..${keyHash}. Alternando para próxima chave.`);
-        await new Promise(r => setTimeout(r, 1200)); 
+        console.warn(`⏳ Rate limit atingido na chave ..${keyHash}. Alternando instantaneamente para próxima chave.`);
       } else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found") || errorStr.includes("timeout")) {
         errorType = 'server_error';
       } else {
@@ -1257,8 +1256,8 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
          if (window.setKeyError) window.setKeyError(keyHash, 'active');
       }
       
-      // Se for erro de servidor 503/timeout, dá um intervalo rápido e tenta na chave seguinte
-      await new Promise(r => setTimeout(r, 800));
+      // Chave seguinte chamada imediatamente sem atrasos
+      await new Promise(r => setTimeout(r, 100));
     }
   }
 
@@ -1331,17 +1330,17 @@ SUA MISSÃO:
       const timeoutPromise = new Promise<never>((_, reject) => {
         rejectPromise = reject;
         timer = setTimeout(() => {
-          reject(new Error("Timeout: Gemini 3.5 Flash não respondeu em 60s."));
-        }, 60000);
+          reject(new Error("Timeout: Gemini não iniciou em 12s (alternando chave)."));
+        }, 12000);
       });
 
       const resetInactivityTimer = () => {
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
           if (rejectPromise) {
-            rejectPromise(new Error("Timeout de inatividade no stream direto."));
+            rejectPromise(new Error("Timeout: Gemini pausou a transmissão por mais de 12s."));
           }
-        }, 30000);
+        }, 12000);
       };
 
       const streamPromise = (async () => {
