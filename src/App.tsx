@@ -1156,13 +1156,15 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       
       let initialTimeoutTimer: any = null;
       let isStreamingStarted = false;
+      let isDead = false;
 
       const fetchPromise = new Promise<any>(async (resolve, reject) => {
         initialTimeoutTimer = setTimeout(() => {
           if (!isStreamingStarted) {
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 8s (chave ocupada/lenta)."));
+            isDead = true;
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 20s (servidores ocupados)."));
           }
-        }, 8000);
+        }, 20000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
@@ -1184,6 +1186,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           let chunksReceived = 0;
           
           for await (const chunk of responseStream) {
+            if (isDead) break;
             if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
             if (!isStreamingStarted) {
               isStreamingStarted = true;
@@ -1199,10 +1202,10 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
             }
           }
-          resolve({ text: fullText.trim(), usedKey: apiKey });
+          if (!isDead) resolve({ text: fullText.trim(), usedKey: apiKey });
         } catch (streamErr: any) {
           if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
-          reject(streamErr);
+          if (!isDead) reject(streamErr);
         }
       });
 
@@ -1319,14 +1322,15 @@ SUA MISSÃO:
 
       let initialTimeoutTimer: any = null;
       let isStreamingStarted = false;
+      let isDead = false;
 
       const fetchPromise = new Promise<string>(async (resolve, reject) => {
-        // Se a chave não responder o primeiro byte em 10 segundos, cancela e pula para a próxima chave
         initialTimeoutTimer = setTimeout(() => {
           if (!isStreamingStarted) {
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 10s (chave ocupada/lenta)."));
+            isDead = true;
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 30s (servidores ocupados)."));
           }
-        }, 10000);
+        }, 30000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
@@ -1347,10 +1351,9 @@ SUA MISSÃO:
           let chunksReceived = 0;
 
           for await (const chunk of responseStream) {
+            if (isDead) break;
             if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
             
-            // Assim que o primeiro fragmento chega, cancela o timeout inicial!
-            // A chave está transmitindo ativamente e NÃO PODE ser interrompida por timer fixo.
             if (!isStreamingStarted) {
               isStreamingStarted = true;
               if (initialTimeoutTimer) {
@@ -1367,10 +1370,10 @@ SUA MISSÃO:
             }
           }
 
-          resolve(fullText.trim());
+          if (!isDead) resolve(fullText.trim());
         } catch (streamErr: any) {
           if (initialTimeoutTimer) clearTimeout(initialTimeoutTimer);
-          reject(streamErr);
+          if (!isDead) reject(streamErr);
         }
       });
 
