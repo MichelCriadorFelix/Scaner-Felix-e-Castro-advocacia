@@ -1385,7 +1385,30 @@ SUA MISSÃO:
       if (window.lexscan_abort || e?.message === "ABORT_BY_USER") throw new Error("ABORT_BY_USER");
       console.warn(`[Direct PDF Falhou] Chave ${i + 1} (..${keyHash}):`, e.message || e);
       lastError = e;
-      await new Promise(r => setTimeout(r, 1000));
+      
+      const errorStr = (e.message || "").toLowerCase();
+      let errorType = null;
+      if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden") || errorStr.includes("permission")) {
+        errorType = 'blocked'; 
+      } else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("key is invalid")) {
+        errorType = 'invalid';
+      } else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
+        errorType = 'quota_exceeded';
+      } else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("404") || errorStr.includes("400") || errorStr.includes("unavailable") || errorStr.includes("not found") || errorStr.includes("timeout")) {
+        errorType = 'server_error';
+      } else {
+        errorType = 'error';
+      }
+
+      if (errorType === 'blocked' || errorType === 'invalid' || errorType === 'error') {
+         if (window.setKeyError) window.setKeyError(keyHash, errorType);
+      } else if (errorType === 'quota_exceeded') {
+         if (window.setKeyError) window.setKeyError(keyHash, 'quota_exceeded');
+      } else if (errorType === 'server_error') {
+         if (window.setKeyError) window.setKeyError(keyHash, 'active');
+      }
+
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 
