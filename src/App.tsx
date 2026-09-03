@@ -1383,6 +1383,32 @@ function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean 
   return true;
 }
 
+function detectFailedPages(text: string): number[] {
+  if (!text || typeof text !== "string") return [];
+  const failedPages: number[] = [];
+
+  // 1. Erro crítico explícito ou falha na página
+  const r1 = /(?:ERRO\s+CR[ÍI]TICO|FALHA\s+CR[ÍI]TICA)\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
+  let m;
+  while ((m = r1.exec(text)) !== null) {
+    failedPages.push(parseInt(m[1], 10));
+  }
+
+  // 2. Página explicitamente indicada como pulada ou corrompida
+  const r2 = /\[?P[ÁA]GINA\s+(\d+)[^\]\n]*\b(?:PULADA|FALHOU|CORROMPIDA)\b/gi;
+  while ((m = r2.exec(text)) !== null) {
+    failedPages.push(parseInt(m[1], 10));
+  }
+
+  // 3. Marcador de falha na IA ou OCR com 0% / falha explícita
+  const r3 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s*\(\s*(?:0%|FALHA|ERRO)/gi;
+  while ((m = r3.exec(text)) !== null) {
+    failedPages.push(parseInt(m[1], 10));
+  }
+
+  return [...new Set(failedPages)].sort((a, b) => a - b);
+}
+
 function getRealConfidence(text, fallbackConfidence) {
   if (!text || typeof text !== 'string') return fallbackConfidence || 0;
   
@@ -1402,9 +1428,14 @@ function getRealConfidence(text, fallbackConfidence) {
     textLower.includes('ia jurídica') || 
     textLower.includes('ia juridica') || 
     textLower.includes('tramitasign') || // Documentos assinados digitalmente e estruturados
+    textLower.includes('clicksign') ||
+    textLower.includes('docusign') ||
     textLower.includes('assinatura eletrônica') ||
+    textLower.includes('assinatura eletronica') ||
     textLower.includes('comprovante de protocolo') ||
     textLower.includes('carta de concessão') ||
+    textLower.includes('declaração de hipossuficiência') ||
+    textLower.includes('declaracao de hipossuficiencia') ||
     textLower.includes('processo administrativo');
 
   // Vamos analisar a qualidade real do texto
@@ -1449,14 +1480,38 @@ function getRealConfidence(text, fallbackConfidence) {
   let validPortugueseCommonCount = 0;
   
   // Lista de palavras em português ultra comuns que confirmam que o texto faz sentido
-  const commonWords = new Set(['o', 'a', 'os', 'as', 'de', 'do', 'da', 'dos', 'das', 'em', 'um', 'uma', 'com', 'para', 'por', 'que', 'se', 'no', 'na', 'nos', 'nas', 'ao', 'aos', 'ou', 'sua', 'seu', 'suas', 'seus', 'esta', 'este', 'isso', 'esteve', 'como', 'mais', 'não', 'sim', 'doença', 'médico', 'medico', 'laudo', 'processo', 'autor', 'réu', 'reu', 'direito', 'justiça', 'justica', 'lei', 'artigo', 'art', 'civis', 'advogado', 'advogada', 'social', 'previdenciário', 'previdenciario', 'trabalhista', 'trt', 'tribunal', 'federal', 'inss', 'benefício', 'beneficio', 'aposentadoria', 'auxílio', 'auxilio']);
+  const commonWords = new Set([
+    'o', 'a', 'os', 'as', 'de', 'do', 'da', 'dos', 'das', 'em', 'um', 'uma', 'com', 'para', 'por', 'que', 'se', 'no', 'na', 'nos', 'nas', 'ao', 'aos', 'ou', 'sua', 'seu', 'suas', 'seus', 'esta', 'este', 'isso', 'esteve', 'como', 'mais', 'não', 'sim', 'doença', 'médico', 'medico', 'laudo', 'processo', 'autor', 'réu', 'reu', 'direito', 'justiça', 'justica', 'lei', 'artigo', 'art', 'arts', 'civis', 'advogado', 'advogada', 'social', 'previdenciário', 'previdenciario', 'trabalhista', 'trt', 'tribunal', 'federal', 'inss', 'benefício', 'beneficio', 'aposentadoria', 'auxílio', 'auxilio',
+    'declaro', 'declaração', 'declaracao', 'hipossuficiência', 'hipossuficiencia', 'pobreza', 'custas', 'despesas', 'assinante', 'assinatura', 'eletrônica', 'eletronica', 'certificado', 'documento', 'signatário', 'signatario', 'eventos', 'validade', 'jurídica', 'juridica', 'brasileiro', 'brasileira', 'solteiro', 'solteira', 'estudante', 'residente', 'domiciliado', 'domiciliada', 'assistente', 'genitora', 'termo', 'termos', 'sustento', 'família', 'familia', 'fins', 'próprio', 'proprio', 'condições', 'condicoes', 'rio', 'janeiro'
+  ]);
 
   words.forEach(w => {
+    const cleanWord = w.toLowerCase().replace(/[,.:;()]/g, '');
+
+    // Ignora tokens técnicos e jurídicos legítimos para não penalizar falsamente:
+    // 1. Hashes hexadecimais (SHA-256, MD5) ou UUIDs
+    const isHexOrUuid = /^[0-9a-fA-F-]+$/.test(w) && w.length >= 8;
+    // 2. Emails (ex: juliana26rodriguescosta@gmail.com)
+    const isEmail = w.includes('@') || /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(w);
+    // 3. URLs ou domínios (ex: https://tramitasign.com.br)
+    const isUrl = /^https?:\/\//i.test(w) || /\.(com|br|gov|jus|org|net|edu)/i.test(w);
+    // 4. Termos de user-agent, sistema ou fingerprints
+    const isTechHeader = /^(?:chrome|mozilla|applewebkit|safari|khtml|android|mobile|fingerprint|gmt|sha-\d+)/i.test(w);
+    // 5. Numeração de leis, CPFs, RGs, CEPs ou artigos (ex: 148.102.687-99, 14.063/2020)
+    const isLegalNumOrCode = /^(?:art|arts|lei|mp|oab|resp|fls|rg|cpf|cnpj|cep)[.:/]?/i.test(w) || /^[\d./-]+$/.test(w);
+    // 6. Coordenadas geográficas ou horários
+    const isCoordsOrTime = /^[+-]?\d+[\d.,/:-]+\d+$/.test(w);
+
+    if (isHexOrUuid || isEmail || isUrl || isTechHeader || isLegalNumOrCode || isCoordsOrTime) {
+      // Token técnico/jurídico legítimo
+      return;
+    }
+
     const hasLetters = /[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/.test(w);
     const hasDigits = /[0-9]/.test(w);
     const hasSymbols = /[-_~=•■|\\/§¤*]/.test(w);
     
-    // Se a palavra mistura letras com números (ex: Munlcip10, u.u01)
+    // Se a palavra mistura letras com números de forma ruidosa (ex: Munlcip10, u.u01)
     if (hasLetters && hasDigits && w.length > 2) {
       corruptWordsCount++;
     } 
@@ -1477,7 +1532,7 @@ function getRealConfidence(text, fallbackConfidence) {
       }
     }
 
-    if (commonWords.has(w.toLowerCase().replace(/[,.:;()]/g, ''))) {
+    if (commonWords.has(cleanWord)) {
       validPortugueseCommonCount++;
     }
   });
@@ -1487,20 +1542,20 @@ function getRealConfidence(text, fallbackConfidence) {
   // Vamos calcular uma nota baseada nesses fatores
   let score = 100;
 
-  // Penalização por excesso de símbolos (se symbolRatio for maior que 2%)
-  if (symbolRatio > 0.02) {
-    const penalty = Math.min(45, (symbolRatio - 0.02) * 200);
+  // Penalização por excesso de símbolos (se symbolRatio for maior que 3%)
+  if (symbolRatio > 0.03) {
+    const penalty = Math.min(35, (symbolRatio - 0.03) * 150);
     score -= penalty;
   }
 
   // Penalização por sequências longas de linhas ou tabelas ruidosas
   if (hifensEqualsUnderscores > 0) {
-    score -= Math.min(15, hifensEqualsUnderscores * 3);
+    score -= Math.min(10, hifensEqualsUnderscores * 2);
   }
 
   // Penalização por baixa taxa de letras normais (se letterRatioOfNonSpace for menor que 70%)
   if (letterRatioOfNonSpace < 0.70) {
-    const letterPenalty = Math.min(40, (0.70 - letterRatioOfNonSpace) * 100);
+    const letterPenalty = Math.min(35, (0.70 - letterRatioOfNonSpace) * 80);
     score -= letterPenalty;
   }
 
@@ -1513,9 +1568,9 @@ function getRealConfidence(text, fallbackConfidence) {
   // Bônus se contiver muitas palavras em português ultra comuns
   if (words.length > 10) {
     const commonWordRatio = validPortugueseCommonCount / words.length;
-    if (commonWordRatio > 0.15) {
+    if (commonWordRatio > 0.12) {
       score += 5;
-    } else if (commonWordRatio < 0.04) {
+    } else if (commonWordRatio < 0.03 && corruptWordRatio > 0.05) {
       score -= 15;
     }
   }
@@ -1528,18 +1583,21 @@ function getRealConfidence(text, fallbackConfidence) {
     }
   }
 
+  // Se o documento é sabidamente estruturado/jurídico e possui texto real com vocabulário válido
+  if (isAlreadyRefinedOrDigital && evalText.length > 120 && corruptWordRatio < 0.03) {
+    score = Math.max(96, score);
+  }
+
   if (fallbackConfidence !== undefined && fallbackConfidence < score && fallbackConfidence > 0) {
-    score = (score + fallbackConfidence) / 2;
+    // Só atenua caso haja real índice de palavras corrompidas
+    if (corruptWordRatio > 0.04) {
+      score = (score * 2 + fallbackConfidence) / 3;
+    }
   }
 
   const ilegivelCount = (textLower.match(/ileg[íi]vel/g) || []).length;
   if (ilegivelCount > 0) {
     score -= Math.min(25, ilegivelCount * 4);
-  }
-
-  // Se o documento é sabidamente refinado ou digital nativo E possui texto real substancial (> 160 caracteres úteis), a confiabilidade de sua leitura é excelente
-  if (isAlreadyRefinedOrDigital && evalText.length > 160 && corruptWordRatio < 0.05) {
-    score = Math.max(98, score);
   }
 
   return Math.min(100, Math.max(5, Math.round(score)));
@@ -3382,7 +3440,7 @@ export default function ScannerJuridico() {
       const a = document.createElement("a");
       a.href = url;
       const baseName = (item.name || "documento").replace(/\.[^.]+$/, "");
-      a.download = `[${levelName.toUpperCase()}_INSS]_${baseName}.${extension}`;
+      a.download = `${baseName}.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -4034,19 +4092,8 @@ export default function ScannerJuridico() {
     console.log("[Recuperar páginas] Iniciando recuperação para o documento:", targetResult.name, targetResult.id);
     const currentText = targetResult.text || "";
     
-    // Encontra todas as páginas falhas
-    const failedPages = [];
-    const regex1 = /ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
-    let match;
-    while ((match = regex1.exec(currentText)) !== null) {
-      failedPages.push(parseInt(match[1], 10));
-    }
-    const regex2 = /P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO/gi;
-    while ((match = regex2.exec(currentText)) !== null) {
-      failedPages.push(parseInt(match[1], 10));
-    }
-    
-    const pagesToProcess = [...new Set(failedPages)].sort((a, b) => a - b);
+    // Encontra todas as páginas verdadeiramente falhas ou puladas
+    const pagesToProcess = detectFailedPages(currentText);
     console.log("[Recuperar páginas] Páginas detectadas para reparo:", pagesToProcess);
     
     if (pagesToProcess.length === 0) {
@@ -5470,9 +5517,7 @@ export default function ScannerJuridico() {
       
       const link = document.createElement("a");
       link.href = URL.createObjectURL(content);
-      link.download = isLite
-        ? `DOCS_${folderName.replace(/\s+/g, '_')}_LITE_INSS.zip`
-        : `DOCS_${folderName.replace(/\s+/g, '_')}_ORIGINAL.zip`;
+      link.download = `DOCS_${folderName.replace(/\s+/g, '_')}.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -6489,18 +6534,7 @@ export default function ScannerJuridico() {
 
                     {/* Alerta inteligente de páginas puladas ou com erro */}
                     {(() => {
-                      const failedPages = [];
-                      const text = result.text || "";
-                      const regex1 = /ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
-                      let match;
-                      while ((match = regex1.exec(text)) !== null) {
-                        failedPages.push(parseInt(match[1], 10));
-                      }
-                      const regex2 = /P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO/gi;
-                      while ((match = regex2.exec(text)) !== null) {
-                        failedPages.push(parseInt(match[1], 10));
-                      }
-                      const pagesToProcess = [...new Set(failedPages)].sort((a, b) => a - b);
+                      const pagesToProcess = detectFailedPages(result.text || "");
                       
                       if (pagesToProcess.length === 0) return null;
                       
@@ -7200,18 +7234,7 @@ export default function ScannerJuridico() {
 
                             {/* Alerta inteligente de páginas puladas e botão de reparação automática */}
                             {(() => {
-                              const text = item.text || "";
-                              const failedPages = [];
-                              const r1 = /ERRO\s+CR[ÍI]TICO\s+NA\s+P[ÁA]GINA\s+(\d+)/gi;
-                              let m;
-                              while ((m = r1.exec(text)) !== null) {
-                                failedPages.push(parseInt(m[1], 10));
-                              }
-                              const r2 = /P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO/gi;
-                              while ((m = r2.exec(text)) !== null) {
-                                failedPages.push(parseInt(m[1], 10));
-                              }
-                              const uniqFailed = [...new Set(failedPages)].sort((a, b) => a - b);
+                              const uniqFailed = detectFailedPages(item.text || "");
                               if (uniqFailed.length > 0) {
                                 return (
                                   <div 
