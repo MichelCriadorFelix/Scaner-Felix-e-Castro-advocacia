@@ -1265,6 +1265,134 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
 }
 
+// ── Ingestão Direta e Nativa de PDF via Gemini 3.5 Flash (Sistemática do AI Studio / Chat) ──────────
+async function extractFullPdfWithGeminiDirect(file: Blob, onProgress: (pct: number, msg: string) => void) {
+  const allKeys = getAvailableGeminiKeys();
+  let lastError = null;
+
+  if (allKeys.length === 0) {
+    throw new Error("❌ Nenhuma Chave GEMINI configurada.");
+  }
+
+  const keysMetadata = allKeys.map((key) => {
+    const meta = getKeyMetadata(key);
+    return { key, ...meta };
+  });
+
+  const activeKeys = keysMetadata.filter(m => 
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+  );
+  
+  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
+  candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
+  const finalSortedKeys = candidateKeysInfo.map(info => info.key);
+
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = reader.result as string;
+      resolve(res.split(",")[1]);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
+Você recebeu o arquivo PDF original completo de uma peça processual ou documento jurídico oficial.
+
+SUA MISSÃO:
+1. Analise o documento em sua totalidade, página por página, na ordem exata (Página 1, Página 2, até a última página).
+2. Para CADA PÁGINA identificada no documento, inicie OBRIGATORIAMENTE com um marcador de cabeçalho padronizado:
+   [PÁGINA X - RECUPERADO VIA GEMINI 3.5 FLASH]
+   (onde X é o número sequencial da página: 1, 2, 3, etc.)
+3. Transcreva todo o conteúdo literal de cada página:
+   - Nomes completos, CPFs, RGs, NBs (números de benefício), datas, carimbos, assinaturas, autenticações de protocolo e notas de rodapé.
+   - Tabelas financeiras, vínculos do CNIS, cálculos ou laudos médicos devem ser transcritos integralmente em tabelas Markdown estruturadas completas.
+   - Não resuma, não omita trechos e não use elipses "[...]".
+4. Ao final de cada página, insira a linha divisória:
+   ══════════════════════════════════════════════════`;
+
+  const modelName = "gemini-3.5-flash";
+
+  for (let i = 0; i < finalSortedKeys.length; i++) {
+    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+    const apiKey = finalSortedKeys[i];
+    const keyHash = apiKey.slice(-6);
+
+    try {
+      console.log(`[Gemini 3.5 Flash - Direct PDF] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Ingestão nativa iniciada...`);
+      if (onProgress) onProgress(20, `Gemini 3.5 Flash: Lendo PDF nativo sem canvas (Chave ..${keyHash})...`);
+
+      const ai = new GoogleGenAI({ apiKey });
+
+      let timer: any = null;
+      let rejectPromise: ((reason?: any) => void) | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        rejectPromise = reject;
+        timer = setTimeout(() => {
+          reject(new Error("Timeout: Gemini 3.5 Flash não respondeu em 60s."));
+        }, 60000);
+      });
+
+      const resetInactivityTimer = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (rejectPromise) {
+            rejectPromise(new Error("Timeout de inatividade no stream direto."));
+          }
+        }, 30000);
+      };
+
+      const streamPromise = (async () => {
+        try {
+          const responseStream = await ai.models.generateContentStream({
+            model: modelName,
+            contents: {
+              parts: [
+                { text: prompt },
+                { inlineData: { data: base64, mimeType: "application/pdf" } }
+              ]
+            },
+            config: {
+              temperature: 0.1,
+              maxOutputTokens: 32768,
+            }
+          });
+
+          let fullText = "";
+          let chunksReceived = 0;
+
+          for await (const chunk of responseStream) {
+            if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+            resetInactivityTimer();
+            fullText += chunk.text;
+            chunksReceived++;
+            if (onProgress) {
+              const fakePercent = Math.min(96, 25 + Math.floor(chunksReceived * 1.5));
+              onProgress(fakePercent, `Gemini 3.5 Flash: Transcrevendo documento nativo (${chunksReceived} fragmentos)...`);
+            }
+          }
+          return fullText.trim();
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      })();
+
+      const resultText = await Promise.race([streamPromise, timeoutPromise]);
+      if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+      return resultText;
+
+    } catch (e: any) {
+      if (window.lexscan_abort || e?.message === "ABORT_BY_USER") throw new Error("ABORT_BY_USER");
+      console.warn(`[Direct PDF Falhou] Chave ${i + 1} (..${keyHash}):`, e.message || e);
+      lastError = e;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  throw lastError || new Error("Falha na extração direta de PDF via Gemini 3.5 Flash.");
+}
+
 // Auxiliar para verificar se o canvas da página renderizada é totalmente em branco (ex: verso de certidão, folha vazia)
 function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
   try {
@@ -2329,6 +2457,32 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
 
   const startIdx = parseInt(startPage) || 1;
   const endIdx = pdf.numPages;
+
+  // ⚡ MODO SUPER RÁPIDO NATIVO (PADRÃO CHAT / GEMINI DIRETO):
+  // Se estiver lendo do início, com IA ativada e o arquivo estiver dentro do limite de 20MB,
+  // enviamos o PDF ORIGINAL DIRETAMENTE ao Gemini 3.5 Flash em 1 única chamada!
+  // Isso elimina 100% da renderização lenta do navegador, timeouts de canvas e travamentos de memória.
+  if (startIdx === 1 && (useAi || forceAi) && file.size <= 20 * 1024 * 1024) {
+    try {
+      onProgress(10, "⚡ Ingestão Nativa Ativada: Enviando PDF integral ao Gemini 3.5 Flash...");
+      const directText = await extractFullPdfWithGeminiDirect(file, onProgress);
+      if (directText && directText.length > 50) {
+        onProgress(100, "✓ PDF integralmente lido com Gemini 3.5 Flash!");
+        return {
+          text: directText,
+          confidence: 99,
+          fromCache: false
+        };
+      }
+    } catch (directErr: any) {
+      if (window.lexscan_abort || directErr?.message === "ABORT_BY_USER") {
+        throw new Error("ABORT_BY_USER");
+      }
+      console.warn("Ingestão direta alternou para contingência:", directErr);
+      onProgress(12, "Alternando para contingência página a página...");
+    }
+  }
+
   // 🎯 Chave ativa do documento: mantém a mesma chave para todas as páginas deste documento
   let activeDocumentApiKey: string | null = null;
 
@@ -2452,12 +2606,12 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               viewport = page.getViewport({ scale: scaleAttempt });
               canvas.width = Math.floor(viewport.width);
               canvas.height = Math.floor(viewport.height);
-              ctx = canvas.getContext("2d", { willReadFrequently: true });
+              ctx = canvas.getContext("2d");
               if (!ctx) continue;
 
               renderTask = page.render({ canvasContext: ctx, viewport });
-              // Timeout elástico de 45s para renderização sem falhas mesmo em PDFs pesados
-              await withTimeout(renderTask.promise, 45000, `Timeout na renderização com escala ${scaleAttempt.toFixed(2)}`);
+              // Timeout elástico de 60s com aceleração GPU ativa
+              await withTimeout(renderTask.promise, 60000, `Timeout na renderização com escala ${scaleAttempt.toFixed(2)}`);
               finalCanvasToUse = canvas;
               renderSuccess = true;
               break;
