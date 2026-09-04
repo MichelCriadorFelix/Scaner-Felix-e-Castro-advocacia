@@ -1105,12 +1105,13 @@ function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
 }
 
 // Detecta se o Gemini travou em loop de repetição (ex: linha separadora de tabela ou sublinhado repetido sem parar).
-// A limpeza cosmética (collapse de _____/----- no texto final) não basta sozinha: se o loop consumiu o orçamento
-// de tokens, o resto da página real nunca chegou a ser gerado. Por isso a resposta é REJEITADA e uma nova
-// tentativa é feita (próximo modelo/chave), em vez de só maquiar o resultado incompleto.
+// O limite é propositalmente ALTO (bloco repetido de pelo menos 2000 caracteres) para nunca confundir uma
+// tabela larga legítima (poucas dezenas de colunas) com um loop genuíno, que sempre gera dezenas de milhares
+// de caracteres do mesmo padrão. Um limite baixo demais aqui rejeita texto bom e trava a transcrição inteira.
 function containsDegenerateRepetition(text: string): boolean {
-  if (!text || text.length < 500) return false;
-  return /(.{1,40})\1{20,}/.test(text.slice(0, 300000));
+  if (!text || text.length < 2000) return false;
+  const match = text.slice(0, 300000).match(/(.{1,50})\1{40,}/);
+  return !!match && match[0].length >= 2000;
 }
 
 // Detecta se a resposta do Gemini foi cortada por estourar o limite de tokens (maxOutputTokens)
@@ -1248,13 +1249,21 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           }
           textOutput = textOutput.trim();
 
-          if (textOutput && streamFinishReason !== 'MAX_TOKENS' && !containsDegenerateRepetition(textOutput)) {
+          if (textOutput && containsDegenerateRepetition(textOutput)) {
+            // Loop de repetição real (dezenas de milhares de caracteres repetidos): descarta e tenta outro modelo.
+            console.warn(`[Gemini Flash] Modelo ${currentModel} retornou resposta em loop de repetição na chave ..${keyHash}. Descartando e tentando próximo modelo...`);
+            textOutput = "";
+            lastModelErr = new Error("Resposta com repetição degenerada.");
+          } else if (textOutput && streamFinishReason === 'MAX_TOKENS') {
+            // Cortou por limite de tokens mas SEM loop: retry não ajuda (mesmo limite nos dois modelos).
+            // Aceita o texto (é real, só incompleto) e sinaliza, em vez de girar em círculo sem entregar nada.
+            console.warn(`[Gemini Flash] Modelo ${currentModel} atingiu o limite de tokens na chave ..${keyHash}. Aceitando texto parcial e sinalizando.`);
+            textOutput += "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar esta página. Recomenda-se conferência manual do PDF original.]";
             modelSuccess = true;
             break;
           } else if (textOutput) {
-            console.warn(`[Gemini Flash] Modelo ${currentModel} retornou resposta truncada/repetitiva (possível loop) na chave ..${keyHash}. Descartando e tentando próximo modelo...`);
-            textOutput = "";
-            lastModelErr = new Error("Resposta truncada ou com repetição degenerada.");
+            modelSuccess = true;
+            break;
           }
         } catch (streamFail: any) {
           lastModelErr = streamFail;
@@ -1287,13 +1296,18 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             });
 
             const directText = directRes?.text?.trim() || "";
-            if (directText && !isTruncatedResponse(directRes) && !containsDegenerateRepetition(directText)) {
-              textOutput = directText;
+            if (directText && containsDegenerateRepetition(directText)) {
+              console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou resposta em loop de repetição. Tentando próximo modelo...`);
+              lastModelErr = new Error("Resposta direta com repetição degenerada.");
+            } else if (directText && isTruncatedResponse(directRes)) {
+              console.warn(`[Gemini Flash] Chamada direta ${currentModel} atingiu o limite de tokens. Aceitando texto parcial e sinalizando.`);
+              textOutput = directText + "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar esta página. Recomenda-se conferência manual do PDF original.]";
               modelSuccess = true;
               break;
             } else if (directText) {
-              console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou resposta truncada/repetitiva. Tentando próximo modelo...`);
-              lastModelErr = new Error("Resposta direta truncada ou com repetição degenerada.");
+              textOutput = directText;
+              modelSuccess = true;
+              break;
             }
           } catch (directErr: any) {
             lastModelErr = directErr;
@@ -1328,7 +1342,12 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               }
             });
             const retryText = retryRes?.text?.trim() || "";
-            if (retryText && !isTruncatedResponse(retryRes) && !containsDegenerateRepetition(retryText)) {
+            if (retryText && containsDegenerateRepetition(retryText)) {
+              lastModelErr = new Error("Resposta de repescagem com repetição degenerada.");
+            } else if (retryText && isTruncatedResponse(retryRes)) {
+              textOutput = retryText + "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar esta página. Recomenda-se conferência manual do PDF original.]";
+              modelSuccess = true;
+            } else if (retryText) {
               textOutput = retryText;
               modelSuccess = true;
             }
@@ -1466,10 +1485,13 @@ REGRAS CRÍTICAS:
           }
         }
         textOutput = fullText.trim();
-        if (textOutput && (batchFinishReason === 'MAX_TOKENS' || containsDegenerateRepetition(textOutput))) {
-          console.warn(`[Gemini Batch] Resposta truncada/repetitiva (possível loop) na chave ..${keyHash}. Descartando.`);
+        if (textOutput && containsDegenerateRepetition(textOutput)) {
+          console.warn(`[Gemini Batch] Resposta em loop de repetição na chave ..${keyHash}. Descartando.`);
           textOutput = "";
-          throw new Error("Resposta truncada ou com repetição degenerada no lote.");
+          throw new Error("Resposta com repetição degenerada no lote.");
+        } else if (textOutput && batchFinishReason === 'MAX_TOKENS') {
+          console.warn(`[Gemini Batch] Lote atingiu o limite de tokens na chave ..${keyHash}. Aceitando texto parcial e sinalizando.`);
+          textOutput += "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar este lote. Recomenda-se conferência manual do PDF original.]";
         }
       } catch (streamFail: any) {
         const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
@@ -1495,9 +1517,11 @@ REGRAS CRÍTICAS:
         if (!textOutput) {
           throw new Error("Resposta vazia da IA no lote direto.");
         }
-        if (isTruncatedResponse(directRes) || containsDegenerateRepetition(textOutput)) {
+        if (containsDegenerateRepetition(textOutput)) {
           textOutput = "";
-          throw new Error("Resposta truncada ou com repetição degenerada no lote direto.");
+          throw new Error("Resposta com repetição degenerada no lote direto.");
+        } else if (isTruncatedResponse(directRes)) {
+          textOutput += "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar este lote. Recomenda-se conferência manual do PDF original.]";
         }
       }
 
