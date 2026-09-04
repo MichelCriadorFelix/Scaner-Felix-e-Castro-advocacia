@@ -1311,7 +1311,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       // Se os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-3.5-flash direto
       if (!modelSuccess && lastModelErr) {
         const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
-        if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
+        if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand") || errCheck.includes("truncada") || errCheck.includes("degenerada")) {
           console.log(`[Gemini Flash] Breve pausa para o Google recuperar sobrecarga (800ms) na chave ..${keyHash}...`);
           await new Promise(r => setTimeout(r, 800));
           try {
@@ -1360,8 +1360,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
     if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
     else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
     else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
-    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout") || errorStr.includes("overloaded") || errorStr.includes("unavailable") || errorStr.includes("high demand")) errorType = 'server_error';
-    
+    // "truncada"/"degenerada" vêm da nossa própria detecção de loop de repetição — é um problema de conteúdo
+    // daquela página específica, não da chave. Classificar como server_error (em vez de 'error' genérico)
+    // impede que a chave seja banida do pool pras próximas páginas por causa de algo que não é culpa dela.
+    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout") || errorStr.includes("overloaded") || errorStr.includes("unavailable") || errorStr.includes("high demand") || errorStr.includes("truncada") || errorStr.includes("degenerada")) errorType = 'server_error';
+
     console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}). Avançando imediatamente para a próxima chave...`);
     if (window.setKeyError) window.setKeyError(keyHash, errorType);
     await new Promise(r => setTimeout(r, 50));
@@ -1515,8 +1518,8 @@ REGRAS CRÍTICAS:
     if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
     else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
     else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
-    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout")) errorType = 'server_error';
-    
+    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout") || errorStr.includes("truncada") || errorStr.includes("degenerada")) errorType = 'server_error';
+
     console.warn(`[Batch Failover] Chave ..${keyHash} falhou (${errorType}). Avançando imediatamente para a próxima chave...`);
     if (window.setKeyError) window.setKeyError(keyHash, errorType);
     await new Promise(r => setTimeout(r, 50));
