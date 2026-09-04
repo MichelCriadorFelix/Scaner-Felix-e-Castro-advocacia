@@ -23,14 +23,21 @@ export default defineConfig(({mode}) => {
       return acc;
     }, {});
 
+  const supabaseUrlValue = allAvailableEnv.VITE_SUPABASE_URL || allAvailableEnv.SUPABASE_URL || allAvailableEnv.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseKeyValue = allAvailableEnv.VITE_SUPABASE_ANON_KEY || allAvailableEnv.SUPABASE_ANON_KEY || allAvailableEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY || allAvailableEnv.SUPABASE_PUBLISHABLE_KEY || allAvailableEnv.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
+
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      'process.env': {},
       ...geminiEnvVars,
       'process.env.ALL_GEMINI_KEYS': JSON.stringify(geminiKeysList),
-      'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL || ''),
-      'process.env.SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || env.SUPABASE_PUBLISHABLE_KEY || env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''),
+      'process.env.SUPABASE_URL': JSON.stringify(supabaseUrlValue),
+      'process.env.VITE_SUPABASE_URL': JSON.stringify(supabaseUrlValue),
+      'process.env.NEXT_PUBLIC_SUPABASE_URL': JSON.stringify(supabaseUrlValue),
+      'process.env.SUPABASE_ANON_KEY': JSON.stringify(supabaseKeyValue),
+      'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(supabaseKeyValue),
+      'process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY': JSON.stringify(supabaseKeyValue),
+      'process.env.SUPABASE_PUBLISHABLE_KEY': JSON.stringify(supabaseKeyValue),
     },
     resolve: {
       alias: {
