@@ -6879,8 +6879,8 @@ export default function ScannerJuridico() {
               const usageCount = keyUsage[hash] || 0;
               const errorStatus = keyErrors[hash] || 'ok';
               
-              const isOk = errorStatus === 'ok' || errorStatus === 'active';
-              
+              const isOk = errorStatus === 'ok' || errorStatus === 'active' || errorStatus === 'server_error';
+
               let badgeText = `${usageCount} ${usageCount === 1 ? 'requisito' : 'requisições'}`;
               let statusText = 'Status: Ok';
               let statusColor = G.muted;
@@ -6905,6 +6905,14 @@ export default function ScannerJuridico() {
                 statusColor = '#ef4444';
                 cardBorder = 'rgba(239, 68, 68, 0.6)';
                 badgeColor = '#ef4444';
+              } else if (errorStatus === 'server_error') {
+                // Falha transitória (sobrecarga do Google ou resposta descartada por loop/truncamento).
+                // A chave continua ativa no pool e tende a se recuperar sozinha na próxima página.
+                badgeText = 'OSCILANDO';
+                statusText = 'Falha temporária — tentando novamente automaticamente.';
+                statusColor = '#f59e0b';
+                cardBorder = 'rgba(245, 158, 11, 0.5)';
+                badgeColor = '#f59e0b';
               } else if (!isOk) {
                 badgeText = 'FALHA';
                 statusText = 'Erro detectado na requisição.';
