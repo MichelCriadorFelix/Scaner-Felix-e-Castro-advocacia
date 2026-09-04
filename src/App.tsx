@@ -1744,8 +1744,8 @@ function detectFailedPages(text: string): number[] {
     failedPages.push(parseInt(m[1], 10));
   }
 
-  // 2. Página explicitamente indicada como pulada ou corrompida
-  const r2 = /\[?P[ÁA]GINA\s+(\d+)[^\]\n]*\b(?:PULADA|FALHOU|CORROMPIDA)\b/gi;
+  // 2. Página explicitamente indicada como pulada, corrompida ou com falha (estrutural ou de extração)
+  const r2 = /\[?P[ÁA]GINA\s+(\d+)[^\]\n]*\b(?:PULADA|FALHOU|CORROMPIDA|FALHA\s+ESTRUTURAL|FALHA\s+NA\s+EXTRA[ÇC][ÃA]O)\b/gi;
   while ((m = r2.exec(text)) !== null) {
     failedPages.push(parseInt(m[1], 10));
   }
@@ -1754,6 +1754,24 @@ function detectFailedPages(text: string): number[] {
   const r3 = /\[P[ÁA]GINA\s+(\d+)\s+-\s+OCR\s+BRUTO\s*\(\s*(?:0%|FALHA|ERRO)/gi;
   while ((m = r3.exec(text)) !== null) {
     failedPages.push(parseInt(m[1], 10));
+  }
+
+  // 4. Aviso de texto truncado por limite de tokens: fica DENTRO do bloco da página, não no cabeçalho,
+  // então associa cada aviso ao cabeçalho [PÁGINA N ...] mais próximo que vem antes dele no texto.
+  const truncMarker = /\[⚠️\s*TEXTO\s+TRUNCADO/gi;
+  const headerRegex = /\[P[ÁA]GINA\s+(\d+)\s*-/gi;
+  while ((m = truncMarker.exec(text)) !== null) {
+    const truncIndex = m.index;
+    headerRegex.lastIndex = 0;
+    let lastPageNum: number | null = null;
+    let hm;
+    while ((hm = headerRegex.exec(text)) !== null) {
+      if (hm.index > truncIndex) break;
+      lastPageNum = parseInt(hm[1], 10);
+    }
+    if (lastPageNum !== null) {
+      failedPages.push(lastPageNum);
+    }
   }
 
   return [...new Set(failedPages)].sort((a, b) => a - b);
