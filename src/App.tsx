@@ -4641,10 +4641,13 @@ export default function ScannerJuridico() {
             const enhancedForAi = await enhanceImageForGemini(originalColorBlob as Blob);
             
             setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
-            const aiText = await extractPageWithGemini(enhancedForAi, (p, msg) => {
+            const aiResult = await extractPageWithGemini(enhancedForAi, (p, msg) => {
               setProgressMsg(`[Pág ${pageNum}] ${msg || "Extraindo..."}`);
             }, goldStandard);
-            
+            // extractPageWithGemini retorna { text, usedKey }, não uma string pura — sem isso, optimizeRawText
+            // recebia o objeto inteiro e quebrava em "text.toLowerCase is not a function" pra qualquer página
+            // que precisasse mesmo da IA (as que já tinham texto digital nem chegavam a passar por aqui).
+            const aiText = (aiResult && typeof aiResult === 'object' && 'text' in aiResult) ? aiResult.text : aiResult;
             cleanAiText = optimizeRawText(aiText, true);
             
             // Limpar canvas
