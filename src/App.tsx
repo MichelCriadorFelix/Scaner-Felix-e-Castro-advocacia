@@ -955,8 +955,28 @@ function getAvailableGeminiKeys() {
   return [...new Set(rawKeys)].filter(k => k && typeof k === 'string' && k.length > 20);
 }
 
+// Reset automático diário das cotas gratuitas do Google (resetam à meia-noite)
+function checkDailyReset() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const lastDate = localStorage.getItem('lexscan_key_date');
+    if (lastDate && lastDate !== today) {
+      console.log(`[LexScan] Novo dia detectado (${today} vs ${lastDate}). Resetando status e contadores de cotas das chaves.`);
+      localStorage.removeItem('lexscan_key_errors');
+      localStorage.removeItem('lexscan_key_usage');
+      localStorage.setItem('lexscan_key_date', today);
+      return true;
+    }
+    if (!lastDate) {
+      localStorage.setItem('lexscan_key_date', today);
+    }
+  } catch (e) {}
+  return false;
+}
+
 // Helper para ler status e uso de chaves diretamente do localStorage (compartilhado com React)
 function getKeyMetadata(apiKey) {
+  checkDailyReset();
   const hash = apiKey.slice(-6);
   let usage = 0;
   let errorStatus = 'ok';
@@ -1077,15 +1097,17 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   // Se TODAS as chaves estiverem marcadas com erro, usamos todas como fallback (reiniciando tentativa caso alguma tenha resetado)
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
 
-  // ORDENAÇÃO INTELIGENTE (Load-Balancing Dinâmico): 
-  // Prioriza chaves com MENOR número de requisições realizadas (usage crescente).
-  candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
-
-  let finalSortedKeys = candidateKeysInfo.map(info => info.key);
-
-  // 🎯 FIXAR CHAVE POR DOCUMENTO: se já temos uma chave preferencial em funcionamento neste documento, mantém ela no topo!
-  if (preferredApiKey && finalSortedKeys.includes(preferredApiKey)) {
-    finalSortedKeys = [preferredApiKey, ...finalSortedKeys.filter(k => k !== preferredApiKey)];
+  // ORDENAÇÃO INTELIGENTE (Load-Balancing Dinâmico com Fixação por Documento):
+  // Se preferredApiKey for fornecida e estiver válida (sem erro de cota), ela continua fixa no topo!
+  let finalSortedKeys: string[] = [];
+  if (preferredApiKey && candidateKeysInfo.some(k => k.key === preferredApiKey)) {
+    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === preferredApiKey)!;
+    const others = candidateKeysInfo.filter(k => k.key !== preferredApiKey);
+    others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
+    finalSortedKeys = [preferredKeyInfo.key, ...others.map(o => o.key)];
+  } else {
+    candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
+    finalSortedKeys = candidateKeysInfo.map(info => info.key);
   }
 
   const base64 = await new Promise((r) => {
@@ -1216,7 +1238,9 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         textOutput = await streamPromise;
       } catch (streamFail: any) {
         console.warn(`[Gemini 3.5 Flash] Streaming falhou, tentando chamada direta com chave ..${keyHash}:`, streamFail?.message || streamFail);
-        const directRes = await ai.models.generateContent({
+        
+        let directTimer: any = null;
+        const directPromise = ai.models.generateContent({
           model: MODEL_NAME,
           contents: [
             { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
@@ -1228,13 +1252,25 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             maxOutputTokens: 16383,
           }
         });
+        const directTimeout = new Promise((_, reject) => {
+          directTimer = setTimeout(() => reject(new Error("Timeout de 25s na chamada direta")), 25000);
+        });
+
+        const directRes: any = await Promise.race([directPromise, directTimeout]).finally(() => {
+          if (directTimer) clearTimeout(directTimer);
+        });
         textOutput = directRes?.text?.trim() || "";
+        if (!textOutput) {
+          throw new Error("Resposta da IA vazia na chamada direta.");
+        }
       }
 
       if (textOutput) {
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
         if (window.setKeyError) window.setKeyError(keyHash, 'ok');
         return { text: textOutput, usedKey: apiKey };
+      } else {
+        throw new Error("Texto extraído vazio.");
       }
     } catch (modelErr: any) {
       lastError = modelErr;
@@ -1248,12 +1284,12 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
     else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
     else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout")) errorType = 'server_error';
     
-    console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}).`);
+    console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}). Avançando imediatamente para a próxima chave...`);
     if (window.setKeyError) window.setKeyError(keyHash, errorType);
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 50));
   }
 
-  throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis."));
+  throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis ou todas as cotas excedidas."));
 }
 
 // ── Ingestão em Lotes via Imagens (Canvas) ──────────
@@ -1274,11 +1310,16 @@ async function extractBatchOfImagesWithGemini(images, onProgress, goldStandard =
   );
   
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
-  candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
 
-  let finalSortedKeys = candidateKeysInfo.map(info => info.key);
-  if (preferredApiKey && finalSortedKeys.includes(preferredApiKey)) {
-    finalSortedKeys = [preferredApiKey, ...finalSortedKeys.filter(k => k !== preferredApiKey)];
+  let finalSortedKeys: string[] = [];
+  if (preferredApiKey && candidateKeysInfo.some(k => k.key === preferredApiKey)) {
+    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === preferredApiKey)!;
+    const others = candidateKeysInfo.filter(k => k.key !== preferredApiKey);
+    others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
+    finalSortedKeys = [preferredKeyInfo.key, ...others.map(o => o.key)];
+  } else {
+    candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
+    finalSortedKeys = candidateKeysInfo.map(info => info.key);
   }
 
   const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
@@ -1376,7 +1417,9 @@ REGRAS CRÍTICAS:
         textOutput = await streamPromise;
       } catch (streamFail: any) {
         console.warn(`[Gemini 3.5 Flash Batch] Streaming falhou, tentando chamada direta:`, streamFail?.message || streamFail);
-        const directRes = await ai.models.generateContent({
+        
+        let directTimer: any = null;
+        const directPromise = ai.models.generateContent({
           model: MODEL_NAME,
           contents: parts,
           config: {
@@ -1385,13 +1428,25 @@ REGRAS CRÍTICAS:
             maxOutputTokens: 16383
           }
         });
+        const directTimeout = new Promise((_, reject) => {
+          directTimer = setTimeout(() => reject(new Error("Timeout de 30s na chamada direta do lote")), 30000);
+        });
+
+        const directRes: any = await Promise.race([directPromise, directTimeout]).finally(() => {
+          if (directTimer) clearTimeout(directTimer);
+        });
         textOutput = directRes?.text?.trim() || "";
+        if (!textOutput) {
+          throw new Error("Resposta vazia da IA no lote direto.");
+        }
       }
 
       if (textOutput) {
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
         if (window.setKeyError) window.setKeyError(keyHash, 'ok');
         return { text: textOutput, usedKey: apiKey };
+      } else {
+        throw new Error("Resposta vazia da IA no lote.");
       }
     } catch (modelErr: any) {
       lastError = modelErr;
@@ -1400,14 +1455,14 @@ REGRAS CRÍTICAS:
 
     const errorStr = (lastError?.message || "").toLowerCase();
     let errorType = 'error';
-    if (errorStr.includes("403") || errorStr.includes("denied")) errorType = 'blocked';
-    else if (errorStr.includes("invalid")) errorType = 'invalid';
-    else if (errorStr.includes("429") || errorStr.includes("quota")) errorType = 'quota_exceeded';
-    else if (errorStr.includes("503") || errorStr.includes("timeout")) errorType = 'server_error';
+    if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
+    else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
+    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
+    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout")) errorType = 'server_error';
     
-    console.warn(`[Batch Failover] Chave ..${keyHash} falhou (${errorType}):`, lastError?.message);
+    console.warn(`[Batch Failover] Chave ..${keyHash} falhou (${errorType}). Avançando imediatamente para a próxima chave...`);
     if (window.setKeyError) window.setKeyError(keyHash, errorType);
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 50));
   }
 
   throw lastError || new Error("Falha na extração do lote de imagens.");
@@ -2539,62 +2594,27 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
   const endIdx = pdf.numPages;
 
   let activeDocumentApiKey = null;
-  const BATCH_SIZE = 10; // Processamento sempre em lotes para documentos multipáginas
-  let currentBatch = [];
 
-  const processOCRFallback = async (batchItem) => {
+  const processOCRFallback = async (pageNum, blob) => {
     onProgress(
-      Math.round(((batchItem.pageNum - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-      `Pág ${batchItem.pageNum}: Falha geral na IA. Acionando OCR Local...`
+      Math.round(((pageNum - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+      `Pág ${pageNum}: Falha na IA. Acionando OCR Local (Contingência)...`
     );
     if (!tesseractWorker) {
       tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
     }
     try {
-      const res = await withTimeout(tesseractWorker.recognize(batchItem.blob), 60000, `OCR timeout ${batchItem.pageNum}`);
-      fullText += `[PÁGINA ${batchItem.pageNum} - OCR LOCAL (Contingência)]\n` + res.data.text.trim() + "\n\n══════════════════════════════════════════════════\n\n";
+      const res = await withTimeout(tesseractWorker.recognize(blob), 60000, `OCR timeout ${pageNum}`);
+      fullText += `[PÁGINA ${pageNum} - OCR LOCAL (Contingência)]\n` + res.data.text.trim() + "\n\n══════════════════════════════════════════════════\n\n";
       confidenceTotal += Math.round(res.data.confidence);
       pagesEvaluated++;
     } catch (e) {
-      fullText += `[PÁGINA ${batchItem.pageNum} - FALHA NA EXTRAÇÃO]\n\n`;
+      fullText += `[PÁGINA ${pageNum} - FALHA NA EXTRAÇÃO]\n\n`;
     }
-  };
-
-  const flushBatch = async () => {
-    if (currentBatch.length === 0) return;
-    try {
-      const startP = currentBatch[0].pageNum;
-      const endP = currentBatch[currentBatch.length - 1].pageNum;
-      onProgress(
-        Math.round(((startP - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-        `Enviando Lote ${startP}-${endP} (${currentBatch.length} págs) para Gemini 3.5 Flash...`
-      );
-      
-      const batchResult = await extractBatchOfImagesWithGemini(currentBatch, onProgress, goldStandard, activeDocumentApiKey);
-      const batchText = typeof batchResult === 'object' && batchResult?.text ? batchResult.text : String(batchResult || '');
-      if (typeof batchResult === 'object' && batchResult?.usedKey) {
-        activeDocumentApiKey = batchResult.usedKey;
-      }
-      
-      fullText += batchText + "\n\n";
-      confidenceTotal += 99 * currentBatch.length;
-      pagesEvaluated += currentBatch.length;
-    } catch (batchErr) {
-      console.warn(`Falha na extração em lote do Gemini 3.5 Flash:`, batchErr);
-      if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-      
-      // Sem chamadas individuais de IA para documentos multipáginas; aciona contingência local
-      for (const item of currentBatch) {
-         if (window.lexscan_abort) break;
-         await processOCRFallback(item);
-      }
-    }
-    currentBatch = [];
   };
 
   for (let i = startIdx; i <= endIdx; i++) {
     if (window.lexscan_abort) {
-        await flushBatch();
         fullText += `\n\n[PROCESSO PAUSADO PELO USUÁRIO NA PÁGINA ${Math.max(1, i-1)}]\n\n`;
         break;
     }
@@ -2643,7 +2663,6 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
         }
         
         if (isDigital) {
-          await flushBatch();
           onProgress(
             Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
             `Pág ${i}/${endIdx}: Lida instantaneamente (Texto Digital Nativo)!`
@@ -2671,7 +2690,6 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           finalCanvasToUse = canvas;
           
           if (isCanvasBlank(finalCanvasToUse)) {
-            await flushBatch();
             fullText += `[PÁGINA ${i} - PÁGINA EM BRANCO / VERSO SEM CONTEÚDO]\n\n`;
             confidenceTotal += 100;
             pagesEvaluated++;
@@ -2683,41 +2701,43 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           if (useAi || forceAi) {
             onProgress(
               Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-              `Pág ${i}: Otimizando imagem para o lote...`
+              `Pág ${i}/${endIdx}: Transcrevendo via Gemini 3.5 Flash...`
             );
             const enhancedBlob = await enhanceImageForGemini(finalCanvasToUse);
-            const base64 = await new Promise((resolve) => {
-               const reader = new FileReader();
-               reader.onload = () => resolve(reader.result.split(",")[1]);
-               reader.readAsDataURL(enhancedBlob);
-            });
-            
-            currentBatch.push({ pageNum: i, base64, blob: enhancedBlob });
-            pageSuccess = true;
-            
-            if (currentBatch.length >= BATCH_SIZE || i === endIdx) {
-               await flushBatch();
+            try {
+              const aiResult = await extractPageWithGemini(enhancedBlob, onProgress, goldStandard, activeDocumentApiKey);
+              const extractedText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
+              if (typeof aiResult === 'object' && aiResult?.usedKey) {
+                activeDocumentApiKey = aiResult.usedKey; // Mantém a chave fixa enquanto responder com sucesso!
+              }
+              fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + extractedText + "\n\n══════════════════════════════════════════════════\n\n";
+              confidenceTotal += 99;
+              pagesEvaluated++;
+              pageSuccess = true;
+            } catch (aiErr) {
+              console.warn(`[Pág ${i}] Falha geral na IA após tentativas em todas as chaves:`, aiErr);
+              if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+              await processOCRFallback(i, enhancedBlob);
+              pageSuccess = true;
             }
             
             if (page && page.cleanup) page.cleanup();
             break;
           } else {
-             await flushBatch();
-             
-             tempCanvas = document.createElement("canvas");
-             tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
-             const tempCtx = tempCanvas.getContext("2d");
-             if (tempCtx) {
-                tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
-                tempCtx.drawImage(finalCanvasToUse, 0, 0);
-             }
-             const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
-             
-             await processOCRFallback({ pageNum: i, blob });
-             pageSuccess = true;
-             
-             if (page && page.cleanup) page.cleanup();
-             break;
+            tempCanvas = document.createElement("canvas");
+            tempCanvas.width = finalCanvasToUse.width; tempCanvas.height = finalCanvasToUse.height;
+            const tempCtx = tempCanvas.getContext("2d");
+            if (tempCtx) {
+               tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
+               tempCtx.drawImage(finalCanvasToUse, 0, 0);
+            }
+            const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
+            
+            await processOCRFallback(i, blob);
+            pageSuccess = true;
+            
+            if (page && page.cleanup) page.cleanup();
+            break;
           }
         }
       } catch (err) {
@@ -2729,9 +2749,6 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
        fullText += `[PÁGINA ${i} - FALHA ESTRUTURAL AO LER PDF]\n\n`;
     }
   }
-
-  // Ensure any remaining batch is flushed
-  await flushBatch();
 
   if (tesseractWorker) {
     await tesseractWorker.terminate().catch(()=>null);
