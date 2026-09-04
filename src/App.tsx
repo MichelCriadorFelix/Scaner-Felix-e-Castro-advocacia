@@ -2184,6 +2184,30 @@ function buildAuditFormattedReport(
   return formattedReport;
 }
 
+// Extrai números (RG/CPF/Identidade) associados a um papel genérico (ex: requerente, genitora), agrupando
+// por número normalizado -> lista de documentos onde aparece. Não depende de nomes ou casos específicos.
+function collectRoleIdentifiers(fullDocs: any[], roleRegex: RegExp): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  fullDocs.forEach(d => {
+    const text = d.text || '';
+    const name = d.name || 'Documento';
+    const matches = text.match(roleRegex) || [];
+    matches.forEach((match: string) => {
+      const raw = match.match(/[\d.\-\/]{7,18}/)?.[0]?.replace(/[^\d]/g, '');
+      if (!raw || raw.length < 7 || raw.length > 11) return;
+      let formatted = raw;
+      if (raw.length === 11) {
+        formatted = `${raw.slice(0, 3)}.${raw.slice(3, 6)}.${raw.slice(6, 9)}-${raw.slice(9)}`;
+      } else if (raw.length === 9) {
+        formatted = `${raw.slice(0, 2)}.${raw.slice(2, 5)}.${raw.slice(5, 8)}-${raw.slice(8)}`;
+      }
+      if (!map.has(formatted)) map.set(formatted, []);
+      if (!map.get(formatted)!.includes(name)) map.get(formatted)!.push(name);
+    });
+  });
+  return map;
+}
+
 function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): PrePetitionAuditResult {
   const criticalDiscrepancies: string[] = [];
   const substantiveAlerts: string[] = [];
@@ -2191,77 +2215,10 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   const degradedOcrDocs: string[] = [];
   const curationRules: CurationRule[] = [];
 
-  const combinedText = fullDocs.map(d => `[DOC: ${d.name}]\n${d.text || ''}`).join('\n\n');
-
-  // 1. Mapeamento de RGs da Genitora / Representante
-  const motherRgSet = new Map<string, string[]>();
-  // 2. Mapeamento de RGs do Requerente / Titular
-  const titularRgSet = new Map<string, string[]>();
-
+  // Identifica documentos com OCR degradado (regra genérica, vale para qualquer caso)
   fullDocs.forEach(d => {
     const text = d.text || '';
     const name = d.name || 'Documento';
-
-    // RGs associados a Juliana / genitora / representante
-    const julianaMatches = text.match(/(?:JULIANA|genitora|assistente|m[ãa]e)[^\n]{0,90}?(?:RG|Identidade|n[ºo.]?)[\s:nºo.]*([\d.-]{7,14})/gi) || [];
-    julianaMatches.forEach(m => {
-      const cleanNum = m.match(/[\d.-]{7,14}/)?.[0]?.replace(/[^\d]/g, '');
-      if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 10) {
-        const formatted = cleanNum.length === 9 
-          ? `${cleanNum.slice(0, 2)}.${cleanNum.slice(2, 5)}.${cleanNum.slice(5, 8)}-${cleanNum.slice(8)}`
-          : cleanNum;
-        if (!motherRgSet.has(formatted)) motherRgSet.set(formatted, []);
-        if (!motherRgSet.get(formatted)!.includes(name)) motherRgSet.get(formatted)!.push(name);
-      }
-    });
-
-    // Se o documento for o Receituário (Doc 16) e tiver campo manuscrito "Identidade: 25.767.709-0"
-    if (/receit|atestado|laudo/i.test(name) || /25\.?767\.?709/i.test(text)) {
-      const recMatch = text.match(/25\.?767\.?709-?[0-9]?/);
-      if (recMatch) {
-        const formatted = '25.767.709-0';
-        if (!motherRgSet.has(formatted)) motherRgSet.set(formatted, []);
-        if (!motherRgSet.get(formatted)!.includes(name)) motherRgSet.get(formatted)!.push(name);
-      }
-    }
-
-    // Se o documento for Procuração ou Hipossuficiência (Doc 1 e 2)
-    if (/procura|hipossuf|ren[úu]ncia/i.test(name) || /25\.?764\.?703/i.test(text)) {
-      const procMatch = text.match(/25\.?764\.?703-?[0-9]?/);
-      if (procMatch) {
-        const formatted = '25.764.703-2';
-        if (!motherRgSet.has(formatted)) motherRgSet.set(formatted, []);
-        if (!motherRgSet.get(formatted)!.includes(name)) motherRgSet.get(formatted)!.push(name);
-      }
-    }
-
-    // RGs associados a Paulo Henrique / titular
-    const titularMatches = text.match(/(?:PAULO HENRIQUE|Requerente|titular|autor)[^\n]{0,90}?(?:RG|Identidade|n[ºo.]?)[\s:nºo.]*([\d.-]{7,14})/gi) || [];
-    titularMatches.forEach(m => {
-      const cleanNum = m.match(/[\d.-]{7,14}/)?.[0]?.replace(/[^\d]/g, '');
-      if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 10) {
-        const formatted = cleanNum.length === 9 
-          ? `${cleanNum.slice(0, 2)}.${cleanNum.slice(2, 5)}.${cleanNum.slice(5, 8)}-${cleanNum.slice(8)}`
-          : cleanNum;
-        if (!titularRgSet.has(formatted)) titularRgSet.set(formatted, []);
-        if (!titularRgSet.get(formatted)!.includes(name)) titularRgSet.get(formatted)!.push(name);
-      }
-    });
-
-    if (/27\.?639\.?980/i.test(text)) {
-      const formatted = '27.639.980-5';
-      if (!titularRgSet.has(formatted)) titularRgSet.set(formatted, []);
-      if (!titularRgSet.get(formatted)!.includes(name)) titularRgSet.get(formatted)!.push(name);
-    }
-
-    // Detecção específica do RioCard (Nº DOC. 276200805 vs 27.639.980-5)
-    if (/RIOCARD|Passe Livre/i.test(name) || /RIOCARD/i.test(text) || /276200805/.test(text)) {
-      const formatted = '276200805 (RioCard Especial)';
-      if (!titularRgSet.has(formatted)) titularRgSet.set(formatted, []);
-      if (!titularRgSet.get(formatted)!.includes(name)) titularRgSet.get(formatted)!.push(name);
-    }
-
-    // Identifica documentos com OCR degradado
     const conf = getRealConfidence(text, d.confidence);
     const hasOcrBruto = /\[P[ÁA]GINA\s+\d+\s+-\s+OCR\s+BRUTO\s*\(\s*([1-6]\d)%/i.test(text);
     if (conf < 70 || hasOcrBruto) {
@@ -2269,129 +2226,50 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
     }
   });
 
-  // Divergência de RG Genitora
-  if (motherRgSet.size > 1) {
-    const details = Array.from(motherRgSet.entries()).map(([rg, docs]) => `  - RG ${rg} nos arquivos: ${docs.join(', ')}`).join('\n');
-    criticalDiscrepancies.push(
-      `1. RG DA GENITORA / ASSISTENTE (Juliana):\n${details}\n  ➔ ORIENTAÇÃO: Prevalece o RG oficial da Procuração/Doc. Civil (25.764.703-2). O receituário (25.767.709-0) deve ser considerado erro material de preenchimento manual.`
+  // Divergência de identidade (RG/CPF) por PAPEL genérico — funciona pra qualquer cliente, sem nome/número fixo.
+  // Nunca corrige automaticamente: só sinaliza pro advogado decidir qual número está correto (aparece nos
+  // Alertas Estratégicos, que exigem revisão manual antes de entrar no compilado final).
+  const titularRoleRegex = /(?:Requerente|Autor|Titular|Paciente|Segurad[oa]|Interessad[oa])[^\n]{0,90}?(?:CPF|RG|Identidade)[\s:nºo.]*([\d.\-\/]{7,18})/gi;
+  const representanteRoleRegex = /(?:Genitora|Genitor|M[ãa]e|Pai|Representante\s+Legal|Respons[áa]vel)[^\n]{0,90}?(?:CPF|RG|Identidade)[\s:nºo.]*([\d.\-\/]{7,18})/gi;
+
+  const titularNumbers = collectRoleIdentifiers(fullDocs, titularRoleRegex);
+  const representanteNumbers = collectRoleIdentifiers(fullDocs, representanteRoleRegex);
+
+  if (titularNumbers.size > 1) {
+    const details = Array.from(titularNumbers.entries()).map(([num, docs]) => `  - ${num} nos arquivos: ${docs.join(', ')}`).join('\n');
+    substantiveAlerts.push(
+      `• DIVERGÊNCIA DE IDENTIDADE DO REQUERENTE/AUTOR:\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o requerente em documentos distintos. Confira qual está correto antes de peticionar (não corrigido automaticamente).`
     );
-    curationRules.push({
-      title: "RG da Genitora (Juliana)",
-      actionLog: "Corrigindo RG da Genitora de 25.767.709-0 (erro de preenchimento manual no receituário) para 25.764.703-2 (RG Oficial)",
-      summaryReport: "• RG DA GENITORA (Juliana): Corrigido de 25.767.709-0 (erro material do receituário) para 25.764.703-2 (RG Oficial na Procuração e Registro Civil).",
-      run: (t: string) => t.replace(/25\.?767\.?709(?:-0)?/g, "25.764.703-2")
-    });
+  }
+  if (representanteNumbers.size > 1) {
+    const details = Array.from(representanteNumbers.entries()).map(([num, docs]) => `  - ${num} nos arquivos: ${docs.join(', ')}`).join('\n');
+    substantiveAlerts.push(
+      `• DIVERGÊNCIA DE IDENTIDADE DO REPRESENTANTE/GENITOR(A):\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o representante legal em documentos distintos. Confira qual está correto antes de peticionar (não corrigido automaticamente).`
+    );
   }
 
-  // Divergência de Identidade Requerente
-  if (titularRgSet.size > 1) {
-    const details = Array.from(titularRgSet.entries()).map(([rg, docs]) => `  - RG/Doc ${rg} nos arquivos: ${docs.join(', ')}`).join('\n');
-    criticalDiscrepancies.push(
-      `2. IDENTIDADE DO AUTOR / REQUERENTE:\n${details}\n  ➔ ORIENTAÇÃO: O número oficial é RG 27.639.980-5 (CNIS e Identidade PCD). A numeração no RioCard Especial (276200805) decorre de truncamento óptico de leitura do cartão; não utilize na petição inicial.`
-    );
-    curationRules.push({
-      title: "Identidade do Autor / Requerente",
-      actionLog: "Padronizando Identidade do Autor para 27.639.980-5 (sanando truncamento óptico do RioCard 276200805)",
-      summaryReport: "• IDENTIDADE DO AUTOR: Padronizado para RG 27.639.980-5 (CNIS / Doc. PCD), sanando o truncamento óptico do cartão RioCard Especial (276200805).",
-      run: (t: string) => t.replace(/\b276200805\b/g, "27.639.980-5 [RG Oficial]")
-    });
-  }
-
-  // 3. Divergências de CRMs Médicos
-  const crmSarahList: string[] = [];
-  if (/52\.117017-1/i.test(combinedText)) crmSarahList.push('52.117017-1 (Receituário)');
-  if (/52\.0117171-1/i.test(combinedText)) crmSarahList.push('52.0117171-1 (Laudo 2024)');
-  if (/1170171/i.test(combinedText)) crmSarahList.push('1170171 (Rodapé)');
-  if (crmSarahList.length > 1) {
-    criticalDiscrepancies.push(
-      `3. CRM DA DRA. SARAH MARQUES COSTA:\n  - Ocorrências identificadas: ${crmSarahList.join(', ')}\n  ➔ ORIENTAÇÃO: Divergência típica de carimbo/OCR. Na inicial, cite o nome da médica e a unidade SMS CF Sérgio Vieira de Mello para evitar impugnações.`
-    );
-    curationRules.push({
-      title: "CRM Médico da Dra. Sarah Marques Costa",
-      actionLog: "Padronizando numeração do CRM da médica assistente para 52.117017-1",
-      summaryReport: "• CRM MÉDICO: Padronizada a numeração da Dra. Sarah Marques Costa para CRM 52.117017-1.",
-      run: (t: string) => t.replace(/\b52\.0117171-1\b/g, "52.117017-1").replace(/\bCRM[\s:]*1170171\b/gi, "CRM 52.117017-1")
-    });
-  }
-
-  const crmWalterList: string[] = [];
-  if (/7265951/i.test(combinedText)) crmWalterList.push('7265951');
-  if (/7265851/i.test(combinedText)) crmWalterList.push('7265851');
-  if (crmWalterList.length > 1) {
-    criticalDiscrepancies.push(
-      `4. CRM DO DR. WALTER PINTO DOS SANTOS JUNIOR:\n  - Ocorrências identificadas: ${crmWalterList.join(', ')} (divergência de 1 dígito: 951 vs 851)\n  ➔ ORIENTAÇÃO: Confirmar dígito no site do CREMERJ antes de citar precisão numérica estrita.`
-    );
-    curationRules.push({
-      title: "CRM Médico do Dr. Walter Pinto dos Santos Junior",
-      actionLog: "Harmonizando numeração do CRM do Dr. Walter Pinto dos Santos Junior para 7265951",
-      summaryReport: "• CRM MÉDICO: Harmonizado o CRM do Dr. Walter Pinto dos Santos Junior para CRM 7265951.",
-      run: (t: string) => t.replace(/\b7265851\b/g, "7265951")
-    });
-  }
-
-  // 4. Análise Substantiva do CNIS vs Processo Administrativo (NBs)
-  const allNbs = new Set<string>();
-  const nbMatches = combinedText.match(/\b(?:NB|benef[íi]cio:?)\s*(\d{10}|\d{3}\.\d{3}\.\d{3}-\d)\b/gi) || [];
-  nbMatches.forEach(m => {
-    const num = m.replace(/[^\d]/g, '');
-    if (num.length === 10) allNbs.add(num);
+  // Divergência de CRM médico por médico (nome extraído do próprio documento, não fixo) — mesma lógica: só sinaliza.
+  const crmByDoctor = new Map<string, Set<string>>();
+  const crmPattern = /Dr[a]?\.?\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4})[\s\S]{0,120}?CRM[\s\/:\-]*([A-Z]{0,2}\s?[\d.\-]{4,10})|CRM[\s\/:\-]*([A-Z]{0,2}\s?[\d.\-]{4,10})[\s\S]{0,120}?Dr[a]?\.?\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4})/g;
+  fullDocs.forEach(d => {
+    const text = d.text || '';
+    let cm;
+    crmPattern.lastIndex = 0;
+    while ((cm = crmPattern.exec(text)) !== null) {
+      const doctorName = (cm[1] || cm[4] || '').trim().toUpperCase();
+      const crmNum = (cm[2] || cm[3] || '').replace(/\s+/g, '');
+      if (!doctorName || !crmNum) continue;
+      if (!crmByDoctor.has(doctorName)) crmByDoctor.set(doctorName, new Set());
+      crmByDoctor.get(doctorName)!.add(crmNum);
+    }
   });
-
-  const bpcMatches = combinedText.match(/\b([57]\d{9})\b/g) || [];
-  bpcMatches.forEach(n => allNbs.add(n));
-
-  const nbsFound = Array.from(allNbs);
-  const recentExtraNbs = nbsFound.filter(nb => nb === '7317191761' || nb === '7294129330');
-
-  if (recentExtraNbs.length > 0) {
-    substantiveAlerts.push(
-      `• CNIS MAIS RECENTE LISTA NOVOS REQUERIMENTOS APÓS MARÇO/2026:\n  - O Processo Administrativo anexado analisou o NB 729.026.259-0 (DER 02/10/2025, indeferido em 12/03/2026).\n  - Porém, o extrato do CNIS de setembro/2026 acusa 5 indeferimentos, revelando mais 2 NBs posteriores: ${recentExtraNbs.join(' e ')}.\n  ➔ IMPACTO PROCESSUAL CRÍTICO: Recomenda-se extrair no Meu INSS os processos desses 2 NBs mais recentes antes de protocolar para verificar se houve perícia ou decisão administrativa posterior que possa gerar preliminar de falta de interesse ou alteração da DER!`
-    );
-  }
-
-  // 5. Renda per capita e número de componentes
-  if (/Quantidade de Componentes:\s*1\b/i.test(combinedText) && /Renda Bruta:\s*R\$\s*100/i.test(combinedText)) {
-    substantiveAlerts.push(
-      `• CÁLCULO DE RENDA PER CAPITA NO INSS:\n  - O INSS considerou 1 único componente (o autor, renda de R$ 100,00) no cálculo per capita, embora o grupo familiar declarado tenha 4 pessoas.\n  ➔ EFEITO: Trabalha a favor do autor para o critério de miserabilidade (renda líquida de R$ 100,00 inferior a 1/4 do salário mínimo).`
-    );
-  }
-
-  // 6. CadÚnico / Grupo familiar e erros materiais
-  if (/HEITPR/i.test(combinedText)) {
-    cadastralAlerts.push(
-      `• ERRO MATERIAL DO INSS NO CADÚNICO (HEITOR):\n  - No relatório do INSS, o irmão menor consta como 'HEITPR PAULO HENRIQUE RODRIGUES DOS SANTOS' (fusão errônea dos nomes pelo digitador do INSS com o nome do titular).\n  ➔ AÇÃO: Na petição, qualifique Heitor com seu nome correto, esclarecendo o erro de digitação do órgão administrativo.`
-    );
-    curationRules.push({
-      title: "CadÚnico / Grupo Familiar",
-      actionLog: "Corrigindo erro material de digitação do INSS de 'HEITPR' para 'HEITOR'",
-      summaryReport: "• CADÚNICO / GRUPO FAMILIAR: Corrigido erro material de digitação do INSS no nome do irmão menor ('HEITPR' ➔ 'HEITOR').",
-      run: (t: string) => t.replace(/\bHEITPR\b/g, "HEITOR")
-    });
-  }
-
-  if (/Jatan dos Santos Gomes/i.test(combinedText) && /Jonatan dos Santos Gomes/i.test(combinedText)) {
-    cadastralAlerts.push(
-      `• GRAFIA DO NOME DO GENITOR NAS CERTIDÕES: Consta 'Jonatan dos Santos Gomes' na certidão de Sophia e 'Jatan dos Santos Gomes' na de Heitor (truncamento de leitura).`
-    );
-    curationRules.push({
-      title: "Grafia de Familiares",
-      actionLog: "Harmonizando grafia do genitor de 'Jatan dos Santos Gomes' para 'Jonatan dos Santos Gomes'",
-      summaryReport: "• GRAFIA DE FAMILIARES: Harmonizada a grafia do genitor para 'Jonatan dos Santos Gomes'.",
-      run: (t: string) => t.replace(/\bJatan dos Santos Gomes\b/gi, "Jonatan dos Santos Gomes")
-    });
-  }
-
-  if (/Buarque de Hollanda/i.test(combinedText)) {
-    cadastralAlerts.push(
-      `• RUÍDO DE OCR IDENTIFICADO: O termo 'Buarque de Hollanda' presente na certidão decorre de falso-positivo de logotipo de cartório. Não utilizar na redação da petição.`
-    );
-    curationRules.push({
-      title: "Ruídos de Reconhecimento Óptico",
-      actionLog: "Expurgando falso-positivo de marca d'água/logotipo de cartório ('Buarque de Hollanda')",
-      summaryReport: "• RUÍDOS DE OCR EXPURGADOS: Removido o falso-positivo 'Buarque de Hollanda' decorrente de marca d'água de cartório.",
-      run: (t: string) => t.replace(/(?:Cart[óo]rio|Registro|Of[íi]cio\s+de)?\s*Buarque de Hollanda[^\n]*?(?:\r?\n|$)/gi, "\n")
-    });
-  }
+  crmByDoctor.forEach((crmSet, doctorName) => {
+    if (crmSet.size > 1) {
+      substantiveAlerts.push(
+        `• DIVERGÊNCIA DE CRM MÉDICO — ${doctorName}:\n  - Números de CRM encontrados: ${Array.from(crmSet).join(', ')}\n  ➔ Provável ruído de OCR no carimbo/rodapé. Confirme o número correto (ex: site do CRM/UF) antes de citar na petição.`
+      );
+    }
+  });
 
   // Montagem do Relatório Formatado Curado e Saneado
   const formattedReport = buildAuditFormattedReport(curationRules, substantiveAlerts, degradedOcrDocs);
