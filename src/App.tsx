@@ -928,21 +928,20 @@ function getAvailableGeminiKeys() {
     }
   };
 
-  // 1. Busca por substituiÃ§Ã£o estÃ¡tica (Vite Define)
-  // IMPORTANTE: Vite troca essas chamadas literais por strings no momento do Build.
+  // 1. Busca por substituição estática (Vite Define) e fallbacks seguros
   try {
-    if (process.env.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
+    if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) addKey(process.env.GEMINI_API_KEY);
   } catch(e) {}
   try {
-    if (process.env.API_KEY) addKey(process.env.API_KEY);
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) addKey(process.env.API_KEY);
   } catch(e) {}
   try {
-    if (process.env.ALL_GEMINI_KEYS) addKey(process.env.ALL_GEMINI_KEYS);
+    if (typeof process !== 'undefined' && process.env && process.env.ALL_GEMINI_KEYS) addKey(process.env.ALL_GEMINI_KEYS);
   } catch(e) {}
 
   // 2. Busca nativa VITE (import.meta.env)
   try {
-    if (import.meta && import.meta.env) {
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
       if (import.meta.env.VITE_API_KEY) addKey(import.meta.env.VITE_API_KEY);
       Object.keys(import.meta.env).forEach(k => {
         if (k.includes('GEMINI')) addKey(import.meta.env[k]);
@@ -3145,8 +3144,22 @@ function setCachedOCR(hash: string, text: string, confidence: number, fileName?:
 }
 
 // ── Integração Bancos de Dados ────────────────────────────────────────────────
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || import.meta.env.SUPABASE_PUBLISHABLE_KEY || '';
+const getSafeEnv = (key: string): string => {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+      return String(import.meta.env[key]);
+    }
+  } catch(e) {}
+  try {
+    if (typeof process !== 'undefined' && process.env && (process.env as any)[key]) {
+      return String((process.env as any)[key]);
+    }
+  } catch(e) {}
+  return '';
+};
+
+const supabaseUrl = getSafeEnv('VITE_SUPABASE_URL') || getSafeEnv('SUPABASE_URL') || getSafeEnv('NEXT_PUBLIC_SUPABASE_URL');
+const supabaseKey = getSafeEnv('VITE_SUPABASE_ANON_KEY') || getSafeEnv('SUPABASE_ANON_KEY') || getSafeEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') || getSafeEnv('SUPABASE_PUBLISHABLE_KEY');
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey, {
   auth: {
     storageKey: 'felix_castro_scanner_app_auth_session_v3',
@@ -3158,6 +3171,8 @@ const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supaba
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export default function ScannerJuridico() {
+  // Garante reset diário de cotas na inicialização do app
+  checkDailyReset();
   const [tab, setTab] = useState("scanner");
   const [file, setFile] = useState(null);
   const [queue, setQueue] = useState([]); // Fila de arquivos para processamento em massa

@@ -10,6 +10,10 @@
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0d0f14" />
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/9550/9550549.png" />
+    <script>
+      window.process = window.process || { env: {} };
+      window.global = window;
+    </script>
   </head>
   <body>
     <div id="root"></div>

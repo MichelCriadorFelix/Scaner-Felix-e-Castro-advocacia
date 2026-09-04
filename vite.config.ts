@@ -26,6 +26,7 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [react(), tailwindcss()],
     define: {
+      'process.env': {},
       ...geminiEnvVars,
       'process.env.ALL_GEMINI_KEYS': JSON.stringify(geminiKeysList),
       'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL || ''),
