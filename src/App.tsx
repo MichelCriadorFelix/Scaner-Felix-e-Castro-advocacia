@@ -1163,32 +1163,57 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  const MODEL_NAME = "gemini-3.5-flash";
+  const MODEL_NAME = "gemini-3.6-flash";
+  const FALLBACK_MODEL = "gemini-3.5-flash";
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
     
-    console.log(`[Gemini 3.5 Flash - Página] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando página...`);
+    console.log(`[Gemini Flash - Página] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando página...`);
     const ai = new GoogleGenAI({ apiKey });
     
     try {
       let textOutput = "";
+      let activeModel = MODEL_NAME;
       
       try {
-        const responseStream = await ai.models.generateContentStream({
-          model: MODEL_NAME,
-          contents: [
-            { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-            { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
-          ],
-          config: {
-            systemInstruction: prompt,
-            temperature: 0.1,
-            maxOutputTokens: 16383,
+        let responseStream;
+        try {
+          responseStream = await ai.models.generateContentStream({
+            model: activeModel,
+            contents: [
+              { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+              { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+            ],
+            config: {
+              systemInstruction: prompt,
+              temperature: 0.1,
+              maxOutputTokens: 16383,
+            }
+          });
+        } catch (modelInitErr: any) {
+          const initMsg = String(modelInitErr?.message || modelInitErr || "").toLowerCase();
+          if (initMsg.includes("not found") || initMsg.includes("404") || initMsg.includes("unsupported")) {
+            console.warn(`[Gemini] Modelo ${activeModel} indisponível nesta chave, alternando para ${FALLBACK_MODEL}...`);
+            activeModel = FALLBACK_MODEL;
+            responseStream = await ai.models.generateContentStream({
+              model: activeModel,
+              contents: [
+                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+              ],
+              config: {
+                systemInstruction: prompt,
+                temperature: 0.1,
+                maxOutputTokens: 16383,
+              }
+            });
+          } else {
+            throw modelInitErr;
           }
-        });
+        }
 
         let chunksReceived = 0;
         for await (const chunk of responseStream) {
@@ -1197,7 +1222,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           chunksReceived++;
           if (onProgress) {
             const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
-            onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
+            onProgress(fakePercent, `Gemini Flash Lendo... (${chunksReceived} fragmentos)`);
           }
         }
         textOutput = textOutput.trim();
@@ -1218,14 +1243,14 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           streamFailMsg.includes("denied");
 
         if (isGoogleCapacityOrQuota) {
-          console.warn(`[Gemini 3.5 Flash] Chave ..${keyHash} retornou (${streamFailMsg.slice(0, 60)}). Acionando rotação imediata para próxima chave...`);
+          console.warn(`[Gemini Flash] Chave ..${keyHash} retornou (${streamFailMsg.slice(0, 60)}). Acionando rotação imediata para próxima chave...`);
           throw streamFail;
         }
 
-        console.warn(`[Gemini 3.5 Flash] Streaming falhou/desconectou, tentando chamada direta com chave ..${keyHash}:`, streamFailMsg);
+        console.warn(`[Gemini Flash] Streaming falhou/desconectou, tentando chamada direta com chave ..${keyHash}:`, streamFailMsg);
         
         const directRes = await ai.models.generateContent({
-          model: MODEL_NAME,
+          model: activeModel,
           contents: [
             { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
             { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1252,7 +1277,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       }
     } catch (modelErr: any) {
       lastError = modelErr;
-      console.warn(`[Gemini 3.5 Flash] Erro com chave ..${keyHash}:`, modelErr?.message || modelErr);
+      console.warn(`[Gemini Flash] Erro com chave ..${keyHash}:`, modelErr?.message || modelErr);
     }
 
     const errorStr = (lastError?.message || "").toLowerCase();
@@ -1307,7 +1332,8 @@ REGRAS CRÍTICAS:
 2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const MODEL_NAME = "gemini-3.5-flash";
+  const MODEL_NAME = "gemini-3.6-flash";
+  const FALLBACK_MODEL = "gemini-3.5-flash";
 
   const parts: any[] = [
     { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
@@ -1328,21 +1354,42 @@ REGRAS CRÍTICAS:
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
     
-    console.log(`[Gemini 3.5 Flash - Batch] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando lote de ${images.length} páginas...`);
+    console.log(`[Gemini Flash - Batch] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando lote de ${images.length} páginas...`);
     const ai = new GoogleGenAI({ apiKey });
     
     try {
       let textOutput = "";
+      let activeModel = MODEL_NAME;
       try {
-        const responseStream = await ai.models.generateContentStream({
-          model: MODEL_NAME,
-          contents: parts,
-          config: {
-            systemInstruction: prompt,
-            temperature: 0.1,
-            maxOutputTokens: 16383
+        let responseStream;
+        try {
+          responseStream = await ai.models.generateContentStream({
+            model: activeModel,
+            contents: parts,
+            config: {
+              systemInstruction: prompt,
+              temperature: 0.1,
+              maxOutputTokens: 16383
+            }
+          });
+        } catch (initErr: any) {
+          const initMsg = String(initErr?.message || initErr || "").toLowerCase();
+          if (initMsg.includes("not found") || initMsg.includes("404") || initMsg.includes("unsupported")) {
+            console.warn(`[Gemini Batch] Modelo ${activeModel} indisponível, alternando para ${FALLBACK_MODEL}...`);
+            activeModel = FALLBACK_MODEL;
+            responseStream = await ai.models.generateContentStream({
+              model: activeModel,
+              contents: parts,
+              config: {
+                systemInstruction: prompt,
+                temperature: 0.1,
+                maxOutputTokens: 16383
+              }
+            });
+          } else {
+            throw initErr;
           }
-        });
+        }
 
         let fullText = "";
         let chunksCount = 0;
@@ -1807,7 +1854,9 @@ REGRAS CRÍTICAS DE REFINAMENTO:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
   const modelsToTry = [
-    "gemini-3.5-flash"
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-flash-latest"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -2253,7 +2302,9 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-3.5-flash"
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-flash-latest"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -2379,7 +2430,9 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-3.5-flash"
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-flash-latest"
     ];
     let success = false;
 
@@ -2516,7 +2569,7 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   return (before.trim() ? before.trim() + "\n\n" : "") + replacement + (after.trim() ? after.trim() : "");
 }
 
-async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi = false, goldStandard = true) {
+async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRefresh = false, goldStandard = true, forceAi = false) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
@@ -2648,7 +2701,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
           if (useAi || forceAi) {
             onProgress(
               Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-              `Pág ${i}/${endIdx}: Transcrevendo via Gemini 3.5 Flash...`
+              `Pág ${i}/${endIdx}: Transcrevendo via Gemini Flash...`
             );
             const enhancedBlob = await enhanceImageForGemini(finalCanvasToUse);
             try {
@@ -2933,7 +2986,7 @@ async function fetchItemBlob(item: any, supabaseContext: any = null): Promise<Bl
 
 async function extractImageHybrid(file, onProgress, useAi, forceAi = false, goldStandard = true) {
   if (useAi || forceAi) {
-      onProgress(20, "Extraindo via IA Jurídica (Gemini 3.5 Flash)...");
+      onProgress(20, "Extraindo via IA Jurídica (Gemini Flash)...");
       try {
           const enhancedForAi = await enhanceImageForGemini(file);
           const aiResult = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
