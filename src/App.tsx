@@ -1145,9 +1145,14 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Jamais invente ou modifique nomes, números, CPFs, datas ou valores.
    - É ESTRITAMENTE PROIBIDO resumir ou abreviar nomes de pessoas (clientes, advogados, partes, juízes, etc). Todos os nomes devem ser transcritos completos e por extenso, de forma idêntica e verbatim ao que está no documento.
    - Para caracteres de fato ilegíveis por rasuras ou má qualidade extrema do scanner, use '[ILEGÍVEL]'.
-   - Para caligrafias médicas ou manuscritos complexos, esforce-se ao limite máximo para transcrever palavra por palavra com exatidão, deduzindo pelo contexto clínico quando possível, evitando o uso fácil de '[ILEGÍVEL]'.
 
-4. TRATAMENTO DE ASSINATURAS, RUBRICAS E ELEMENTOS VISUAIS:
+4. DECIFRAÇÃO DE LAUDOS MÉDICOS, RECEITUÁRIOS E PRONTUÁRIOS (ATENÇÃO MÁXIMA):
+   - Ao analisar laudos médicos periciais, prontuários, receitas, atestados e exames com letra cursiva ou manuscrita ("letra de médico"):
+     - Mobilize seu vocabulário médico e farmacológico profundo para decifrar a caligrafia pelo contexto clínico.
+     - Identifique com extrema fidelidade: Queixa Principal, Anamnese, Diagnósticos, Códigos de Doenças (CID-10 e CID-11, ex: M54.5, F32, B20), nomes de medicamentos, dosagens (mg, ml, gotas), posologias (ex: 8/8h, 1x ao dia), tempo de repouso/afastamento em dias, datas de atendimento e carimbos (Nome do médico, CRM e UF).
+     - Se uma palavra estiver cortada ou ambígua mas dedutível clinicamente pelo contexto ou farmacologia, transcreva o termo provável ou use '[provável: termo]'. Se totalmente ilegível por rasura irreparável, use '[ilegível]'.
+
+5. TRATAMENTO DE ASSINATURAS, RUBRICAS E ELEMENTOS VISUAIS:
    - Nunca use [ILEGÍVEL] para assinaturas ou rubricas.
    - Se houver assinatura visível, transcreva como: [Assinatura Manuscrita: Nome] ou [Assinatura Digital Detectada].
    - Se houver fotos/selfies de validação biométrica, transcreva apenas como [Foto de Validação Biométrica]. Evite descrever pessoas ou cenários.
@@ -1167,7 +1172,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  const modelsToTry = ["gemini-3.8-flash", "gemini-3.5-flash"];
+  const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.8-flash"];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1278,7 +1283,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         }
       }
 
-      // Se ambos os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-3.5-flash direto
+      // Se os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-2.5-flash direto
       if (!modelSuccess && lastModelErr) {
         const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
         if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
@@ -1286,7 +1291,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           await new Promise(r => setTimeout(r, 800));
           try {
             const retryRes = await ai.models.generateContent({
-              model: "gemini-3.5-flash",
+              model: "gemini-2.5-flash",
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1350,8 +1355,8 @@ REGRAS CRÍTICAS:
 2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const MODEL_NAME = "gemini-3.8-flash";
-  const FALLBACK_MODEL = "gemini-3.5-flash";
+  const MODEL_NAME = "gemini-2.5-flash";
+  const FALLBACK_MODEL = "gemini-2.5-pro";
 
   const parts: any[] = [
     { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
@@ -1872,9 +1877,9 @@ REGRAS CRÍTICAS DE REFINAMENTO:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
   const modelsToTry = [
-    "gemini-3.8-flash",
-    "gemini-3.5-flash",
-    "gemini-3.7-flash"
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.8-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -2320,9 +2325,9 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-3.8-flash",
-    "gemini-3.5-flash",
-    "gemini-3.7-flash"
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.8-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -2448,9 +2453,9 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-3.8-flash",
-      "gemini-3.5-flash",
-      "gemini-3.7-flash"
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      "gemini-3.8-flash"
     ];
     let success = false;
 
@@ -2644,8 +2649,8 @@ REGRAS CRÍTICAS:
 1. Para cada página contida neste anexo, inicie obrigatoriamente a transcrição com o cabeçalho exato:
 [PÁGINA X - RECUPERADO VIA IA JURÍDICA NATIVA]
 (onde X é o número real e sequencial da página no documento, ou seja, entre ${start + 1} e ${end}).
-2. Transcreva todo o texto com máxima precisão: petições, decisões, laudos médicos manuscritos ou impressos, dados cadastrais (CPF, RG, CNIS, NIT), tabelas em markdown, carimbos e certidões.
-3. Jamais abrevie, nunca resuma e nunca omita nada.
+2. Transcreva todo o texto com máxima precisão: petições, decisões, laudos médicos manuscritos ou impressos (decifrando letra de médico, receitas, CIDs, posologias, medicamentos e carimbos com CRM), dados cadastrais (CPF, RG, CNIS, NIT), tabelas em markdown, carimbos e certidões.
+3. Jamais abrevie, nunca resuma e nunca omita nada. Se um laudo médico contiver caligrafia difícil, use dedução clínica e vocabulário médico/farmacológico para transcrever com fidelidade sem recorrer facilmente a [ilegível].
 4. Ao final de cada página transcrita, insira obrigatoriamente a linha divisória:
 ══════════════════════════════════════════════════`;
 
@@ -2653,7 +2658,7 @@ REGRAS CRÍTICAS:
       let lastErr = null;
 
       // Execução com Chave Fixa (mantém a mesma chave enquanto tiver cota)
-      const modelsToTry = ["gemini-3.8-flash", "gemini-3.5-flash"];
+      const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.8-flash"];
 
       for (let attempt = 0; attempt < finalSortedKeys.length; attempt++) {
         if (window.lexscan_abort) break;
@@ -2707,7 +2712,7 @@ REGRAS CRÍTICAS:
             }
           }
 
-          // Se ambos os modelos sofreram sobrecarga no Google, tenta uma repescagem em gemini-3.5-flash após 800ms
+          // Se os modelos sofreram sobrecarga passageira no Google, tenta uma repescagem em gemini-2.5-flash após 800ms
           if (!modelSuccess && lastModelErr) {
             const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
             if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
@@ -2715,7 +2720,7 @@ REGRAS CRÍTICAS:
               await new Promise(r => setTimeout(r, 800));
               try {
                 const retryRes = await ai.models.generateContent({
-                  model: "gemini-3.5-flash",
+                  model: "gemini-2.5-flash",
                   contents: [
                     { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
                     { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
