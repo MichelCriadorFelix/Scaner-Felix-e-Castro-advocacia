@@ -2569,24 +2569,28 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
 // Substituição cirúrgica do texto de uma página específica
 function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: string, isDigital: boolean = false): string {
-  // Regex altamente precisa para encontrar somente marcadores de cabeçalho de página que comecem no início do texto ou de uma linha
+  // Regex altamente precisa para encontrar somente marcadores de cabeçalho de página que comecem no início do texto ou de uma linha.
+  // O colchete de abertura "[" é OBRIGATÓRIO (não opcional): sem isso, rodapés comuns em documentos do INSS/TSE
+  // como "Página 1 de 51" (texto normal do corpo, sem colchete) eram confundidos com um cabeçalho de página real,
+  // cortando a substituição no lugar errado e deixando o conteúdo antigo (com erro) grudado após o texto novo.
   const regexHeader = new RegExp(
-    "(?:^|\\r?\\n)(?:\\[|\\*\\*)?(?:ERRO\\s+CR[ÍI]TICO\\s+NA\\s+|TEXTO\\s+DIGITAL\\s+NATIVO\\s+NA\\s+|RECUPERADO\\s+VIA\\s+IA\\s+JUR[ÍI]DICA\\s+NA\\s+)?(?:P[ÁA]GINA|PAGINA)\\s+" + pageNum + "\\b[^\\n\\*]*?(?:\\]|\\*\\*)?(?:\\r?\\n|$)", 
+    "(?:^|\\r?\\n)(?:\\[(?:ERRO\\s+CR[ÍI]TICO\\s+NA\\s+|TEXTO\\s+DIGITAL\\s+NATIVO\\s+NA\\s+|RECUPERADO\\s+VIA\\s+IA\\s+JUR[ÍI]DICA\\s+NA\\s+)?|\\*\\*)(?:P[ÁA]GINA|PAGINA)\\s+" + pageNum + "\\b[^\\n\\*]*?(?:\\]|\\*\\*)?(?:\\r?\\n|$)",
     "i"
   );
-  
+
   const match = regexHeader.exec(fullText);
   if (!match) {
     console.warn(`[Recuperar páginas] Cabeçalho original não encontrado para a pág ${pageNum}. Fazendo append.`);
-    const prefix = isDigital 
-      ? `[PÁGINA ${pageNum} - TEXTO DIGITAL NATIVO]\n` 
+    const prefix = isDigital
+      ? `[PÁGINA ${pageNum} - TEXTO DIGITAL NATIVO]\n`
       : `[PÁGINA ${pageNum} - RECUPERADO VIA IA JURÍDICA]\n`;
     return fullText + `\n\n` + prefix + newPageText;
   }
-  
+
   const startIndex = match.index;
-  // Encontra o início da PRÓXIMA página real (começando no início da linha) para fixar o limite do corte, preservando completamente as demais páginas
-  const nextHeaderRegex = /(?:\r?\n)(?:\[|\*\*)?(?:ERRO\s+CR[ÍI]TICO\s+NA\s+|TEXTO\s+DIGITAL\s+NATIVO\s+NA\s+|RECUPERADO\s+VIA\s+IA\s+JURÍDICA\s+NA\s+)?(?:P[ÁA]GINA|PAGINA)\s+\d+\b/gi;
+  // Encontra o início da PRÓXIMA página real (começando no início da linha) para fixar o limite do corte, preservando completamente as demais páginas.
+  // Mesma exigência do colchete obrigatório, pelo mesmo motivo.
+  const nextHeaderRegex = /(?:\r?\n)(?:\[(?:ERRO\s+CR[ÍI]TICO\s+NA\s+|TEXTO\s+DIGITAL\s+NATIVO\s+NA\s+|RECUPERADO\s+VIA\s+IA\s+JURÍDICA\s+NA\s+)?|\*\*)(?:P[ÁA]GINA|PAGINA)\s+\d+\b/gi;
   nextHeaderRegex.lastIndex = startIndex + match[0].length;
   
   const nextMatch = nextHeaderRegex.exec(fullText);
