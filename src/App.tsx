@@ -3659,7 +3659,7 @@ export default function ScannerJuridico() {
           }));
         }
         
-        const { data: dData } = await supabase.from('lexscan_documents').select('id, client_id, name, file_type, file_url, confidence, chars_count, words_count, created_at').order('created_at', { ascending: false });
+        const { data: dData } = await supabase.from('lexscan_documents').select('id, client_id, name, file_type, file_url, confidence, chars_count, words_count, created_at, has_failed_pages').order('created_at', { ascending: false });
         if (dData) {
           setHistory(dData.map(d => ({
             id: d.id,
@@ -3672,7 +3672,8 @@ export default function ScannerJuridico() {
             confidence: d.confidence,
             chars: d.chars_count,
             words: d.words_count,
-            ts: d.created_at
+            ts: d.created_at,
+            hasFailedPages: !!d.has_failed_pages // Calculado no servidor, disponível sem carregar o texto inteiro
           })));
         }
       } catch(e) { console.error('Erro Supabase:', e); }
@@ -4103,7 +4104,8 @@ export default function ScannerJuridico() {
           file_url: fileUrl,
           file_type: finalFileForUpload.type,
           chars_count: extracted.text.length,
-          words_count: extracted.text.split(/\s+/).length
+          words_count: extracted.text.split(/\s+/).length,
+          has_failed_pages: detectFailedPages(extracted.text).length > 0
         }).select().single();
         
         if (inserted) finalId = inserted.id;
@@ -4218,7 +4220,8 @@ export default function ScannerJuridico() {
            extracted_text: extracted.text,
            confidence: extracted.confidence,
            chars_count: extracted.text.length,
-           words_count: extracted.text.split(/\s+/).filter(Boolean).length
+           words_count: extracted.text.split(/\s+/).filter(Boolean).length,
+           has_failed_pages: detectFailedPages(extracted.text).length > 0
         };
 
         const { data: dbData, error: dbError } = await supabase.from('lexscan_documents').insert([docRecord]).select();
@@ -4664,14 +4667,16 @@ export default function ScannerJuridico() {
       }
       
       // Atualizar o resultado
+      const stillHasFailedPages = detectFailedPages(updatedText).length > 0;
       const updatedItem = {
         ...targetResult,
         text: updatedText,
         words: updatedText.split(/\s+/).filter(Boolean).length,
         chars: updatedText.length,
-        confidence: Math.max(targetResult.confidence, 95) // Sobe a confiança já que recuperou páginas críticas!
+        confidence: Math.max(targetResult.confidence, 95), // Sobe a confiança já que recuperou páginas críticas!
+        hasFailedPages: stillHasFailedPages
       };
-      
+
       // Se estiver usando o Supabase, atualizar no banco local/remoto!
       if (supabase && targetResult.id) {
         setProgressMsg("Sincronizando atualização no banco de dados...");
@@ -4681,7 +4686,8 @@ export default function ScannerJuridico() {
             extracted_text: updatedText,
             confidence: updatedItem.confidence,
             chars_count: updatedText.length,
-            words_count: updatedItem.words
+            words_count: updatedItem.words,
+            has_failed_pages: stillHasFailedPages
           })
           .eq('id', targetResult.id);
           
@@ -5207,7 +5213,8 @@ export default function ScannerJuridico() {
           extracted_text: extracted.text,
           confidence: extracted.confidence,
           words_count: extracted.text.split(/\s+/).filter(Boolean).length,
-          chars_count: extracted.text.length
+          chars_count: extracted.text.length,
+          has_failed_pages: detectFailedPages(extracted.text).length > 0
         }).eq("id", item.id);
       }
 
@@ -5374,7 +5381,8 @@ export default function ScannerJuridico() {
                 extracted_text: extracted.text,
                 confidence: extracted.confidence,
                 words_count: extracted.text.split(/\s+/).filter(Boolean).length,
-                chars_count: extracted.text.length
+                chars_count: extracted.text.length,
+                has_failed_pages: detectFailedPages(extracted.text).length > 0
               }).eq("id", item.id);
             }
       
@@ -5415,12 +5423,14 @@ export default function ScannerJuridico() {
       const newText = editedText;
       const newWords = newText.split(/\s+/).filter(Boolean).length;
       const newChars = newText.length;
-      
+      const editedHasFailedPages = detectFailedPages(newText).length > 0;
+
       const updatedItem = {
         ...result,
         text: newText,
         words: newWords,
         chars: newChars,
+        hasFailedPages: editedHasFailedPages,
       };
 
       setResult(updatedItem);
@@ -5434,6 +5444,7 @@ export default function ScannerJuridico() {
             extracted_text: newText,
             words_count: newWords,
             chars_count: newChars,
+            has_failed_pages: editedHasFailedPages,
           })
           .eq("id", result.id);
       } else {
@@ -5467,6 +5478,7 @@ export default function ScannerJuridico() {
       const newWords = refined.split(/\s+/).filter(Boolean).length;
       const newChars = refined.length;
       const realConf = getRealConfidence(refined, result.confidence);
+      const refinedHasFailedPages = detectFailedPages(refined).length > 0;
 
       const updatedItem = {
         ...result,
@@ -5474,6 +5486,7 @@ export default function ScannerJuridico() {
         words: newWords,
         chars: newChars,
         confidence: realConf,
+        hasFailedPages: refinedHasFailedPages,
       };
 
       setResult(updatedItem);
@@ -5487,6 +5500,7 @@ export default function ScannerJuridico() {
             words_count: newWords,
             chars_count: newChars,
             confidence: realConf,
+            has_failed_pages: refinedHasFailedPages,
           })
           .eq("id", result.id);
       } else {
@@ -8053,26 +8067,33 @@ export default function ScannerJuridico() {
                             <div className="hist-date">{formatDate(item.ts)}</div>
                             <div className="hist-chars">{item.words} palavras · {getRealConfidence(item.text, item.confidence)}% OCR</div>
 
-                            {/* Alerta inteligente de páginas puladas e botão de reparação automática */}
+                            {/* Alerta inteligente de páginas puladas e botão de reparação automática.
+                                Se o texto do item ainda não foi carregado (lista lazy-load), usa o campo
+                                has_failed_pages calculado no servidor pra mostrar o aviso mesmo sem abrir o documento. */}
                             {(() => {
-                              const uniqFailed = detectFailedPages(item.text || "");
-                              if (uniqFailed.length > 0) {
+                              const textLoaded = item.text !== undefined && item.text !== null && item.text !== "";
+                              const uniqFailed = textLoaded ? detectFailedPages(item.text) : [];
+                              const hasIssue = textLoaded ? uniqFailed.length > 0 : !!item.hasFailedPages;
+                              if (hasIssue) {
+                                const label = uniqFailed.length > 0
+                                  ? `Pág(s) pulada(s): ${uniqFailed.join(', ')}`
+                                  : `Documento com página(s) com falha — abra para ver quais`;
                                 return (
-                                  <div 
-                                    style={{ 
-                                      display: 'flex', 
+                                  <div
+                                    style={{
+                                      display: 'flex',
                                       flexDirection: 'column',
                                       gap: '5px',
-                                      marginTop: '8px', 
-                                      padding: '8px 10px', 
-                                      background: 'rgba(239, 68, 68, 0.08)', 
-                                      border: '1px solid rgba(239, 68, 68, 0.22)', 
+                                      marginTop: '8px',
+                                      padding: '8px 10px',
+                                      background: 'rgba(239, 68, 68, 0.08)',
+                                      border: '1px solid rgba(239, 68, 68, 0.22)',
                                       borderRadius: '8px',
                                     }}
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#f87171', fontSize: '10px', fontWeight: 'bold' }}>
-                                      <span>⚠️</span> <span>Pág(s) pulada(s): {uniqFailed.join(', ')}</span>
+                                      <span>⚠️</span> <span>{label}</span>
                                     </div>
                                     <button
                                       onClick={(e) => {
