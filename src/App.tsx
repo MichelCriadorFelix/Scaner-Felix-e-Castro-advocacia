@@ -1182,9 +1182,9 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         initialTimer = setTimeout(() => {
           if (!isStreamingStarted) {
             isTimedOut = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 10s."));
+            reject(new Error("Timeout: Gemini não conectou nos primeiros 35s."));
           }
-        }, 10000);
+        }, 35000);
 
         try {
           const responseStream = await ai.models.generateContentStream({
@@ -1238,7 +1238,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       } catch (streamFail: any) {
         const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
         
-        // Se o erro do Google for 503 (Servidor Lotado/High Demand), 429 (Cota) ou 403 (Bloqueio),
+        // Se o erro do Google for 503 (Servidor Lotado/High Demand), 429 (Cota) ou 403 (Bloqueio de Chave),
         // NÃO perca tempo tentando chamada direta na MESMA chave! Pule imediatamente para a próxima chave!
         const isGoogleCapacityOrQuota = 
           streamFailMsg.includes("503") || 
@@ -1249,15 +1249,14 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           streamFailMsg.includes("rate limit") || 
           streamFailMsg.includes("exhausted") ||
           streamFailMsg.includes("403") || 
-          streamFailMsg.includes("denied") ||
-          streamFailMsg.includes("timeout");
+          streamFailMsg.includes("denied");
 
         if (isGoogleCapacityOrQuota) {
           console.warn(`[Gemini 3.5 Flash] Chave ..${keyHash} retornou (${streamFailMsg.slice(0, 60)}). Acionando rotação imediata para próxima chave...`);
           throw streamFail;
         }
 
-        console.warn(`[Gemini 3.5 Flash] Streaming desconectou com erro transitório, tentando chamada direta rápida com chave ..${keyHash}:`, streamFailMsg);
+        console.warn(`[Gemini 3.5 Flash] Streaming falhou/desconectou, tentando chamada direta com chave ..${keyHash}:`, streamFailMsg);
         
         let directTimer: any = null;
         const directPromise = ai.models.generateContent({
@@ -1273,7 +1272,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           }
         });
         const directTimeout = new Promise((_, reject) => {
-          directTimer = setTimeout(() => reject(new Error("Timeout de 12s na chamada direta")), 12000);
+          directTimer = setTimeout(() => reject(new Error("Timeout de 40s na chamada direta")), 40000);
         });
 
         const directRes: any = await Promise.race([directPromise, directTimeout]).finally(() => {
