@@ -2656,7 +2656,9 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceAi 
               }
             } catch(e) {}
             
-            if (pageText.length > 150 && (!hasImage)) {
+            // Em PDFs jurídicos (PJe/eproc), páginas com mais de 200 caracteres de texto real são petições digitais
+            // mesmo se houver um brasão ou carimbo no cabeçalho. Extrai instantaneamente sem gastar cota de IA.
+            if (pageText.length > 200 || (pageText.length > 60 && !hasImage)) {
               isDigital = true;
             }
           } catch(e) {}
