@@ -1123,6 +1123,93 @@ function isTruncatedResponse(res: any): boolean {
   }
 }
 
+// Pede pro Gemini CONTINUAR a transcrição da(s) MESMA(s) imagem(ns) a partir de onde parou, em vez de aceitar
+// o texto cortado pela metade. imageParts é o array de partes de imagem já usado na chamada original
+// (uma imagem para página única, várias para lote). Retorna só o trecho novo transcrito.
+async function continuePageTranscription(
+  ai: any,
+  model: string,
+  imageParts: any[],
+  systemPrompt: string,
+  partialTextSoFar: string
+): Promise<{ text: string; finishReason?: string }> {
+  const continuationInstruction = `${systemPrompt}
+
+══════════════════════════════════════════════════
+MODO CONTINUAÇÃO (ATENÇÃO MÁXIMA):
+══════════════════════════════════════════════════
+A transcrição desta MESMA página foi CORTADA no meio por limite de tamanho de resposta. Abaixo está o final do
+que você mesmo já transcreveu até agora (pode terminar no meio de uma palavra, frase ou linha de tabela).
+Sua tarefa agora é APENAS continuar a transcrição EXATAMENTE de onde ela parou, olhando a imagem de novo.
+REGRAS OBRIGATÓRIAS:
+1. NÃO repita nada do texto já transcrito abaixo.
+2. NÃO reinicie a transcrição do começo da página.
+3. Responda SOMENTE com a continuação (o texto novo que vem depois do que já foi transcrito).
+4. Se o texto já transcrito terminou no meio de uma palavra, complete a palavra e continue dali.
+
+--- FINAL DO TEXTO JÁ TRANSCRITO (NÃO REPETIR ISTO) ---
+${partialTextSoFar.slice(-2500)}
+--- FIM DO TRECHO JÁ TRANSCRITO — CONTINUE A PARTIR DAQUI ---`;
+
+  const res = await ai.models.generateContent({
+    model,
+    contents: [
+      { text: "Continue a transcrição literal desta(s) imagem(ns) exatamente de onde parou, conforme as instruções do sistema. Não repita o que já foi transcrito." },
+      ...imageParts
+    ],
+    config: {
+      systemInstruction: continuationInstruction,
+      temperature: 0.1,
+      maxOutputTokens: 16383,
+      thinkingConfig: { thinkingBudget: 0 }
+    }
+  });
+  return { text: res?.text?.trim() || "", finishReason: res?.candidates?.[0]?.finishReason };
+}
+
+// Tenta completar uma transcrição truncada pedindo continuações sucessivas na MESMA chave/modelo (até 3 rodadas).
+// Retorna o texto completo se conseguir fechar (finishReason deixa de ser MAX_TOKENS) ou null se não conseguir —
+// nesse caso quem chamou deve tratar como falha e partir para o próximo modelo/chave, nunca aceitar o texto pela metade.
+async function completeTruncatedTranscription(
+  ai: any,
+  model: string,
+  imageParts: any[],
+  systemPrompt: string,
+  initialText: string,
+  initialFinishReason: string | undefined,
+  keyHash: string
+): Promise<string | null> {
+  let combinedText = initialText;
+  let finishReason = initialFinishReason;
+  let attempt = 0;
+
+  while (finishReason === 'MAX_TOKENS' && attempt < 3) {
+    attempt++;
+    console.warn(`[Gemini Flash] Cortado por limite de tokens na chave ..${keyHash}, pedindo continuação (tentativa ${attempt}/3)...`);
+    try {
+      const cont = await continuePageTranscription(ai, model, imageParts, systemPrompt, combinedText);
+      if (!cont.text || containsDegenerateRepetition(cont.text)) {
+        console.warn(`[Gemini Flash] Continuação veio vazia ou em loop de repetição na chave ..${keyHash}. Abortando continuação.`);
+        return null;
+      }
+      combinedText = combinedText + cont.text;
+      finishReason = cont.finishReason;
+    } catch (contErr: any) {
+      console.warn(`[Gemini Flash] Falha ao pedir continuação na chave ..${keyHash}:`, contErr?.message || contErr);
+      return null;
+    }
+  }
+
+  if (finishReason === 'MAX_TOKENS') {
+    // Esgotou as 3 tentativas de continuação e ainda cortou — não entrega pela metade, sinaliza falha real.
+    return null;
+  }
+  if (containsDegenerateRepetition(combinedText)) {
+    return null;
+  }
+  return combinedText;
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
@@ -1256,12 +1343,20 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             textOutput = "";
             lastModelErr = new Error("Resposta com repetição degenerada.");
           } else if (textOutput && streamFinishReason === 'MAX_TOKENS') {
-            // Cortou por limite de tokens mas SEM loop: retry não ajuda (mesmo limite nos dois modelos).
-            // Aceita o texto (é real, só incompleto) e sinaliza, em vez de girar em círculo sem entregar nada.
-            console.warn(`[Gemini Flash] Modelo ${currentModel} atingiu o limite de tokens na chave ..${keyHash}. Aceitando texto parcial e sinalizando.`);
-            textOutput += "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar esta página. Recomenda-se conferência manual do PDF original.]";
-            modelSuccess = true;
-            break;
+            // Cortou por limite de tokens: NUNCA entrega a página pela metade. Pede continuação na mesma
+            // chave/modelo; só desiste (e passa pro próximo modelo/chave) se a continuação também falhar.
+            const completed = await completeTruncatedTranscription(
+              ai, currentModel, [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, textOutput, streamFinishReason, keyHash
+            );
+            if (completed) {
+              textOutput = completed;
+              modelSuccess = true;
+              break;
+            } else {
+              console.warn(`[Gemini Flash] Modelo ${currentModel} não conseguiu completar a página mesmo com continuação na chave ..${keyHash}. Tentando próximo modelo...`);
+              textOutput = "";
+              lastModelErr = new Error("Página não completada após continuação.");
+            }
           } else if (textOutput) {
             modelSuccess = true;
             break;
@@ -1302,10 +1397,17 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou resposta em loop de repetição. Tentando próximo modelo...`);
               lastModelErr = new Error("Resposta direta com repetição degenerada.");
             } else if (directText && isTruncatedResponse(directRes)) {
-              console.warn(`[Gemini Flash] Chamada direta ${currentModel} atingiu o limite de tokens. Aceitando texto parcial e sinalizando.`);
-              textOutput = directText + "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar esta página. Recomenda-se conferência manual do PDF original.]";
-              modelSuccess = true;
-              break;
+              const completedDirect = await completeTruncatedTranscription(
+                ai, currentModel, [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, directText, 'MAX_TOKENS', keyHash
+              );
+              if (completedDirect) {
+                textOutput = completedDirect;
+                modelSuccess = true;
+                break;
+              } else {
+                console.warn(`[Gemini Flash] Chamada direta ${currentModel} não completou a página mesmo com continuação. Tentando próximo modelo...`);
+                lastModelErr = new Error("Página não completada após continuação (chamada direta).");
+              }
             } else if (directText) {
               textOutput = directText;
               modelSuccess = true;
@@ -1348,8 +1450,15 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             if (retryText && containsDegenerateRepetition(retryText)) {
               lastModelErr = new Error("Resposta de repescagem com repetição degenerada.");
             } else if (retryText && isTruncatedResponse(retryRes)) {
-              textOutput = retryText + "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar esta página. Recomenda-se conferência manual do PDF original.]";
-              modelSuccess = true;
+              const completedRetry = await completeTruncatedTranscription(
+                ai, "gemini-3.5-flash", [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
+              );
+              if (completedRetry) {
+                textOutput = completedRetry;
+                modelSuccess = true;
+              } else {
+                lastModelErr = new Error("Página não completada após continuação (repescagem).");
+              }
             } else if (retryText) {
               textOutput = retryText;
               modelSuccess = true;
@@ -1495,8 +1604,16 @@ REGRAS CRÍTICAS:
           textOutput = "";
           throw new Error("Resposta com repetição degenerada no lote.");
         } else if (textOutput && batchFinishReason === 'MAX_TOKENS') {
-          console.warn(`[Gemini Batch] Lote atingiu o limite de tokens na chave ..${keyHash}. Aceitando texto parcial e sinalizando.`);
-          textOutput += "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar este lote. Recomenda-se conferência manual do PDF original.]";
+          // Nunca entrega o lote pela metade: pede continuação na mesma chave/modelo antes de desistir.
+          const completedBatch = await completeTruncatedTranscription(
+            ai, activeModel, parts, prompt, textOutput, batchFinishReason, keyHash
+          );
+          if (completedBatch) {
+            textOutput = completedBatch;
+          } else {
+            textOutput = "";
+            throw new Error("Lote não completado após continuação (limite de tokens).");
+          }
         }
       } catch (streamFail: any) {
         const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
@@ -1527,7 +1644,15 @@ REGRAS CRÍTICAS:
           textOutput = "";
           throw new Error("Resposta com repetição degenerada no lote direto.");
         } else if (isTruncatedResponse(directRes)) {
-          textOutput += "\n\n[⚠️ TEXTO TRUNCADO: a IA atingiu o limite de tokens antes de terminar este lote. Recomenda-se conferência manual do PDF original.]";
+          const completedDirectBatch = await completeTruncatedTranscription(
+            ai, MODEL_NAME, parts, prompt, textOutput, 'MAX_TOKENS', keyHash
+          );
+          if (completedDirectBatch) {
+            textOutput = completedDirectBatch;
+          } else {
+            textOutput = "";
+            throw new Error("Lote direto não completado após continuação (limite de tokens).");
+          }
         }
       }
 
