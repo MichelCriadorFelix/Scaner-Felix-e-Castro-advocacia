@@ -1221,6 +1221,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 16383,
+                thinkingConfig: { thinkingBudget: 0 },
               }
             });
           } catch (initErr: any) {
@@ -1292,6 +1293,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 16383,
+                thinkingConfig: { thinkingBudget: 0 },
               }
             });
 
@@ -1339,6 +1341,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 16383,
+                thinkingConfig: { thinkingBudget: 0 },
               }
             });
             const retryText = retryRes?.text?.trim() || "";
@@ -1445,7 +1448,8 @@ REGRAS CRÍTICAS:
             config: {
               systemInstruction: prompt,
               temperature: 0.1,
-              maxOutputTokens: 16383
+              maxOutputTokens: 16383,
+              thinkingConfig: { thinkingBudget: 0 }
             }
           });
         } catch (initErr: any) {
@@ -1459,7 +1463,8 @@ REGRAS CRÍTICAS:
               config: {
                 systemInstruction: prompt,
                 temperature: 0.1,
-                maxOutputTokens: 16383
+                maxOutputTokens: 16383,
+                thinkingConfig: { thinkingBudget: 0 }
               }
             });
           } else {
@@ -1509,7 +1514,8 @@ REGRAS CRÍTICAS:
           config: {
             systemInstruction: prompt,
             temperature: 0.1,
-            maxOutputTokens: 16383
+            maxOutputTokens: 16383,
+            thinkingConfig: { thinkingBudget: 0 }
           }
         });
 
@@ -2011,6 +2017,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
             systemInstruction,
             temperature: 0.1,
             maxOutputTokens: 16383,
+            thinkingConfig: { thinkingBudget: 0 },
           }
         });
 
@@ -2484,6 +2491,7 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
             systemInstruction,
             temperature: 0.1,
             maxOutputTokens: 16383,
+            thinkingConfig: { thinkingBudget: 0 },
           }
         });
 
