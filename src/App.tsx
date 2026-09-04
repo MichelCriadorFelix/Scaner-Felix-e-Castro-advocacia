@@ -7,6 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import JSZip from 'jszip';
 import { GoogleGenAI } from "@google/genai";
 import { get, set, del } from 'idb-keyval';
+import { PDFDocument } from 'pdf-lib';
 
 // ── Paleta e estilos globais ──────────────────────────────────────────────────
 const G = {
@@ -2569,7 +2570,168 @@ function replacePageTextInDoc(fullText: string, pageNum: number, newPageText: st
   return (before.trim() ? before.trim() + "\n\n" : "") + replacement + (after.trim() ? after.trim() : "");
 }
 
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const CHUNK_SZ = 0x8000;
+  const c = [];
+  for (let i = 0; i < bytes.length; i += CHUNK_SZ) {
+    c.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SZ)));
+  }
+  return window.btoa(c.join(''));
+}
+
+async function extractPDFNativeChunks(
+  file: File | Blob,
+  onProgress: (percent: number, msg: string) => void,
+  startPage: number = 1,
+  goldStandard: boolean = true
+): Promise<{ text: string; confidence: number } | null> {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+    const totalPages = pdfDoc.getPageCount();
+    if (!totalPages || totalPages === 0) return null;
+
+    let finalSortedKeys = getSortedApiKeys();
+    if (!finalSortedKeys || finalSortedKeys.length === 0) {
+      console.warn("[Gemini Nativo] Nenhuma chave Gemini configurada para modo nativo.");
+      return null;
+    }
+
+    const CHUNK_SIZE = 5; // Lotes de 5 páginas: seguro contra o teto de 16k tokens e resposta em 4 a 6 segundos
+    let fullText = "";
+    let keyIndex = 0;
+    const startIdx = Math.max(0, (parseInt(String(startPage)) || 1) - 1);
+
+    for (let start = startIdx; start < totalPages; start += CHUNK_SIZE) {
+      if (window.lexscan_abort) {
+        fullText += `\n\n[PROCESSO PAUSADO PELO USUÁRIO NA PÁGINA ${start + 1}]\n\n`;
+        break;
+      }
+
+      const end = Math.min(start + CHUNK_SIZE, totalPages);
+      const chunkDoc = await PDFDocument.create();
+      const pageIndices = [];
+      for (let p = start; p < end; p++) pageIndices.push(p);
+      const copiedPages = await chunkDoc.copyPages(pdfDoc, pageIndices);
+      copiedPages.forEach(page => chunkDoc.addPage(page));
+      const chunkBytes = await chunkDoc.save();
+      const chunkBase64 = uint8ArrayToBase64(chunkBytes);
+
+      const percent = Math.round(((start + 1) / totalPages) * 100);
+      onProgress(percent, `Lendo páginas ${start + 1} a ${end} de ${totalPages} via Gemini Nativo...`);
+
+      const systemPrompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
+O arquivo PDF em anexo contém as páginas ${start + 1} a ${end} de um processo ou documento jurídico.
+Sua missão é transcrever integralmente, fielmente e literalmente (verbatim) todo o conteúdo de cada uma dessas páginas.
+REGRAS CRÍTICAS:
+1. Para cada página contida neste anexo, inicie obrigatoriamente a transcrição com o cabeçalho exato:
+[PÁGINA X - RECUPERADO VIA IA JURÍDICA NATIVA]
+(onde X é o número real e sequencial da página no documento, ou seja, entre ${start + 1} e ${end}).
+2. Transcreva todo o texto com máxima precisão: petições, decisões, laudos médicos manuscritos ou impressos, dados cadastrais (CPF, RG, CNIS, NIT), tabelas em markdown, carimbos e certidões.
+3. Jamais abrevie, nunca resuma e nunca omita nada.
+4. Ao final de cada página transcrita, insira obrigatoriamente a linha divisória:
+══════════════════════════════════════════════════`;
+
+      let chunkSuccess = false;
+      let lastErr = null;
+
+      // Rotação equilibrada entre todas as chaves (round-robin)
+      for (let attempt = 0; attempt < finalSortedKeys.length; attempt++) {
+        if (window.lexscan_abort) break;
+        const currentKey = finalSortedKeys[(keyIndex + attempt) % finalSortedKeys.length];
+        const keyHash = currentKey.slice(-6);
+
+        try {
+          const ai = new GoogleGenAI({ apiKey: currentKey });
+          let activeModel = "gemini-3.6-flash";
+          const fallbackModel = "gemini-3.5-flash";
+
+          let res;
+          try {
+            res = await ai.models.generateContent({
+              model: activeModel,
+              contents: [
+                { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
+                { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
+              ],
+              config: {
+                systemInstruction: systemPrompt,
+                temperature: 0.1,
+                maxOutputTokens: 16383
+              }
+            });
+          } catch (modelErr: any) {
+            const errStr = String(modelErr?.message || modelErr || "").toLowerCase();
+            if (errStr.includes("not found") || errStr.includes("404") || errStr.includes("unsupported")) {
+              console.warn(`[Gemini Nativo] Modelo ${activeModel} indisponível, alternando para ${fallbackModel}...`);
+              activeModel = fallbackModel;
+              res = await ai.models.generateContent({
+                model: activeModel,
+                contents: [
+                  { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
+                  { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
+                ],
+                config: {
+                  systemInstruction: systemPrompt,
+                  temperature: 0.1,
+                  maxOutputTokens: 16383
+                }
+              });
+            } else {
+              throw modelErr;
+            }
+          }
+
+          const outText = res?.text?.trim() || "";
+          if (outText) {
+            fullText += outText + "\n\n";
+            if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+            if (window.setKeyError) window.setKeyError(keyHash, 'ok');
+            keyIndex = (keyIndex + attempt + 1) % finalSortedKeys.length; // Chave seguinte para o próximo lote
+            chunkSuccess = true;
+            break;
+          } else {
+            throw new Error("Resposta da IA vazia.");
+          }
+        } catch (keyErr: any) {
+          lastErr = keyErr;
+          const errStr = String(keyErr?.message || keyErr || "").toLowerCase();
+          let errorType = 'error';
+          if (errStr.includes("403") || errStr.includes("denied")) errorType = 'blocked';
+          else if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted")) errorType = 'quota_exceeded';
+          else if (errStr.includes("503") || errStr.includes("unavailable")) errorType = 'server_error';
+          if (window.setKeyError) window.setKeyError(keyHash, errorType);
+          console.warn(`[Gemini Nativo Chunk ${start + 1}-${end}] Chave ..${keyHash} falhou (${errStr.slice(0, 50)}). Rotacionando para próxima chave...`);
+        }
+      }
+
+      if (!chunkSuccess) {
+        throw new Error(`Falha no lote de páginas ${start + 1} a ${end}: ` + (lastErr?.message || ""));
+      }
+    }
+
+    if (fullText.trim()) {
+      return { text: fullText.trim(), confidence: 99 };
+    }
+    return null;
+  } catch (nativeErr: any) {
+    console.warn("[Gemini Nativo] Acionando pipeline híbrido página a página devido a:", nativeErr?.message || nativeErr);
+    return null;
+  }
+}
+
 async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRefresh = false, goldStandard = true, forceAi = false) {
+  if (useAi || forceAi) {
+    try {
+      const nativeResult = await extractPDFNativeChunks(file, onProgress, startPage, goldStandard);
+      if (nativeResult && nativeResult.text) {
+        return nativeResult;
+      }
+    } catch (e: any) {
+      console.warn("[Gemini Nativo] Transição para modo página a página:", e?.message || e);
+    }
+  }
+
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
