@@ -1074,14 +1074,10 @@ async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
   }
 }
 
-// ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
-async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
+// Obtém as chaves ordenadas com suporte a fixação de chave ativa (preferredApiKey) e load-balancing
+function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
   const allKeys = getAvailableGeminiKeys();
-  let lastError = null;
-
-  if (allKeys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI ou API_KEY configurada.");
-  }
+  if (allKeys.length === 0) return [];
 
   // Mapeia todas as chaves com metadados do localStorage
   const keysMetadata = allKeys.map((key) => {
@@ -1094,20 +1090,27 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error'
   );
   
-  // Se TODAS as chaves estiverem marcadas com erro, usamos todas como fallback (reiniciando tentativa caso alguma tenha resetado)
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
 
-  // ORDENAÇÃO INTELIGENTE (Load-Balancing Dinâmico com Fixação por Documento):
-  // Se preferredApiKey for fornecida e estiver válida (sem erro de cota), ela continua fixa no topo!
-  let finalSortedKeys: string[] = [];
+  // Se preferredApiKey for fornecida e estiver válida, ela continua fixa no topo!
   if (preferredApiKey && candidateKeysInfo.some(k => k.key === preferredApiKey)) {
     const preferredKeyInfo = candidateKeysInfo.find(k => k.key === preferredApiKey)!;
     const others = candidateKeysInfo.filter(k => k.key !== preferredApiKey);
     others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
-    finalSortedKeys = [preferredKeyInfo.key, ...others.map(o => o.key)];
+    return [preferredKeyInfo.key, ...others.map(o => o.key)];
   } else {
     candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
-    finalSortedKeys = candidateKeysInfo.map(info => info.key);
+    return candidateKeysInfo.map(info => info.key);
+  }
+}
+
+// ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
+async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
+  const finalSortedKeys = getSortedApiKeys(preferredApiKey);
+  let lastError = null;
+
+  if (finalSortedKeys.length === 0) {
+    throw new Error("❌ Nenhuma Chave GEMINI ou API_KEY configurada.");
   }
 
   const base64 = await new Promise((r) => {
@@ -1177,6 +1180,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
     try {
       let textOutput = "";
       let modelSuccess = false;
+      let lastModelErr: any = null;
 
       for (let m = 0; m < modelsToTry.length; m++) {
         const currentModel = modelsToTry[m];
@@ -1199,9 +1203,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               }
             });
           } catch (initErr: any) {
+            lastModelErr = initErr;
             const initMsg = String(initErr?.message || initErr || "").toLowerCase();
-            if (initMsg.includes("503") || initMsg.includes("high demand") || initMsg.includes("unavailable") || initMsg.includes("not found") || initMsg.includes("404")) {
+            if (initMsg.includes("503") || initMsg.includes("overloaded") || initMsg.includes("high demand") || initMsg.includes("unavailable") || initMsg.includes("not found") || initMsg.includes("404")) {
               console.warn(`[Gemini Flash] Modelo ${currentModel} retornou sobrecarga/indisponível (${initMsg.slice(0, 50)}). Alternando para próximo modelo na mesma chave...`);
+              await new Promise(r => setTimeout(r, 400));
               continue;
             }
             throw initErr;
@@ -1225,10 +1231,12 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             break;
           }
         } catch (streamFail: any) {
+          lastModelErr = streamFail;
           const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
           
-          if (streamFailMsg.includes("503") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404")) {
+          if (streamFailMsg.includes("503") || streamFailMsg.includes("overloaded") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404")) {
             console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503. Alternando para próximo modelo na mesma chave...`);
+            await new Promise(r => setTimeout(r, 400));
             continue;
           }
 
@@ -1258,12 +1266,43 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               break;
             }
           } catch (directErr: any) {
+            lastModelErr = directErr;
             const dMsg = String(directErr?.message || directErr || "").toLowerCase();
-            if (dMsg.includes("503") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404")) {
+            if (dMsg.includes("503") || dMsg.includes("overloaded") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404")) {
               console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou 503. Alternando modelo na mesma chave...`);
+              await new Promise(r => setTimeout(r, 400));
               continue;
             }
             throw directErr;
+          }
+        }
+      }
+
+      // Se ambos os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-3.5-flash direto
+      if (!modelSuccess && lastModelErr) {
+        const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
+        if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
+          console.log(`[Gemini Flash] Breve pausa para o Google recuperar sobrecarga (800ms) na chave ..${keyHash}...`);
+          await new Promise(r => setTimeout(r, 800));
+          try {
+            const retryRes = await ai.models.generateContent({
+              model: "gemini-3.5-flash",
+              contents: [
+                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+              ],
+              config: {
+                systemInstruction: prompt,
+                temperature: 0.1,
+                maxOutputTokens: 16383,
+              }
+            });
+            textOutput = retryRes?.text?.trim() || "";
+            if (textOutput) {
+              modelSuccess = true;
+            }
+          } catch (retryErr: any) {
+            lastModelErr = retryErr;
           }
         }
       }
@@ -1273,7 +1312,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         if (window.setKeyError) window.setKeyError(keyHash, 'ok');
         return { text: textOutput, usedKey: apiKey };
       } else {
-        throw new Error(`Modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
+        throw lastModelErr || new Error(`Modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
       }
     } catch (modelErr: any) {
       lastError = modelErr;
@@ -1285,7 +1324,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
     if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
     else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
     else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
-    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout")) errorType = 'server_error';
+    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout") || errorStr.includes("overloaded") || errorStr.includes("unavailable") || errorStr.includes("high demand")) errorType = 'server_error';
     
     console.warn(`👉 [Auto-Failover] Chave ${i + 1} (..${keyHash}) falhou com tipo (${errorType}). Avançando imediatamente para a próxima chave...`);
     if (window.setKeyError) window.setKeyError(keyHash, errorType);
@@ -1297,32 +1336,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 
 // ── Ingestão em Lotes via Imagens (Canvas) ──────────
 async function extractBatchOfImagesWithGemini(images, onProgress, goldStandard = true, preferredApiKey = null) {
-  const allKeys = getAvailableGeminiKeys();
+  const finalSortedKeys = getSortedApiKeys(preferredApiKey);
   let lastError = null;
 
-  if (allKeys.length === 0) {
+  if (finalSortedKeys.length === 0) {
     throw new Error("❌ Nenhuma Chave GEMINI configurada.");
-  }
-
-  const keysMetadata = allKeys.map((key) => {
-    return { key, ...getKeyMetadata(key) };
-  });
-
-  const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error'
-  );
-  
-  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
-
-  let finalSortedKeys: string[] = [];
-  if (preferredApiKey && candidateKeysInfo.some(k => k.key === preferredApiKey)) {
-    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === preferredApiKey)!;
-    const others = candidateKeysInfo.filter(k => k.key !== preferredApiKey);
-    others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
-    finalSortedKeys = [preferredKeyInfo.key, ...others.map(o => o.key)];
-  } else {
-    candidateKeysInfo.sort((a, b) => (a.usage || 0) - (b.usage || 0));
-    finalSortedKeys = candidateKeysInfo.map(info => info.key);
   }
 
   const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
@@ -2646,6 +2664,7 @@ REGRAS CRÍTICAS:
           const ai = new GoogleGenAI({ apiKey: currentKey });
           let chunkText = "";
           let modelSuccess = false;
+          let lastModelErr: any = null;
 
           for (let m = 0; m < modelsToTry.length; m++) {
             const currentModel = modelsToTry[m];
@@ -2672,9 +2691,11 @@ REGRAS CRÍTICAS:
                 break; // Sucesso com esse modelo!
               }
             } catch (modelErr: any) {
+              lastModelErr = modelErr;
               const errStr = String(modelErr?.message || modelErr || "").toLowerCase();
-              if (errStr.includes("503") || errStr.includes("high demand") || errStr.includes("unavailable") || errStr.includes("not found") || errStr.includes("404")) {
+              if (errStr.includes("503") || errStr.includes("overloaded") || errStr.includes("high demand") || errStr.includes("unavailable") || errStr.includes("not found") || errStr.includes("404")) {
                 console.warn(`[Gemini Nativo] Modelo ${currentModel} com sobrecarga/503. Alternando para próximo modelo na mesma chave ..${keyHash}...`);
+                await new Promise(r => setTimeout(r, 400));
                 continue;
               }
               if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted") || errStr.includes("403") || errStr.includes("denied")) {
@@ -2683,6 +2704,35 @@ REGRAS CRÍTICAS:
               }
               // Qualquer outro erro não fatal: tenta próximo modelo
               continue;
+            }
+          }
+
+          // Se ambos os modelos sofreram sobrecarga no Google, tenta uma repescagem em gemini-3.5-flash após 800ms
+          if (!modelSuccess && lastModelErr) {
+            const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
+            if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
+              console.log(`[Gemini Nativo] Pausa para aliviar sobrecarga dos servidores (800ms) na chave ..${keyHash}...`);
+              await new Promise(r => setTimeout(r, 800));
+              try {
+                const retryRes = await ai.models.generateContent({
+                  model: "gemini-3.5-flash",
+                  contents: [
+                    { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
+                    { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
+                  ],
+                  config: {
+                    systemInstruction: systemPrompt,
+                    temperature: 0.1,
+                    maxOutputTokens: 16383
+                  }
+                });
+                chunkText = retryRes?.text?.trim() || "";
+                if (chunkText) {
+                  modelSuccess = true;
+                }
+              } catch (retryErr: any) {
+                lastModelErr = retryErr;
+              }
             }
           }
 
@@ -2695,17 +2745,18 @@ REGRAS CRÍTICAS:
             chunkSuccess = true;
             break;
           } else {
-            throw new Error(`Todos os modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
+            throw lastModelErr || new Error(`Todos os modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
           }
         } catch (keyErr: any) {
           lastErr = keyErr;
           const errStr = String(keyErr?.message || keyErr || "").toLowerCase();
           let errorType = 'error';
-          if (errStr.includes("403") || errStr.includes("denied")) errorType = 'blocked';
-          else if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted")) errorType = 'quota_exceeded';
-          else if (errStr.includes("503") || errStr.includes("unavailable")) errorType = 'server_error';
+          if (errStr.includes("403") || errStr.includes("denied") || errStr.includes("forbidden")) errorType = 'blocked';
+          else if (errStr.includes("invalid") || errStr.includes("not valid")) errorType = 'invalid';
+          else if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted") || errStr.includes("rate limit")) errorType = 'quota_exceeded';
+          else if (errStr.includes("503") || errStr.includes("unavailable") || errStr.includes("overloaded") || errStr.includes("high demand") || errStr.includes("timeout")) errorType = 'server_error';
           if (window.setKeyError) window.setKeyError(keyHash, errorType);
-          console.warn(`[Gemini Nativo Chunk ${start + 1}-${end}] Chave ..${keyHash} esgotou cota (${errStr.slice(0, 50)}). Avançando para próxima chave...`);
+          console.warn(`[Gemini Nativo Chunk ${start + 1}-${end}] Chave ..${keyHash} registrou ${errorType} (${errStr.slice(0, 50)}). Avançando para próxima chave...`);
         }
       }
 
