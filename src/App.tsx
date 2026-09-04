@@ -1089,9 +1089,9 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     return { key, ...meta };
   });
 
-  // Filtra chaves que NÃO estão com erro (deve ter status 'ok' ou 'active' ou vazio)
+  // Filtra chaves que NÃO estão com erro de cota ou bloqueio
   const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error'
   );
   
   // Se TODAS as chaves estiverem marcadas com erro, usamos todas como fallback (reiniciando tentativa caso alguma tenha resetado)
@@ -1164,8 +1164,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
      (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
 
-  const MODEL_NAME = "gemini-3.6-flash";
-  const FALLBACK_MODEL = "gemini-3.5-flash";
+  const modelsToTry = ["gemini-3.8-flash", "gemini-3.5-flash"];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1177,30 +1176,18 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
     
     try {
       let textOutput = "";
-      let activeModel = MODEL_NAME;
-      
-      try {
-        let responseStream;
+      let modelSuccess = false;
+
+      for (let m = 0; m < modelsToTry.length; m++) {
+        const currentModel = modelsToTry[m];
+        if (window.lexscan_abort) break;
+
         try {
-          responseStream = await ai.models.generateContentStream({
-            model: activeModel,
-            contents: [
-              { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-              { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
-            ],
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.1,
-              maxOutputTokens: 16383,
-            }
-          });
-        } catch (modelInitErr: any) {
-          const initMsg = String(modelInitErr?.message || modelInitErr || "").toLowerCase();
-          if (initMsg.includes("not found") || initMsg.includes("404") || initMsg.includes("unsupported")) {
-            console.warn(`[Gemini] Modelo ${activeModel} indisponível nesta chave, alternando para ${FALLBACK_MODEL}...`);
-            activeModel = FALLBACK_MODEL;
+          console.log(`[Gemini Flash] Tentando modelo ${currentModel} na chave ..${keyHash}...`);
+          let responseStream;
+          try {
             responseStream = await ai.models.generateContentStream({
-              model: activeModel,
+              model: currentModel,
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1211,70 +1198,82 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 maxOutputTokens: 16383,
               }
             });
-          } else {
-            throw modelInitErr;
+          } catch (initErr: any) {
+            const initMsg = String(initErr?.message || initErr || "").toLowerCase();
+            if (initMsg.includes("503") || initMsg.includes("high demand") || initMsg.includes("unavailable") || initMsg.includes("not found") || initMsg.includes("404")) {
+              console.warn(`[Gemini Flash] Modelo ${currentModel} retornou sobrecarga/indisponível (${initMsg.slice(0, 50)}). Alternando para próximo modelo na mesma chave...`);
+              continue;
+            }
+            throw initErr;
           }
-        }
 
-        let chunksReceived = 0;
-        for await (const chunk of responseStream) {
-          if (window.lexscan_abort) break;
-          textOutput += chunk.text || "";
-          chunksReceived++;
-          if (onProgress) {
-            const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
-            onProgress(fakePercent, `Gemini Flash Lendo... (${chunksReceived} fragmentos)`);
+          let chunksReceived = 0;
+          textOutput = "";
+          for await (const chunk of responseStream) {
+            if (window.lexscan_abort) break;
+            textOutput += chunk.text || "";
+            chunksReceived++;
+            if (onProgress) {
+              const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+              onProgress(fakePercent, `Gemini Flash Lendo... (${chunksReceived} fragmentos)`);
+            }
           }
-        }
-        textOutput = textOutput.trim();
-      } catch (streamFail: any) {
-        const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
-        
-        // Se for erro real da Google (503 Servidor Lotado, 429 Cota, 403 Bloqueio de Chave),
-        // NÃO perca tempo na MESMA chave! Pule imediatamente para a próxima chave!
-        const isGoogleCapacityOrQuota = 
-          streamFailMsg.includes("503") || 
-          streamFailMsg.includes("high demand") || 
-          streamFailMsg.includes("unavailable") ||
-          streamFailMsg.includes("429") || 
-          streamFailMsg.includes("quota") || 
-          streamFailMsg.includes("rate limit") || 
-          streamFailMsg.includes("exhausted") ||
-          streamFailMsg.includes("403") || 
-          streamFailMsg.includes("denied");
+          textOutput = textOutput.trim();
 
-        if (isGoogleCapacityOrQuota) {
-          console.warn(`[Gemini Flash] Chave ..${keyHash} retornou (${streamFailMsg.slice(0, 60)}). Acionando rotação imediata para próxima chave...`);
-          throw streamFail;
-        }
-
-        console.warn(`[Gemini Flash] Streaming falhou/desconectou, tentando chamada direta com chave ..${keyHash}:`, streamFailMsg);
-        
-        const directRes = await ai.models.generateContent({
-          model: activeModel,
-          contents: [
-            { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-            { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
-          ],
-          config: {
-            systemInstruction: prompt,
-            temperature: 0.1,
-            maxOutputTokens: 16383,
+          if (textOutput) {
+            modelSuccess = true;
+            break;
           }
-        });
+        } catch (streamFail: any) {
+          const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
+          
+          if (streamFailMsg.includes("503") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404")) {
+            console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503. Alternando para próximo modelo na mesma chave...`);
+            continue;
+          }
 
-        textOutput = directRes?.text?.trim() || "";
-        if (!textOutput) {
-          throw new Error("Resposta da IA vazia na chamada direta.");
+          if (streamFailMsg.includes("429") || streamFailMsg.includes("quota") || streamFailMsg.includes("rate limit") || streamFailMsg.includes("exhausted") || streamFailMsg.includes("403") || streamFailMsg.includes("denied")) {
+            throw streamFail;
+          }
+
+          console.warn(`[Gemini Flash] Streaming falhou, tentando chamada direta com ${currentModel} na chave ..${keyHash}:`, streamFailMsg.slice(0, 60));
+          
+          try {
+            const directRes = await ai.models.generateContent({
+              model: currentModel,
+              contents: [
+                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+              ],
+              config: {
+                systemInstruction: prompt,
+                temperature: 0.1,
+                maxOutputTokens: 16383,
+              }
+            });
+
+            textOutput = directRes?.text?.trim() || "";
+            if (textOutput) {
+              modelSuccess = true;
+              break;
+            }
+          } catch (directErr: any) {
+            const dMsg = String(directErr?.message || directErr || "").toLowerCase();
+            if (dMsg.includes("503") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404")) {
+              console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou 503. Alternando modelo na mesma chave...`);
+              continue;
+            }
+            throw directErr;
+          }
         }
       }
 
-      if (textOutput) {
+      if (modelSuccess && textOutput) {
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
         if (window.setKeyError) window.setKeyError(keyHash, 'ok');
         return { text: textOutput, usedKey: apiKey };
       } else {
-        throw new Error("Texto extraído vazio.");
+        throw new Error(`Modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
       }
     } catch (modelErr: any) {
       lastError = modelErr;
@@ -1310,7 +1309,7 @@ async function extractBatchOfImagesWithGemini(images, onProgress, goldStandard =
   });
 
   const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error'
   );
   
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
@@ -1333,7 +1332,7 @@ REGRAS CRÍTICAS:
 2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const MODEL_NAME = "gemini-3.6-flash";
+  const MODEL_NAME = "gemini-3.8-flash";
   const FALLBACK_MODEL = "gemini-3.5-flash";
 
   const parts: any[] = [
@@ -1855,9 +1854,9 @@ REGRAS CRÍTICAS DE REFINAMENTO:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
   const modelsToTry = [
-    "gemini-3.6-flash",
+    "gemini-3.8-flash",
     "gemini-3.5-flash",
-    "gemini-flash-latest"
+    "gemini-3.7-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -2303,9 +2302,9 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-3.6-flash",
+    "gemini-3.8-flash",
     "gemini-3.5-flash",
-    "gemini-flash-latest"
+    "gemini-3.7-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -2431,9 +2430,9 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-3.6-flash",
+      "gemini-3.8-flash",
       "gemini-3.5-flash",
-      "gemini-flash-latest"
+      "gemini-3.7-flash"
     ];
     let success = false;
 
@@ -2635,7 +2634,9 @@ REGRAS CRÍTICAS:
       let chunkSuccess = false;
       let lastErr = null;
 
-      // Rotação equilibrada entre todas as chaves (round-robin)
+      // Execução com Chave Fixa (mantém a mesma chave enquanto tiver cota)
+      const modelsToTry = ["gemini-3.8-flash", "gemini-3.5-flash"];
+
       for (let attempt = 0; attempt < finalSortedKeys.length; attempt++) {
         if (window.lexscan_abort) break;
         const currentKey = finalSortedKeys[(keyIndex + attempt) % finalSortedKeys.length];
@@ -2643,30 +2644,17 @@ REGRAS CRÍTICAS:
 
         try {
           const ai = new GoogleGenAI({ apiKey: currentKey });
-          let activeModel = "gemini-3.6-flash";
-          const fallbackModel = "gemini-3.5-flash";
+          let chunkText = "";
+          let modelSuccess = false;
 
-          let res;
-          try {
-            res = await ai.models.generateContent({
-              model: activeModel,
-              contents: [
-                { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
-                { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
-              ],
-              config: {
-                systemInstruction: systemPrompt,
-                temperature: 0.1,
-                maxOutputTokens: 16383
-              }
-            });
-          } catch (modelErr: any) {
-            const errStr = String(modelErr?.message || modelErr || "").toLowerCase();
-            if (errStr.includes("not found") || errStr.includes("404") || errStr.includes("unsupported")) {
-              console.warn(`[Gemini Nativo] Modelo ${activeModel} indisponível, alternando para ${fallbackModel}...`);
-              activeModel = fallbackModel;
-              res = await ai.models.generateContent({
-                model: activeModel,
+          for (let m = 0; m < modelsToTry.length; m++) {
+            const currentModel = modelsToTry[m];
+            if (window.lexscan_abort) break;
+
+            try {
+              console.log(`[Gemini Nativo] Tentando ${currentModel} na chave ..${keyHash} (págs ${start + 1}-${end})...`);
+              const res = await ai.models.generateContent({
+                model: currentModel,
                 contents: [
                   { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
                   { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
@@ -2677,21 +2665,37 @@ REGRAS CRÍTICAS:
                   maxOutputTokens: 16383
                 }
               });
-            } else {
-              throw modelErr;
+
+              chunkText = res?.text?.trim() || "";
+              if (chunkText) {
+                modelSuccess = true;
+                break; // Sucesso com esse modelo!
+              }
+            } catch (modelErr: any) {
+              const errStr = String(modelErr?.message || modelErr || "").toLowerCase();
+              if (errStr.includes("503") || errStr.includes("high demand") || errStr.includes("unavailable") || errStr.includes("not found") || errStr.includes("404")) {
+                console.warn(`[Gemini Nativo] Modelo ${currentModel} com sobrecarga/503. Alternando para próximo modelo na mesma chave ..${keyHash}...`);
+                continue;
+              }
+              if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted") || errStr.includes("403") || errStr.includes("denied")) {
+                // Cota estourada nesta chave: encerra tentativas nesta chave e passa para a próxima
+                throw modelErr;
+              }
+              // Qualquer outro erro não fatal: tenta próximo modelo
+              continue;
             }
           }
 
-          const outText = res?.text?.trim() || "";
-          if (outText) {
-            fullText += outText + "\n\n";
+          if (modelSuccess && chunkText) {
+            fullText += chunkText + "\n\n";
             if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
             if (window.setKeyError) window.setKeyError(keyHash, 'ok');
-            keyIndex = (keyIndex + attempt + 1) % finalSortedKeys.length; // Chave seguinte para o próximo lote
+            // CHAVE FIXA: Permanece na mesma chave que funcionou para os próximos lotes
+            keyIndex = (keyIndex + attempt) % finalSortedKeys.length;
             chunkSuccess = true;
             break;
           } else {
-            throw new Error("Resposta da IA vazia.");
+            throw new Error(`Todos os modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
           }
         } catch (keyErr: any) {
           lastErr = keyErr;
@@ -2701,7 +2705,7 @@ REGRAS CRÍTICAS:
           else if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted")) errorType = 'quota_exceeded';
           else if (errStr.includes("503") || errStr.includes("unavailable")) errorType = 'server_error';
           if (window.setKeyError) window.setKeyError(keyHash, errorType);
-          console.warn(`[Gemini Nativo Chunk ${start + 1}-${end}] Chave ..${keyHash} falhou (${errStr.slice(0, 50)}). Rotacionando para próxima chave...`);
+          console.warn(`[Gemini Nativo Chunk ${start + 1}-${end}] Chave ..${keyHash} esgotou cota (${errStr.slice(0, 50)}). Avançando para próxima chave...`);
         }
       }
 
