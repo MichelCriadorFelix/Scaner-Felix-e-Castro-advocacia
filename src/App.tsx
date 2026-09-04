@@ -1123,8 +1123,6 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
 
 Nenhuma palavra, número, sigla, cabeçalho, rodapé, CNPJ, nota marginal, data ou elemento de tabela do documento original deve ser omitido, ignorado, filtrado ou resumido. Qualquer desvio ou omissão comprometerá a integridade do processo judicial.
 
-Este documento será analisado por sistemas internos e pelo poder judiciário, portanto o texto gerado precisa ser EXATAMENTE igual ao PDF.
-
 ══════════════════════════════════════════════════
 REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 ══════════════════════════════════════════════════
@@ -1133,44 +1131,43 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Transcreva TODO e qualquer texto visível na imagem, exatamente na ordem em que aparece, de cima para baixo.
    - NÃO ignore cabeçalhos institucionais, logotipos descritos por extenso, brasões, rodapés, números de página, notas marginais, selos, marcas d'água, assinaturas, certidões ou termos formais do Diário Oficial.
    - Se o diário oficial ou documento contiver certidões, portarias de aposentadoria de terceiros, exonerações, atos ou decisões, transcreva TUDO do início ao fim da página sem omitir nada.
-   - NÃO faça resumos, sinopses ou simplificações ("extrair apenas o que o advogado precisa" está PROIBIDO). O advogado precisa do texto INTEGRAL exatamente como está no original.
+   - NÃO faça resumos, sinopses ou simplificações. O advogado precisa do texto INTEGRAL exatamente como está no original.
 
-2. PRESERVAÇÃO DE TABELAS E COLUNAS (DIÁRIO OFICIAL / CNIS / HOLERITES / INSS):
-   - Se o documento contiver dados tabulares (como extratos do CNIS, vínculos empregatícios, remunerações, laudos periciais com qualificadores b1 a b8 ou d1 a d9, folhas de ponto, demonstrativos de pagamento ou portarias em colunas):
-     - Reconstitua a tabela fielmente em tabelas Markdown perfeitamente alinhadas (| Coluna 1 | Coluna 2 | ... |) para manter a estrutura original intacta e pronta para peticionamento no PJe/eproc/Projudi.
+2. PRESERVAÇÃO DE TABELAS E FORMULÁRIOS (DIÁRIO OFICIAL / CNIS / HOLERITES / INSS / LAUDOS):
+   - Se o documento contiver dados tabulares (como extratos do CNIS, vínculos, remunerações, laudos periciais com qualificadores b1 a b8 ou d1 a d9, questionários de Atividades e Participação):
+     - Reconstitua a tabela fielmente em tabelas Markdown limpas e organizadas (| Coluna 1 | Coluna 2 | ... |).
+     - Indique opções marcadas com [X] e desmarcadas com [ ] ou transcreva diretamente o item e o valor selecionado.
      - Mantenha todos os códigos de indicadores previdenciários (ex: PREV-EXT, PEXT, PREC-MENOR-MIN, IRECF-INDP, etc) com exatidão.
-     - Se o documento tiver múltiplas colunas de texto (como em Diários Oficiais), leia as colunas na ordem lógica correta (coluna 1 completa, depois coluna 2, por exemplo). Nunca misture o texto de colunas paralelas.
+     - Se o documento tiver múltiplas colunas de texto (como em Diários Oficiais), leia as colunas na ordem lógica correta.
 
-3. ZERO OMISSÃO E ZERO ALUCINAÇÃO (ATENÇÃO AOS NOMES):
+3. REGRAS ANTI-LOOP E FORMATAÇÃO LIMPA (EXTREMAMENTE CRÍTICO):
+   - NUNCA, em hipótese alguma, repita caracteres como sublinhados ('_'), traços ('-'), barras ('|'), pontos ou espaços para desenhar linhas ou formulários.
+   - Para linhas de assinatura em branco ou campos de formulário não preenchidos, use simplesmente '[Assinatura]' ou '___' (no máximo 3 a 5 caracteres).
+   - NUNCA use '&nbsp;' ou sequências de espaços em branco.
+   - Se uma página estiver em branco ou quase vazia, transcreva apenas o rodapé/cabeçalho existente e finalize a resposta sem repetições.
+
+4. ZERO OMISSÃO E ZERO ALUCINAÇÃO (ATENÇÃO AOS NOMES):
    - Jamais invente ou modifique nomes, números, CPFs, datas ou valores.
-   - É ESTRITAMENTE PROIBIDO resumir ou abreviar nomes de pessoas (clientes, advogados, partes, juízes, etc). Todos os nomes devem ser transcritos completos e por extenso, de forma idêntica e verbatim ao que está no documento.
+   - É ESTRITAMENTE PROIBIDO resumir ou abreviar nomes de pessoas. Todos os nomes devem ser transcritos completos e por extenso.
    - Para caracteres de fato ilegíveis por rasuras ou má qualidade extrema do scanner, use '[ILEGÍVEL]'.
 
-4. DECIFRAÇÃO DE LAUDOS MÉDICOS, RECEITUÁRIOS E PRONTUÁRIOS (ATENÇÃO MÁXIMA):
+5. DECIFRAÇÃO DE LAUDOS MÉDICOS, RECEITUÁRIOS E PRONTUÁRIOS:
    - Ao analisar laudos médicos periciais, prontuários, receitas, atestados e exames com letra cursiva ou manuscrita ("letra de médico"):
      - Mobilize seu vocabulário médico e farmacológico profundo para decifrar a caligrafia pelo contexto clínico.
-     - Identifique com extrema fidelidade: Queixa Principal, Anamnese, Diagnósticos, Códigos de Doenças (CID-10 e CID-11, ex: M54.5, F32, B20), nomes de medicamentos, dosagens (mg, ml, gotas), posologias (ex: 8/8h, 1x ao dia), tempo de repouso/afastamento em dias, datas de atendimento e carimbos (Nome do médico, CRM e UF).
-     - Se uma palavra estiver cortada ou ambígua mas dedutível clinicamente pelo contexto ou farmacologia, transcreva o termo provável ou use '[provável: termo]'. Se totalmente ilegível por rasura irreparável, use '[ilegível]'.
+     - Identifique com extrema fidelidade: Queixa Principal, Anamnese, Diagnósticos, Códigos de Doenças (CID-10 e CID-11), nomes de medicamentos, dosagens, posologias, tempo de afastamento, datas e carimbos (Nome do médico, CRM e UF).
 
-5. TRATAMENTO DE ASSINATURAS, RUBRICAS E ELEMENTOS VISUAIS:
-   - Nunca use [ILEGÍVEL] para assinaturas ou rubricas.
+6. TRATAMENTO DE ASSINATURAS E ELEMENTOS VISUAIS:
    - Se houver assinatura visível, transcreva como: [Assinatura Manuscrita: Nome] ou [Assinatura Digital Detectada].
-   - Se houver fotos/selfies de validação biométrica, transcreva apenas como [Foto de Validação Biométrica]. Evite descrever pessoas ou cenários.
+   - Se houver fotos/selfies de validação biométrica, transcreva apenas como [Foto de Validação Biométrica].
 
-5. PÁGINAS VAZIAS E ESPAÇOS EM BRANCO (CRÍTICO):
-   - NUNCA, em hipótese alguma, preencha espaços visuais vazios ou entrelinhas com "&nbsp;".
-   - NÃO tente "desenhar" a formatação visual do documento usando espaços e quebras de linha excessivas.
-   - Se uma página estiver em branco ou contiver apenas elementos gráficos decorativos e notas de rodapé, transcreva apenas o rodapé e encerre a página imediatamente. Jamais crie loops infinitos de textos vazios.
-
-6. ESTRUTURAÇÃO DE SAÍDA:
+7. ESTRUTURAÇÃO DE SAÍDA:
    - No início de sua resposta, forneça os metadados identificados do documento para controle:
-     - TÍTULO: [Título principal exato, ex: PORTARIA Nº 198/2026-MD ou DIÁRIO OFICIAL DA CIDADE DE SÃO JOÃO DE MERITI]
+     - TÍTULO: [Título principal exato]
      - TIPO: [Classificação precisa do documento]
      - ÁREA: [Previdenciário / Trabalhista / Consumidor / Cível / Múltiplas]
      - OBS: [Observações importantes se houver, ou omita]
-   - Em seguida, insira obrigatoriamente uma linha divisória: ══════════════════════════════════════════════════
-   - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:
-     (Insira aqui o texto integral e literal da imagem, sem cortes, sem omissões e sem resumos, com tabelas em markdown completas).`;
+   - Em seguida, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════
+   - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:`;
 
   const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.8-flash"];
 
@@ -1313,6 +1310,11 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
       }
 
       if (modelSuccess && textOutput) {
+        textOutput = textOutput
+          .replace(/_{5,}/g, '___')
+          .replace(/-{5,}/g, '---')
+          .replace(/(\n[ \t]*\n){3,}/g, '\n\n')
+          .trim();
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
         if (window.setKeyError) window.setKeyError(keyHash, 'ok');
         return { text: textOutput, usedKey: apiKey };
@@ -1527,6 +1529,51 @@ function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
     return false;
   }
 }
+function extractStructuredTextFromPDFPage(textContent: any): string {
+  if (!textContent || !textContent.items || textContent.items.length === 0) return "";
+  
+  const items = textContent.items
+    .filter((item: any) => item && typeof item.str === 'string')
+    .map((item: any) => ({
+      str: item.str,
+      x: item.transform ? item.transform[4] : 0,
+      y: item.transform ? item.transform[5] : 0,
+      width: item.width || 0,
+      height: item.height || 0
+    }));
+
+  if (items.length === 0) return "";
+
+  // Sort top-to-bottom (Y desc), then left-to-right (X asc)
+  items.sort((a: any, b: any) => {
+    if (Math.abs(a.y - b.y) > 4) {
+      return b.y - a.y; // Top to bottom
+    }
+    return a.x - b.x; // Left to right
+  });
+
+  const lines: string[] = [];
+  let currentLineY: number | null = null;
+  let currentLineText = "";
+
+  for (const item of items) {
+    if (currentLineY === null || Math.abs(item.y - currentLineY) > 4) {
+      if (currentLineText.trim()) {
+        lines.push(currentLineText.trim());
+      }
+      currentLineY = item.y;
+      currentLineText = item.str;
+    } else {
+      currentLineText += (currentLineText && !currentLineText.endsWith(" ") && !item.str.startsWith(" ") ? " " : "") + item.str;
+    }
+  }
+  if (currentLineText.trim()) {
+    lines.push(currentLineText.trim());
+  }
+
+  return lines.join("\n");
+}
+
 function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean {
   if (!text) return false;
   
@@ -2670,7 +2717,7 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
         if (attempt === 1 && !forceAi) {
           try {
             const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout texto nativo ${i}`);
-            pageText = textContent.items.map((item: any) => item.str).join(" ").trim();
+            pageText = extractStructuredTextFromPDFPage(textContent);
             
             let hasImage = false;
             try {
@@ -4570,7 +4617,7 @@ export default function ScannerJuridico() {
           let pageText = "";
           try {
             const textContent = await page.getTextContent();
-            pageText = textContent.items.map((item: any) => item.str).join(" ").trim();
+            pageText = extractStructuredTextFromPDFPage(textContent);
             let hasImage = false;
             try {
               const ops = await page.getOperatorList();
