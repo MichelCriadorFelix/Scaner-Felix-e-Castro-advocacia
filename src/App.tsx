@@ -1174,72 +1174,38 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
     const ai = new GoogleGenAI({ apiKey });
     
     try {
-      let isStreamingStarted = false;
-      let isTimedOut = false;
-      let initialTimer: any = null;
-
-      const streamPromise = new Promise<string>(async (resolve, reject) => {
-        initialTimer = setTimeout(() => {
-          if (!isStreamingStarted) {
-            isTimedOut = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 35s."));
-          }
-        }, 35000);
-
-        try {
-          const responseStream = await ai.models.generateContentStream({
-            model: MODEL_NAME,
-            contents: [
-              { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-              { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
-            ],
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.1,
-              maxOutputTokens: 16383,
-            }
-          });
-
-          let fullText = "";
-          let chunksReceived = 0;
-          
-          for await (const chunk of responseStream) {
-            if (isTimedOut || window.lexscan_abort) break;
-            if (!isStreamingStarted) {
-              isStreamingStarted = true;
-              if (initialTimer) {
-                clearTimeout(initialTimer);
-                initialTimer = null;
-              }
-            }
-            fullText += chunk.text || "";
-            chunksReceived++;
-            if (onProgress) {
-              const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
-              onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
-            }
-          }
-
-          if (initialTimer) clearTimeout(initialTimer);
-          if (!isTimedOut && fullText.trim()) {
-            resolve(fullText.trim());
-          } else if (!isTimedOut) {
-            reject(new Error("Resposta vazia da IA."));
-          }
-        } catch (streamErr) {
-          if (initialTimer) clearTimeout(initialTimer);
-          reject(streamErr);
-        }
-      });
-
       let textOutput = "";
+      
       try {
-        textOutput = await streamPromise;
+        const responseStream = await ai.models.generateContentStream({
+          model: MODEL_NAME,
+          contents: [
+            { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+            { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+          ],
+          config: {
+            systemInstruction: prompt,
+            temperature: 0.1,
+            maxOutputTokens: 16383,
+          }
+        });
+
+        let chunksReceived = 0;
+        for await (const chunk of responseStream) {
+          if (window.lexscan_abort) break;
+          textOutput += chunk.text || "";
+          chunksReceived++;
+          if (onProgress) {
+            const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+            onProgress(fakePercent, `Gemini 3.5 Flash Lendo... (${chunksReceived} fragmentos)`);
+          }
+        }
+        textOutput = textOutput.trim();
       } catch (streamFail: any) {
         const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
         
-        // Se o erro do Google for 503 (Servidor Lotado/High Demand), 429 (Cota) ou 403 (Bloqueio de Chave),
-        // NÃO perca tempo tentando chamada direta na MESMA chave! Pule imediatamente para a próxima chave!
+        // Se for erro real da Google (503 Servidor Lotado, 429 Cota, 403 Bloqueio de Chave),
+        // NÃO perca tempo na MESMA chave! Pule imediatamente para a próxima chave!
         const isGoogleCapacityOrQuota = 
           streamFailMsg.includes("503") || 
           streamFailMsg.includes("high demand") || 
@@ -1258,8 +1224,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 
         console.warn(`[Gemini 3.5 Flash] Streaming falhou/desconectou, tentando chamada direta com chave ..${keyHash}:`, streamFailMsg);
         
-        let directTimer: any = null;
-        const directPromise = ai.models.generateContent({
+        const directRes = await ai.models.generateContent({
           model: MODEL_NAME,
           contents: [
             { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
@@ -1271,13 +1236,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
             maxOutputTokens: 16383,
           }
         });
-        const directTimeout = new Promise((_, reject) => {
-          directTimer = setTimeout(() => reject(new Error("Timeout de 40s na chamada direta")), 40000);
-        });
 
-        const directRes: any = await Promise.race([directPromise, directTimeout]).finally(() => {
-          if (directTimer) clearTimeout(directTimer);
-        });
         textOutput = directRes?.text?.trim() || "";
         if (!textOutput) {
           throw new Error("Resposta da IA vazia na chamada direta.");
@@ -1373,72 +1332,9 @@ REGRAS CRÍTICAS:
     const ai = new GoogleGenAI({ apiKey });
     
     try {
-      let isStreamingStarted = false;
-      let isTimedOut = false;
-      let initialTimer: any = null;
-
-      const streamPromise = new Promise<string>(async (resolve, reject) => {
-        initialTimer = setTimeout(() => {
-          if (!isStreamingStarted) {
-            isTimedOut = true;
-            reject(new Error("Timeout: Gemini não conectou nos primeiros 20s."));
-          }
-        }, 20000);
-
-        try {
-          const responseStream = await ai.models.generateContentStream({
-            model: MODEL_NAME,
-            contents: parts,
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.1,
-              maxOutputTokens: 16383
-            }
-          });
-
-          let fullText = "";
-          let chunksCount = 0;
-          for await (const chunk of responseStream) {
-            if (isTimedOut || window.lexscan_abort) break;
-            if (!isStreamingStarted) {
-              isStreamingStarted = true;
-              if (initialTimer) {
-                clearTimeout(initialTimer);
-                initialTimer = null;
-              }
-            }
-            if (chunk && chunk.text) {
-              fullText += chunk.text;
-              chunksCount++;
-              if (onProgress) {
-                onProgress(
-                  null,
-                  `Recebendo lote de ${images.length} págs via IA (${chunksCount} partes)...`
-                );
-              }
-            }
-          }
-
-          if (initialTimer) clearTimeout(initialTimer);
-          if (!isTimedOut && fullText.trim()) {
-            resolve(fullText.trim());
-          } else if (!isTimedOut) {
-            reject(new Error("Resposta vazia da IA no lote."));
-          }
-        } catch (streamErr) {
-          if (initialTimer) clearTimeout(initialTimer);
-          reject(streamErr);
-        }
-      });
-
       let textOutput = "";
       try {
-        textOutput = await streamPromise;
-      } catch (streamFail: any) {
-        console.warn(`[Gemini 3.5 Flash Batch] Streaming falhou, tentando chamada direta:`, streamFail?.message || streamFail);
-        
-        let directTimer: any = null;
-        const directPromise = ai.models.generateContent({
+        const responseStream = await ai.models.generateContentStream({
           model: MODEL_NAME,
           contents: parts,
           config: {
@@ -1447,13 +1343,43 @@ REGRAS CRÍTICAS:
             maxOutputTokens: 16383
           }
         });
-        const directTimeout = new Promise((_, reject) => {
-          directTimer = setTimeout(() => reject(new Error("Timeout de 30s na chamada direta do lote")), 30000);
+
+        let fullText = "";
+        let chunksCount = 0;
+        for await (const chunk of responseStream) {
+          if (window.lexscan_abort) break;
+          if (chunk && chunk.text) {
+            fullText += chunk.text;
+            chunksCount++;
+            if (onProgress) {
+              onProgress(
+                null,
+                `Recebendo lote de ${images.length} págs via IA (${chunksCount} partes)...`
+              );
+            }
+          }
+        }
+        textOutput = fullText.trim();
+      } catch (streamFail: any) {
+        const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
+        
+        // Se for erro real de cota ou bloqueio
+        if (streamFailMsg.includes("503") || streamFailMsg.includes("429") || streamFailMsg.includes("quota") || streamFailMsg.includes("403")) {
+          throw streamFail;
+        }
+
+        console.warn(`[Gemini 3.5 Flash Batch] Streaming falhou, tentando chamada direta:`, streamFailMsg);
+        
+        const directRes = await ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: parts,
+          config: {
+            systemInstruction: prompt,
+            temperature: 0.1,
+            maxOutputTokens: 16383
+          }
         });
 
-        const directRes: any = await Promise.race([directPromise, directTimeout]).finally(() => {
-          if (directTimer) clearTimeout(directTimer);
-        });
         textOutput = directRes?.text?.trim() || "";
         if (!textOutput) {
           throw new Error("Resposta vazia da IA no lote direto.");
