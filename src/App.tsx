@@ -1104,6 +1104,24 @@ function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
   }
 }
 
+// Detecta se o Gemini travou em loop de repetição (ex: linha separadora de tabela ou sublinhado repetido sem parar).
+// A limpeza cosmética (collapse de _____/----- no texto final) não basta sozinha: se o loop consumiu o orçamento
+// de tokens, o resto da página real nunca chegou a ser gerado. Por isso a resposta é REJEITADA e uma nova
+// tentativa é feita (próximo modelo/chave), em vez de só maquiar o resultado incompleto.
+function containsDegenerateRepetition(text: string): boolean {
+  if (!text || text.length < 500) return false;
+  return /(.{1,40})\1{20,}/.test(text.slice(0, 300000));
+}
+
+// Detecta se a resposta do Gemini foi cortada por estourar o limite de tokens (maxOutputTokens)
+function isTruncatedResponse(res: any): boolean {
+  try {
+    return res?.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+  } catch (e) {
+    return false;
+  }
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
@@ -1169,7 +1187,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Em seguida, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:`;
 
-  const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.8-flash"];
+  const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash"];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1216,21 +1234,27 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           }
 
           let chunksReceived = 0;
+          let streamFinishReason: string | undefined;
           textOutput = "";
           for await (const chunk of responseStream) {
             if (window.lexscan_abort) break;
             textOutput += chunk.text || "";
             chunksReceived++;
+            if (chunk?.candidates?.[0]?.finishReason) streamFinishReason = chunk.candidates[0].finishReason;
             if (onProgress) {
-              const fakePercent = Math.min(95, 70 + (chunksReceived * 2)); 
+              const fakePercent = Math.min(95, 70 + (chunksReceived * 2));
               onProgress(fakePercent, `Gemini Flash Lendo... (${chunksReceived} fragmentos)`);
             }
           }
           textOutput = textOutput.trim();
 
-          if (textOutput) {
+          if (textOutput && streamFinishReason !== 'MAX_TOKENS' && !containsDegenerateRepetition(textOutput)) {
             modelSuccess = true;
             break;
+          } else if (textOutput) {
+            console.warn(`[Gemini Flash] Modelo ${currentModel} retornou resposta truncada/repetitiva (possível loop) na chave ..${keyHash}. Descartando e tentando próximo modelo...`);
+            textOutput = "";
+            lastModelErr = new Error("Resposta truncada ou com repetição degenerada.");
           }
         } catch (streamFail: any) {
           lastModelErr = streamFail;
@@ -1262,10 +1286,14 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               }
             });
 
-            textOutput = directRes?.text?.trim() || "";
-            if (textOutput) {
+            const directText = directRes?.text?.trim() || "";
+            if (directText && !isTruncatedResponse(directRes) && !containsDegenerateRepetition(directText)) {
+              textOutput = directText;
               modelSuccess = true;
               break;
+            } else if (directText) {
+              console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou resposta truncada/repetitiva. Tentando próximo modelo...`);
+              lastModelErr = new Error("Resposta direta truncada ou com repetição degenerada.");
             }
           } catch (directErr: any) {
             lastModelErr = directErr;
@@ -1280,7 +1308,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         }
       }
 
-      // Se os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-2.5-flash direto
+      // Se os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-3.5-flash direto
       if (!modelSuccess && lastModelErr) {
         const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
         if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
@@ -1288,7 +1316,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           await new Promise(r => setTimeout(r, 800));
           try {
             const retryRes = await ai.models.generateContent({
-              model: "gemini-2.5-flash",
+              model: "gemini-3.5-flash",
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1299,8 +1327,9 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 maxOutputTokens: 16383,
               }
             });
-            textOutput = retryRes?.text?.trim() || "";
-            if (textOutput) {
+            const retryText = retryRes?.text?.trim() || "";
+            if (retryText && !isTruncatedResponse(retryRes) && !containsDegenerateRepetition(retryText)) {
+              textOutput = retryText;
               modelSuccess = true;
             }
           } catch (retryErr: any) {
@@ -1358,7 +1387,7 @@ REGRAS CRÍTICAS:
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
   const MODEL_NAME = "gemini-2.5-flash";
-  const FALLBACK_MODEL = "gemini-2.5-pro";
+  const FALLBACK_MODEL = "gemini-3.5-flash";
 
   const parts: any[] = [
     { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
@@ -1418,8 +1447,10 @@ REGRAS CRÍTICAS:
 
         let fullText = "";
         let chunksCount = 0;
+        let batchFinishReason: string | undefined;
         for await (const chunk of responseStream) {
           if (window.lexscan_abort) break;
+          if (chunk?.candidates?.[0]?.finishReason) batchFinishReason = chunk.candidates[0].finishReason;
           if (chunk && chunk.text) {
             fullText += chunk.text;
             chunksCount++;
@@ -1432,6 +1463,11 @@ REGRAS CRÍTICAS:
           }
         }
         textOutput = fullText.trim();
+        if (textOutput && (batchFinishReason === 'MAX_TOKENS' || containsDegenerateRepetition(textOutput))) {
+          console.warn(`[Gemini Batch] Resposta truncada/repetitiva (possível loop) na chave ..${keyHash}. Descartando.`);
+          textOutput = "";
+          throw new Error("Resposta truncada ou com repetição degenerada no lote.");
+        }
       } catch (streamFail: any) {
         const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
         
@@ -1455,6 +1491,10 @@ REGRAS CRÍTICAS:
         textOutput = directRes?.text?.trim() || "";
         if (!textOutput) {
           throw new Error("Resposta vazia da IA no lote direto.");
+        }
+        if (isTruncatedResponse(directRes) || containsDegenerateRepetition(textOutput)) {
+          textOutput = "";
+          throw new Error("Resposta truncada ou com repetição degenerada no lote direto.");
         }
       }
 
@@ -1923,8 +1963,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 
   const modelsToTry = [
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-3.8-flash"
+    "gemini-3.5-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -2371,8 +2410,7 @@ async function refineChunkWithGemini(
 ): Promise<string> {
   const modelsToTry = [
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-3.8-flash"
+    "gemini-3.5-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -2499,8 +2537,7 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
       "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "gemini-3.8-flash"
+      "gemini-3.5-flash"
     ];
     let success = false;
 
@@ -2647,6 +2684,11 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 }
 
 async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number, msg: string) => void, useAi: boolean, startPage: number = 1, forceRefresh: boolean = false, goldStandard: boolean = true, forceAi: boolean = false) {
+  // forceRefresh (reprocessar ignorando cache) sempre implicou forçar a IA visual também,
+  // pulando a detecção de texto digital nativo. Nenhum ponto de chamada no app passa o 7º
+  // parâmetro (forceAi) diretamente, então sem esta linha "forçar reprocessamento" nunca
+  // conseguia sobrepor uma camada de texto digital ruim.
+  forceAi = forceAi || forceRefresh;
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
