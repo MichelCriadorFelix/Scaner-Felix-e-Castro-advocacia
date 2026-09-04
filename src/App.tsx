@@ -1549,43 +1549,41 @@ function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean 
     .replace(/\[\s*\]/g, '')
     .trim();
 
-  // Se após remover os carimbos de cabeçalho/rodapé não sobrar conteúdo substancial (menos de 160 caracteres),
+  // Se após remover os carimbos de cabeçalho/rodapé não sobrar conteúdo substancial (menos de 150 caracteres),
   // significa que a página é na verdade uma imagem/foto escaneada com apenas o carimbo do INSS em cima!
   // Logo, DEVE ser renderizada e enviada para OCR / IA Jurídica.
-  if (bodyText.length < 160) {
+  if (bodyText.length < 150) {
     return false;
   }
 
-  // 2. Se a página contém imagem embutida (anexo escaneado ou foto):
+  // 2. Se a página contém imagem embutida:
   if (hasImage) {
-    // Documentos de identificação, laudos, certidões ou comprovantes escaneados que frequentemente possuem
-    // camadas de OCR ruins embutidas pelo scanner devem SEMPRE ser renderizados e processados pela IA Jurídica:
-    const isScannedOfficialDoc = /\b(CARTEIRA DE IDENTIDADE|IDENTIFICA[ÇC][ÃA]O CIVIL|REGISTRO GERAL|DETRAN|HABILITA[ÇC][ÃA]O|CNH|CERTID[ÃA]O|LAUDO|ATESTADO|RECEITU[ÁA]RIO|ASSOCIA[ÇC][ÃA]O DE MORADORES|DECLARA[ÇC][ÃA]O DE RESID[ÊE]NCIA)\b/i.test(bodyText);
-    if (isScannedOfficialDoc) {
+    // Se o texto for curto (< 350 caracteres), geralmente é uma imagem de documento (ex: RG/CNH/Laudo manuscrito) com carimbos
+    if (bodyText.length < 350) {
       return false;
     }
-
-    // Se o texto for relativamente curto (< 550 caracteres) e contiver imagem, prefere a IA visual
-    if (bodyText.length < 550) {
+    
+    // Se contiver termos específicos de documento oficial de identificação/comprovante com imagem
+    const isScannedIdDoc = /\b(CARTEIRA DE IDENTIDADE|IDENTIFICA[ÇC][ÃA]O CIVIL|REGISTRO GERAL|DETRAN|HABILITA[ÇC][ÃA]O|CNH|POLEGAR DIREITO|IMPRESS[ÃA]O DIGITAL|FOTO 3X4)\b/i.test(bodyText);
+    if (isScannedIdDoc && bodyText.length < 700) {
       return false;
     }
   }
 
   // 3. Detecção de OCR antigo corrompido / caracteres espúrios:
-  // Palavras com números misturados com letras (ex: "1041/20o18", "DE33AM", "Munlcip10", "4beeinçe", "0619 oa fore")
   const corruptedTokens = bodyText.match(/\b(?=[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ0-9]*[0-9])(?=[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ0-9]*[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ])[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ0-9]{3,}\b/g) || [];
   const abnormalTokens = corruptedTokens.filter(t => 
     !/^\d{7,}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$/.test(t) && // Não é num processo
     !/^[A-Z]{2,4}\d{4,}$/.test(t) && // Não é código de órgão
     !/^\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}$/.test(t) // Não é CNPJ
   );
-  if (abnormalTokens.length >= 2) {
+  if (abnormalTokens.length >= 3) {
     return false;
   }
 
   // Palavras com maiúsculas anômalas no meio (ex: "DiRETQRIA", "SANTOns", "Assiratua", "GRANDEJ")
   const weirdCaseWords = bodyText.match(/\b[a-z]{1,2}[A-Z]{2,}[a-z]*\b|\b[A-Z]{2,}[a-z]+[A-Z]+\b/g) || [];
-  if (weirdCaseWords.length >= 2) {
+  if (weirdCaseWords.length >= 3) {
     return false;
   }
 
@@ -1595,7 +1593,7 @@ function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean 
 
   // Símbolos de ruído real do OCR
   const noiseSymbols = (bodyText.match(/[•■~¤¢¶*«»§]/g) || []).length;
-  if (noiseSymbols / bodyText.length > 0.025 && bodyText.length > 50) {
+  if (noiseSymbols / bodyText.length > 0.03 && bodyText.length > 50) {
     return false;
   }
 
@@ -1603,8 +1601,8 @@ function isGenuineDigitalText(text: string, hasImage: boolean = false): boolean 
   const letters = (bodyText.match(/[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/g) || []).length;
   if (letters < 20) return false;
 
-  // Letras devem representar pelo menos 45% do texto total em textos normais digitais.
-  if (letters / bodyText.length < 0.45) {
+  // Letras devem representar pelo menos 35% do texto total em textos normais digitais (formulários e tabelas numéricas).
+  if (letters / bodyText.length < 0.35) {
     return false;
   }
 
@@ -2601,197 +2599,7 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return window.btoa(c.join(''));
 }
 
-async function extractPDFNativeChunks(
-  file: File | Blob,
-  onProgress: (percent: number, msg: string) => void,
-  startPage: number = 1,
-  goldStandard: boolean = true
-): Promise<{ text: string; confidence: number } | null> {
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-    const totalPages = pdfDoc.getPageCount();
-    if (!totalPages || totalPages === 0) return null;
-
-    let finalSortedKeys = getSortedApiKeys();
-    if (!finalSortedKeys || finalSortedKeys.length === 0) {
-      console.warn("[Gemini Nativo] Nenhuma chave Gemini configurada para modo nativo.");
-      return null;
-    }
-
-    const CHUNK_SIZE = 5; // Lotes de 5 páginas: seguro contra o teto de 16k tokens e resposta em 4 a 6 segundos
-    let fullText = "";
-    let keyIndex = 0;
-    const startIdx = Math.max(0, (parseInt(String(startPage)) || 1) - 1);
-
-    for (let start = startIdx; start < totalPages; start += CHUNK_SIZE) {
-      if (window.lexscan_abort) {
-        fullText += `\n\n[PROCESSO PAUSADO PELO USUÁRIO NA PÁGINA ${start + 1}]\n\n`;
-        break;
-      }
-
-      const end = Math.min(start + CHUNK_SIZE, totalPages);
-      const chunkDoc = await PDFDocument.create();
-      const pageIndices = [];
-      for (let p = start; p < end; p++) pageIndices.push(p);
-      const copiedPages = await chunkDoc.copyPages(pdfDoc, pageIndices);
-      copiedPages.forEach(page => chunkDoc.addPage(page));
-      const chunkBytes = await chunkDoc.save();
-      const chunkBase64 = uint8ArrayToBase64(chunkBytes);
-
-      const percent = Math.round(((start + 1) / totalPages) * 100);
-      onProgress(percent, `Lendo páginas ${start + 1} a ${end} de ${totalPages} via Gemini Nativo...`);
-
-      const systemPrompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
-O arquivo PDF em anexo contém as páginas ${start + 1} a ${end} de um processo ou documento jurídico.
-Sua missão é transcrever integralmente, fielmente e literalmente (verbatim) todo o conteúdo de cada uma dessas páginas.
-REGRAS CRÍTICAS:
-1. Para cada página contida neste anexo, inicie obrigatoriamente a transcrição com o cabeçalho exato:
-[PÁGINA X - RECUPERADO VIA IA JURÍDICA NATIVA]
-(onde X é o número real e sequencial da página no documento, ou seja, entre ${start + 1} e ${end}).
-2. Transcreva todo o texto com máxima precisão: petições, decisões, laudos médicos manuscritos ou impressos (decifrando letra de médico, receitas, CIDs, posologias, medicamentos e carimbos com CRM), dados cadastrais (CPF, RG, CNIS, NIT), tabelas em markdown, carimbos e certidões.
-3. Jamais abrevie, nunca resuma e nunca omita nada. Se um laudo médico contiver caligrafia difícil, use dedução clínica e vocabulário médico/farmacológico para transcrever com fidelidade sem recorrer facilmente a [ilegível].
-4. Ao final de cada página transcrita, insira obrigatoriamente a linha divisória:
-══════════════════════════════════════════════════`;
-
-      let chunkSuccess = false;
-      let lastErr = null;
-
-      // Execução com Chave Fixa (mantém a mesma chave enquanto tiver cota)
-      const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.8-flash"];
-
-      for (let attempt = 0; attempt < finalSortedKeys.length; attempt++) {
-        if (window.lexscan_abort) break;
-        const currentKey = finalSortedKeys[(keyIndex + attempt) % finalSortedKeys.length];
-        const keyHash = currentKey.slice(-6);
-
-        try {
-          const ai = new GoogleGenAI({ apiKey: currentKey });
-          let chunkText = "";
-          let modelSuccess = false;
-          let lastModelErr: any = null;
-
-          for (let m = 0; m < modelsToTry.length; m++) {
-            const currentModel = modelsToTry[m];
-            if (window.lexscan_abort) break;
-
-            try {
-              console.log(`[Gemini Nativo] Tentando ${currentModel} na chave ..${keyHash} (págs ${start + 1}-${end})...`);
-              const res = await ai.models.generateContent({
-                model: currentModel,
-                contents: [
-                  { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
-                  { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
-                ],
-                config: {
-                  systemInstruction: systemPrompt,
-                  temperature: 0.1,
-                  maxOutputTokens: 16383
-                }
-              });
-
-              chunkText = res?.text?.trim() || "";
-              if (chunkText) {
-                modelSuccess = true;
-                break; // Sucesso com esse modelo!
-              }
-            } catch (modelErr: any) {
-              lastModelErr = modelErr;
-              const errStr = String(modelErr?.message || modelErr || "").toLowerCase();
-              if (errStr.includes("503") || errStr.includes("overloaded") || errStr.includes("high demand") || errStr.includes("unavailable") || errStr.includes("not found") || errStr.includes("404")) {
-                console.warn(`[Gemini Nativo] Modelo ${currentModel} com sobrecarga/503. Alternando para próximo modelo na mesma chave ..${keyHash}...`);
-                await new Promise(r => setTimeout(r, 400));
-                continue;
-              }
-              if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted") || errStr.includes("403") || errStr.includes("denied")) {
-                // Cota estourada nesta chave: encerra tentativas nesta chave e passa para a próxima
-                throw modelErr;
-              }
-              // Qualquer outro erro não fatal: tenta próximo modelo
-              continue;
-            }
-          }
-
-          // Se os modelos sofreram sobrecarga passageira no Google, tenta uma repescagem em gemini-2.5-flash após 800ms
-          if (!modelSuccess && lastModelErr) {
-            const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
-            if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand")) {
-              console.log(`[Gemini Nativo] Pausa para aliviar sobrecarga dos servidores (800ms) na chave ..${keyHash}...`);
-              await new Promise(r => setTimeout(r, 800));
-              try {
-                const retryRes = await ai.models.generateContent({
-                  model: "gemini-2.5-flash",
-                  contents: [
-                    { text: `Transcreva na íntegra as páginas ${start + 1} a ${end} deste PDF conforme as diretrizes do sistema.` },
-                    { inlineData: { data: chunkBase64, mimeType: "application/pdf" } }
-                  ],
-                  config: {
-                    systemInstruction: systemPrompt,
-                    temperature: 0.1,
-                    maxOutputTokens: 16383
-                  }
-                });
-                chunkText = retryRes?.text?.trim() || "";
-                if (chunkText) {
-                  modelSuccess = true;
-                }
-              } catch (retryErr: any) {
-                lastModelErr = retryErr;
-              }
-            }
-          }
-
-          if (modelSuccess && chunkText) {
-            fullText += chunkText + "\n\n";
-            if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-            if (window.setKeyError) window.setKeyError(keyHash, 'ok');
-            // CHAVE FIXA: Permanece na mesma chave que funcionou para os próximos lotes
-            keyIndex = (keyIndex + attempt) % finalSortedKeys.length;
-            chunkSuccess = true;
-            break;
-          } else {
-            throw lastModelErr || new Error(`Todos os modelos (${modelsToTry.join(', ')}) falharam na chave ..${keyHash}`);
-          }
-        } catch (keyErr: any) {
-          lastErr = keyErr;
-          const errStr = String(keyErr?.message || keyErr || "").toLowerCase();
-          let errorType = 'error';
-          if (errStr.includes("403") || errStr.includes("denied") || errStr.includes("forbidden")) errorType = 'blocked';
-          else if (errStr.includes("invalid") || errStr.includes("not valid")) errorType = 'invalid';
-          else if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("exhausted") || errStr.includes("rate limit")) errorType = 'quota_exceeded';
-          else if (errStr.includes("503") || errStr.includes("unavailable") || errStr.includes("overloaded") || errStr.includes("high demand") || errStr.includes("timeout")) errorType = 'server_error';
-          if (window.setKeyError) window.setKeyError(keyHash, errorType);
-          console.warn(`[Gemini Nativo Chunk ${start + 1}-${end}] Chave ..${keyHash} registrou ${errorType} (${errStr.slice(0, 50)}). Avançando para próxima chave...`);
-        }
-      }
-
-      if (!chunkSuccess) {
-        throw new Error(`Falha no lote de páginas ${start + 1} a ${end}: ` + (lastErr?.message || ""));
-      }
-    }
-
-    if (fullText.trim()) {
-      return { text: fullText.trim(), confidence: 99 };
-    }
-    return null;
-  } catch (nativeErr: any) {
-    console.warn("[Gemini Nativo] Acionando pipeline híbrido página a página devido a:", nativeErr?.message || nativeErr);
-    return null;
-  }
-}
-
-async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRefresh = false, goldStandard = true, forceAi = false) {
-  if (useAi || forceAi) {
-    try {
-      const nativeResult = await extractPDFNativeChunks(file, onProgress, startPage, goldStandard);
-      if (nativeResult && nativeResult.text) {
-        return nativeResult;
-      }
-    } catch (e: any) {
-      console.warn("[Gemini Nativo] Transição para modo página a página:", e?.message || e);
-    }
-  }
-
+async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number, msg: string) => void, useAi: boolean, startPage: number = 1, forceRefresh: boolean = false, goldStandard: boolean = true, forceAi: boolean = false) {
   const pdfjsLib = await loadPDFJS();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, ...PDFJS_BASE_OPTIONS }).promise;
@@ -2799,23 +2607,23 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
   let confidenceTotal = 0;
   let pagesEvaluated = 0;
 
-  let tesseractWorker = null;
+  let tesseractWorker: any = null;
   const Tesseract = await loadTesseract();
 
-  const withTimeout = (promise, ms, errorMsg) => {
-    let timer;
+  const withTimeout = (promise: Promise<any>, ms: number, errorMsg: string) => {
+    let timer: any;
     const timeoutPromise = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(errorMsg)), ms);
     });
     return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
   };
 
-  let startIdx = parseInt(startPage) || 1;
+  let startIdx = parseInt(String(startPage)) || 1;
   const endIdx = pdf.numPages;
 
-  let activeDocumentApiKey = null;
+  let activeDocumentApiKey: string | null = null;
 
-  const processOCRFallback = async (pageNum, blob) => {
+  const processOCRFallback = async (pageNum: number, blob: Blob) => {
     onProgress(
       Math.round(((pageNum - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
       `Pág ${pageNum}: Falha na IA. Acionando OCR Local (Contingência)...`
@@ -2844,8 +2652,8 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
     
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (window.lexscan_abort) break;
-      let finalCanvasToUse = null;
-      let tempCanvas = null;
+      let finalCanvasToUse: HTMLCanvasElement | null = null;
+      let tempCanvas: HTMLCanvasElement | null = null;
       
       try {
         if (attempt > 1) await new Promise(r => setTimeout(r, 1000 * attempt));
@@ -2862,13 +2670,13 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
         if (attempt === 1 && !forceAi) {
           try {
             const textContent = await withTimeout(page.getTextContent(), currentTimeout, `Timeout texto nativo ${i}`);
-            pageText = textContent.items.map(item => item.str).join(" ").trim();
+            pageText = textContent.items.map((item: any) => item.str).join(" ").trim();
             
             let hasImage = false;
             try {
               const ops = await page.getOperatorList();
               if (ops && ops.fnArray) {
-                hasImage = ops.fnArray.some(fn => 
+                hasImage = ops.fnArray.some((fn: any) => 
                   fn === pdfjsLib.OPS.paintImageXObject || 
                   fn === pdfjsLib.OPS.paintInlineImageXObject || 
                   fn === pdfjsLib.OPS.paintImageMaskXObject
@@ -2876,9 +2684,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
               }
             } catch(e) {}
             
-            // Em PDFs jurídicos (PJe/eproc), páginas com mais de 200 caracteres de texto real são petições digitais
-            // mesmo se houver um brasão ou carimbo no cabeçalho. Extrai instantaneamente sem gastar cota de IA.
-            if (pageText.length > 200 || (pageText.length > 60 && !hasImage)) {
+            if (isGenuineDigitalText(pageText, hasImage)) {
               isDigital = true;
             }
           } catch(e) {}
@@ -2898,7 +2704,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
         } else {
           onProgress(
             Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-            `Pág ${i}: Renderizando imagem estrutural...`
+            `Pág ${i}/${endIdx}: Renderizando imagem escaneada...`
           );
           
           let viewport = page.getViewport({ scale: attempt === 1 ? 1.5 : 1.0 });
@@ -2906,8 +2712,10 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
           canvas.width = Math.floor(viewport.width);
           canvas.height = Math.floor(viewport.height);
           let ctx = canvas.getContext("2d");
-          let renderTask = page.render({ canvasContext: ctx, viewport });
-          await withTimeout(renderTask.promise, 60000, `Render timeout pág ${i}`);
+          if (ctx) {
+            let renderTask = page.render({ canvasContext: ctx, viewport });
+            await withTimeout(renderTask.promise, 60000, `Render timeout pág ${i}`);
+          }
           
           finalCanvasToUse = canvas;
           
@@ -2923,7 +2731,7 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
           if (useAi || forceAi) {
             onProgress(
               Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
-              `Pág ${i}/${endIdx}: Transcrevendo via Gemini Flash...`
+              `Pág ${i}/${endIdx}: Transcrevendo manuscrito/scan via IA Jurídica...`
             );
             const enhancedBlob = await enhanceImageForGemini(finalCanvasToUse);
             try {
@@ -2953,9 +2761,10 @@ async function extractPDFHybrid(file, onProgress, useAi, startPage = 1, forceRef
                tempCtx.filter = 'grayscale(100%) contrast(220%) brightness(105%)';
                tempCtx.drawImage(finalCanvasToUse, 0, 0);
             }
-            const blob = await new Promise(r => tempCanvas.toBlob(r, "image/png", 0.9));
-            
-            await processOCRFallback(i, blob);
+            const blob = await new Promise<Blob | null>(r => tempCanvas!.toBlob(r, "image/png", 0.9));
+            if (blob) {
+              await processOCRFallback(i, blob);
+            }
             pageSuccess = true;
             
             if (page && page.cleanup) page.cleanup();
