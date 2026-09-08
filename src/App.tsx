@@ -1275,7 +1275,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Em seguida, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:`;
 
-  const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash"];
+  const modelsToTry = ["gemini-3.7-flash"];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1426,7 +1426,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
         }
       }
 
-      // Se os modelos deram sobrecarga temporária no Google, faz uma última tentativa resiliente em gemini-3.5-flash direto
+      // Se o modelo deu sobrecarga temporária no Google, faz uma última tentativa resiliente direto (mesmo modelo)
       if (!modelSuccess && lastModelErr) {
         const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
         if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand") || errCheck.includes("truncada") || errCheck.includes("degenerada")) {
@@ -1434,7 +1434,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           await new Promise(r => setTimeout(r, 800));
           try {
             const retryRes = await ai.models.generateContent({
-              model: "gemini-3.5-flash",
+              model: "gemini-3.7-flash",
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1451,7 +1451,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               lastModelErr = new Error("Resposta de repescagem com repetição degenerada.");
             } else if (retryText && isTruncatedResponse(retryRes)) {
               const completedRetry = await completeTruncatedTranscription(
-                ai, "gemini-3.5-flash", [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
+                ai, "gemini-3.7-flash", [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
               );
               if (completedRetry) {
                 textOutput = completedRetry;
@@ -1520,8 +1520,7 @@ REGRAS CRÍTICAS:
 2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const MODEL_NAME = "gemini-2.5-flash";
-  const FALLBACK_MODEL = "gemini-3.5-flash";
+  const MODEL_NAME = "gemini-3.7-flash";
 
   const parts: any[] = [
     { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
@@ -1563,9 +1562,9 @@ REGRAS CRÍTICAS:
           });
         } catch (initErr: any) {
           const initMsg = String(initErr?.message || initErr || "").toLowerCase();
-          if (initMsg.includes("not found") || initMsg.includes("404") || initMsg.includes("unsupported")) {
-            console.warn(`[Gemini Batch] Modelo ${activeModel} indisponível, alternando para ${FALLBACK_MODEL}...`);
-            activeModel = FALLBACK_MODEL;
+          if (initMsg.includes("503") || initMsg.includes("overloaded") || initMsg.includes("high demand") || initMsg.includes("unavailable")) {
+            console.warn(`[Gemini Batch] Modelo ${activeModel} com sobrecarga, tentando novamente...`);
+            await new Promise(r => setTimeout(r, 800));
             responseStream = await ai.models.generateContentStream({
               model: activeModel,
               contents: parts,
@@ -2138,8 +2137,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
   const modelsToTry = [
-    "gemini-2.5-flash",
-    "gemini-3.5-flash"
+    "gemini-3.7-flash"
   ];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -2464,8 +2462,7 @@ async function refineChunkWithGemini(
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
   const modelsToTry = [
-    "gemini-2.5-flash",
-    "gemini-3.5-flash"
+    "gemini-3.7-flash"
   ];
   
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
@@ -2592,8 +2589,7 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
     const modelsToTry = [
-      "gemini-2.5-flash",
-      "gemini-3.5-flash"
+      "gemini-3.7-flash"
     ];
     let success = false;
 
