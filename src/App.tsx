@@ -8608,6 +8608,20 @@ export default function ScannerJuridico() {
                     })}
                   </div>
 
+                  {/* Aviso de clareza: as duas opções abaixo aplicam as correções escolhidas acima. A única diferença é
+                      se o aviso da divergência também fica escrito no cabeçalho do relatório final. */}
+                  <div style={{
+                    fontSize: '10px',
+                    color: G.muted,
+                    background: 'rgba(0,0,0,0.25)',
+                    border: `1px dashed ${G.border}`,
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    lineHeight: '1.4'
+                  }}>
+                    ℹ️ Os dois botões abaixo <strong style={{ color: G.text }}>aplicam as correções que você escolheu acima</strong> (o valor certo substitui o errado no texto). A única diferença é se o aviso da divergência também aparece escrito no cabeçalho do relatório final, ou não.
+                  </div>
+
                   {/* Botões de Ação */}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', paddingTop: '4px' }}>
                     <button
@@ -8640,7 +8654,7 @@ export default function ScannerJuridico() {
                         transition: 'transform 0.1s ease'
                       }}
                     >
-                      <span>🎯 Omitir Alertas (Compilado 100% Limpo para Petição)</span>
+                      <span>✅ Aplicar Correções e Ocultar Avisos (Compilado Limpo)</span>
                     </button>
 
                     <button
@@ -8673,7 +8687,7 @@ export default function ScannerJuridico() {
                         transition: 'all 0.15s ease'
                       }}
                     >
-                      <span>📋 Manter Alertas Selecionados</span>
+                      <span>✅ Aplicar Correções e Manter Avisos no Cabeçalho</span>
                     </button>
                   </div>
                 </div>
