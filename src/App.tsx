@@ -2256,13 +2256,35 @@ interface CurationRule {
   run: (text: string) => string;
 }
 
+// Uma divergência de dado (RG/CPF/CRM) com os valores candidatos encontrados, pra o advogado
+// escolher (ou digitar) qual é o correto e o app já substituir automaticamente no texto final.
+interface IdentityDivergence {
+  label: string;
+  candidates: string[];
+}
+
 interface PrePetitionAuditResult {
   criticalDiscrepancies: string[];
   substantiveAlerts: string[];
+  identityDivergences: IdentityDivergence[];
   cadastralAlerts: string[];
   degradedOcrDocs: string[];
   curationRules: CurationRule[];
   formattedReport: string;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Substitui, no texto, todos os valores candidatos (exceto o escolhido) pelo valor que o advogado confirmou como correto.
+function applyValueCorrection(text: string, candidates: string[], chosenValue: string): string {
+  let result = text;
+  candidates.forEach(c => {
+    if (!c || c === chosenValue) return;
+    result = result.replace(new RegExp(escapeRegExp(c), 'g'), chosenValue);
+  });
+  return result;
 }
 
 function buildAuditFormattedReport(
@@ -2334,6 +2356,7 @@ function collectRoleIdentifiers(fullDocs: any[], roleRegex: RegExp): Map<string,
 function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): PrePetitionAuditResult {
   const criticalDiscrepancies: string[] = [];
   const substantiveAlerts: string[] = [];
+  const identityDivergences: IdentityDivergence[] = [];
   const cadastralAlerts: string[] = [];
   const degradedOcrDocs: string[] = [];
   const curationRules: CurationRule[] = [];
@@ -2361,14 +2384,16 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   if (titularNumbers.size > 1) {
     const details = Array.from(titularNumbers.entries()).map(([num, docs]) => `  - ${num} nos arquivos: ${docs.join(', ')}`).join('\n');
     substantiveAlerts.push(
-      `• DIVERGÊNCIA DE IDENTIDADE DO REQUERENTE/AUTOR:\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o requerente em documentos distintos. Confira qual está correto antes de peticionar (não corrigido automaticamente).`
+      `• DIVERGÊNCIA DE IDENTIDADE DO REQUERENTE/AUTOR:\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o requerente em documentos distintos. Escolha abaixo qual está correto.`
     );
+    identityDivergences.push({ label: "Identidade do Requerente/Autor", candidates: Array.from(titularNumbers.keys()) });
   }
   if (representanteNumbers.size > 1) {
     const details = Array.from(representanteNumbers.entries()).map(([num, docs]) => `  - ${num} nos arquivos: ${docs.join(', ')}`).join('\n');
     substantiveAlerts.push(
-      `• DIVERGÊNCIA DE IDENTIDADE DO REPRESENTANTE/GENITOR(A):\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o representante legal em documentos distintos. Confira qual está correto antes de peticionar (não corrigido automaticamente).`
+      `• DIVERGÊNCIA DE IDENTIDADE DO REPRESENTANTE/GENITOR(A):\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o representante legal em documentos distintos. Escolha abaixo qual está correto.`
     );
+    identityDivergences.push({ label: "Identidade do Representante/Genitor(a)", candidates: Array.from(representanteNumbers.keys()) });
   }
 
   // Divergência de CRM médico por médico (nome extraído do próprio documento, não fixo) — mesma lógica: só sinaliza.
@@ -2389,8 +2414,9 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   crmByDoctor.forEach((crmSet, doctorName) => {
     if (crmSet.size > 1) {
       substantiveAlerts.push(
-        `• DIVERGÊNCIA DE CRM MÉDICO — ${doctorName}:\n  - Números de CRM encontrados: ${Array.from(crmSet).join(', ')}\n  ➔ Provável ruído de OCR no carimbo/rodapé. Confirme o número correto (ex: site do CRM/UF) antes de citar na petição.`
+        `• DIVERGÊNCIA DE CRM MÉDICO — ${doctorName}:\n  - Números de CRM encontrados: ${Array.from(crmSet).join(', ')}\n  ➔ Provável ruído de OCR no carimbo/rodapé. Escolha abaixo o número correto (ex: confirme no site do CRM/UF).`
       );
+      identityDivergences.push({ label: `CRM Médico — ${doctorName}`, candidates: Array.from(crmSet) });
     }
   });
 
@@ -2400,6 +2426,7 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   return {
     criticalDiscrepancies,
     substantiveAlerts,
+    identityDivergences,
     cadastralAlerts,
     degradedOcrDocs,
     curationRules,
@@ -3393,9 +3420,14 @@ export default function ScannerJuridico() {
   const [compilationLogs, setCompilationLogs] = useState<string[]>([]);
   const [pendingStrategicReview, setPendingStrategicReview] = useState<{
     alerts: string[];
-    resolve: (selectedAlerts: string[]) => void;
+    divergences: IdentityDivergence[];
+    resolve: (result: { keptAlerts: string[]; corrections: { candidates: string[]; chosenValue: string }[] }) => void;
   } | null>(null);
   const [selectedStrategicAlerts, setSelectedStrategicAlerts] = useState<number[]>([]);
+  // Por índice do alerta: valor escolhido pelo advogado pra corrigir a divergência ('' = não corrigir)
+  const [divergenceChoices, setDivergenceChoices] = useState<Record<number, string>>({});
+  // Por índice do alerta: texto digitado manualmente quando o advogado escolhe "outro valor"
+  const [divergenceCustomText, setDivergenceCustomText] = useState<Record<number, string>>({});
 
   // Seleção e Gestão de Documentos em Lote
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
@@ -6048,16 +6080,34 @@ export default function ScannerJuridico() {
       ]);
 
       setSelectedStrategicAlerts(auditResult.substantiveAlerts.map((_, i) => i));
+      setDivergenceChoices({});
+      setDivergenceCustomText({});
 
-      const chosenAlerts = await new Promise<string[]>((resolve) => {
+      const reviewResult = await new Promise<{ keptAlerts: string[]; corrections: { candidates: string[]; chosenValue: string }[] }>((resolve) => {
         setPendingStrategicReview({
           alerts: auditResult.substantiveAlerts,
+          divergences: auditResult.identityDivergences,
           resolve
         });
       });
 
       setPendingStrategicReview(null);
-      activeSubstantiveAlerts = chosenAlerts;
+      activeSubstantiveAlerts = reviewResult.keptAlerts;
+
+      if (reviewResult.corrections.length > 0) {
+        setCompilationLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] 🛠️ Aplicando ${reviewResult.corrections.length} correção(ões) de dado confirmada(s) pelo advogado...`
+        ]);
+        reviewResult.corrections.forEach(corr => {
+          docsBodyText = applyValueCorrection(docsBodyText, corr.candidates, corr.chosenValue);
+        });
+        setCompilationLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] ✅ Correção(ões) aplicada(s) diretamente no texto do compilado.`
+        ]);
+        await new Promise(r => setTimeout(r, 300));
+      }
 
       if (activeSubstantiveAlerts.length === 0) {
         setCompilationLogs(prev => [
@@ -8451,15 +8501,17 @@ export default function ScannerJuridico() {
                         </span>
                       </div>
                       <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: G.text, lineHeight: '1.45' }}>
-                        A IA identificou novos NBs/requerimentos no CNIS posteriores à DER pretendida. Como você pode optar pela <strong>DER mais vantajosa (ex: DER 2025 para maximizar atrasados)</strong>, defina se deseja exibir esses alertas no cabeçalho ou suprimi-los para entregar o compilado limpo para a petição:
+                        A auditoria encontrou dados divergentes (RG/CPF/CRM) entre documentos diferentes. Pra cada divergência abaixo, escolha qual valor está correto (ou digite o certo) — o app já corrige automaticamente no texto compilado. Defina também se quer manter o aviso no cabeçalho do relatório ou omiti-lo:
                       </p>
                     </div>
                   </div>
 
                   {/* Lista de Alertas Detectados */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto' }}>
                     {pendingStrategicReview.alerts.map((al, idx) => {
                       const isChecked = selectedStrategicAlerts.includes(idx);
+                      const divergence = pendingStrategicReview.divergences[idx];
+                      const choice = divergenceChoices[idx];
                       return (
                         <div
                           key={idx}
@@ -8475,20 +8527,82 @@ export default function ScannerJuridico() {
                             border: `1px solid ${isChecked ? G.accent : G.border}`,
                             cursor: 'pointer',
                             display: 'flex',
-                            alignItems: 'flex-start',
-                            gap: '10px',
+                            flexDirection: 'column',
+                            gap: '8px',
                             transition: 'all 0.15s ease'
                           }}
                         >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => {}}
-                            style={{ marginTop: '2px', accentColor: G.accent, cursor: 'pointer' }}
-                          />
-                          <div style={{ fontSize: '11px', color: '#e2e8f0', whiteSpace: 'pre-line', lineHeight: '1.4' }}>
-                            {al}
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {}}
+                              style={{ marginTop: '2px', accentColor: G.accent, cursor: 'pointer' }}
+                            />
+                            <div style={{ fontSize: '11px', color: '#e2e8f0', whiteSpace: 'pre-line', lineHeight: '1.4' }}>
+                              {al}
+                            </div>
                           </div>
+
+                          {divergence && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                marginLeft: '24px',
+                                paddingTop: '8px',
+                                borderTop: `1px solid ${G.border}`,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '6px'
+                              }}
+                            >
+                              <span style={{ fontSize: '10px', color: G.muted, fontWeight: 700 }}>QUAL VALOR ESTÁ CORRETO?</span>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px' }}>
+                                {divergence.candidates.map((cand, ci) => (
+                                  <label key={ci} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: G.text, cursor: 'pointer' }}>
+                                    <input
+                                      type="radio"
+                                      name={`divergence-${idx}`}
+                                      checked={choice === cand}
+                                      onChange={() => setDivergenceChoices(prev => ({ ...prev, [idx]: cand }))}
+                                      style={{ accentColor: G.accent, cursor: 'pointer' }}
+                                    />
+                                    Usar <strong>{cand}</strong>
+                                  </label>
+                                ))}
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: G.text, cursor: 'pointer' }}>
+                                  <input
+                                    type="radio"
+                                    name={`divergence-${idx}`}
+                                    checked={choice === '__custom__'}
+                                    onChange={() => setDivergenceChoices(prev => ({ ...prev, [idx]: '__custom__' }))}
+                                    style={{ accentColor: G.accent, cursor: 'pointer' }}
+                                  />
+                                  Outro:
+                                  <input
+                                    type="text"
+                                    placeholder="digite o valor correto"
+                                    value={divergenceCustomText[idx] || ''}
+                                    onChange={(e) => {
+                                      setDivergenceCustomText(prev => ({ ...prev, [idx]: e.target.value }));
+                                      setDivergenceChoices(prev => ({ ...prev, [idx]: '__custom__' }));
+                                    }}
+                                    style={{ background: G.bg, border: `1px solid ${G.border}`, borderRadius: '4px', padding: '3px 6px', color: G.text, fontSize: '10px', width: '150px' }}
+                                  />
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: G.muted, cursor: 'pointer' }}>
+                                  <input
+                                    type="radio"
+                                    name={`divergence-${idx}`}
+                                    checked={!choice}
+                                    onChange={() => setDivergenceChoices(prev => { const next = { ...prev }; delete next[idx]; return next; })}
+                                    style={{ accentColor: G.accent, cursor: 'pointer' }}
+                                  />
+                                  Não corrigir agora
+                                </label>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -8498,7 +8612,15 @@ export default function ScannerJuridico() {
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', paddingTop: '4px' }}>
                     <button
                       onClick={() => {
-                        pendingStrategicReview.resolve([]);
+                        const corrections: { candidates: string[]; chosenValue: string }[] = [];
+                        pendingStrategicReview.divergences.forEach((div, idx) => {
+                          const choice = divergenceChoices[idx];
+                          if (!choice) return;
+                          const chosenValue = (choice === '__custom__' ? (divergenceCustomText[idx] || '') : choice).trim();
+                          if (!chosenValue) return;
+                          corrections.push({ candidates: div.candidates, chosenValue });
+                        });
+                        pendingStrategicReview.resolve({ keptAlerts: [], corrections });
                       }}
                       style={{
                         flex: '1 1 240px',
@@ -8524,7 +8646,15 @@ export default function ScannerJuridico() {
                     <button
                       onClick={() => {
                         const chosen = pendingStrategicReview.alerts.filter((_, i) => selectedStrategicAlerts.includes(i));
-                        pendingStrategicReview.resolve(chosen);
+                        const corrections: { candidates: string[]; chosenValue: string }[] = [];
+                        pendingStrategicReview.divergences.forEach((div, idx) => {
+                          const choice = divergenceChoices[idx];
+                          if (!choice) return;
+                          const chosenValue = (choice === '__custom__' ? (divergenceCustomText[idx] || '') : choice).trim();
+                          if (!chosenValue) return;
+                          corrections.push({ candidates: div.candidates, chosenValue });
+                        });
+                        pendingStrategicReview.resolve({ keptAlerts: chosen, corrections });
                       }}
                       style={{
                         flex: '1 1 180px',
