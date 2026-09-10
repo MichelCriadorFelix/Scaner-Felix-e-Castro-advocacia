@@ -3839,24 +3839,38 @@ export default function ScannerJuridico() {
     }
   }, []);
 
-  useEffect(() => { 
-    if (user) {
+  // Usa user?.id (string estável) em vez do objeto "user" inteiro: o Supabase troca a referência do
+  // objeto a cada renovação automática de token (acontece sozinho numa sessão longa, tipo escanear
+  // muitos documentos seguidos), mesmo sendo o mesmo login. Se o efeito dependesse do objeto inteiro,
+  // ele recarregava tudo do zero e recriava as conexões em tempo real no meio do escaneamento — a
+  // causa da "tela piscando".
+  const userId = user?.id;
+
+  useEffect(() => {
+    if (userId) {
       loadData();
     }
-  }, [loadData, user]);
+  }, [loadData, userId]);
 
-  // Sincronização em Tempo Real (Realtime Sync) para multiplos usuários simultâneos
+  // Sincronização em Tempo Real (Realtime Sync) para multiplos usuários simultâneos.
+  // Com debounce: escanear vários documentos em sequência gera uma rajada de INSERTs (inclusive da
+  // própria aba, que o Postgres ecoa de volta), e sem debounce cada um disparava um recarregamento
+  // completo da lista de documentos — mesma causa do "piscar" ao escanear muitos documentos.
   useEffect(() => {
-    if (!supabase || !user) return;
+    if (!supabase || !userId) return;
+
+    let debounceTimer: any = null;
+    const debouncedLoadData = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => loadData(), 1500);
+    };
 
     const clientsChannel = supabase
       .channel('realtime-clients')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'lexscan_clients' },
-        () => {
-          loadData();
-        }
+        debouncedLoadData
       )
       .subscribe();
 
@@ -3865,17 +3879,16 @@ export default function ScannerJuridico() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'lexscan_documents' },
-        () => {
-          loadData();
-        }
+        debouncedLoadData
       )
       .subscribe();
 
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(clientsChannel);
       supabase.removeChannel(docsChannel);
     };
-  }, [loadData, user]);
+  }, [loadData, userId]);
 
   const confColor = (c) => {
     if (c >= 90) return G.success;
