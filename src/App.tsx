@@ -57,6 +57,29 @@ const css = `
     .header {
       padding: 16px 16px 12px;
     }
+    /* No celular, o nome do documento fica ilegível quando espremido ao lado
+       de 6 ícones de ação na mesma linha. Quebra o header em duas linhas:
+       (checkbox + miniatura + nome) em cima, ícones de ação embaixo, full-width. */
+    .hist-header {
+      flex-wrap: wrap;
+    }
+    .hist-info {
+      flex-basis: 0;
+      min-width: 140px;
+    }
+    .hist-name span {
+      white-space: normal;
+      overflow-wrap: break-word;
+      line-height: 1.35;
+    }
+    .hist-actions {
+      flex-basis: 100%;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed ${G.border};
+    }
   }
 
   /* Computador / Windows / Desktop e Tablets Maiores */
@@ -1265,6 +1288,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 6. TRATAMENTO DE ASSINATURAS E ELEMENTOS VISUAIS:
    - Se houver assinatura visível, transcreva como: [Assinatura Manuscrita: Nome] ou [Assinatura Digital Detectada].
    - Se houver fotos/selfies de validação biométrica, transcreva apenas como [Foto de Validação Biométrica].
+   - Se houver GRÁFICOS ou TRAÇADOS DE EXAME (eletroneuromiografia, eletrocardiograma, eletroencefalograma, espirometria) ou IMAGENS MÉDICAS (raio-x, ressonância, tomografia, ultrassonografia) sem conteúdo textual: NÃO descreva, interprete ou tente "ler" a forma visual do gráfico/imagem — isso pode gerar alucinação. Insira apenas o marcador fixo e único: [Imagem/Gráfico de Exame - não reproduzível em texto]. Continue transcrevendo normalmente todo texto ao redor (cabeçalho, tabela de valores numéricos, laudo escrito do médico, CRM).
 
 7. ESTRUTURAÇÃO DE SAÍDA:
    - No início de sua resposta, forneça os metadados identificados do documento para controle:
