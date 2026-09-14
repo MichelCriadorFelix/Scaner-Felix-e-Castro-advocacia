@@ -3534,6 +3534,7 @@ export default function ScannerJuridico() {
 
   // --- Auto-Save & Recovery Draft for Multi-Page Scans ---
   const [hasRecoverableBatch, setHasRecoverableBatch] = useState(false);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
 
   useEffect(() => {
     get('lexscan_camera_pages_draft').then((val) => {
@@ -3543,14 +3544,40 @@ export default function ScannerJuridico() {
     }).catch(() => {});
   }, []);
 
+  // Pede armazenamento "persistente" ao navegador: sem isso, o Android/Chrome pode apagar
+  // sozinho os dados do rascunho de escaneamento (IndexedDB) quando o armazenamento INTERNO
+  // do celular está quase cheio — mesmo sem o usuário mandar limpar nada, e mesmo que tudo
+  // seja salvo na nuvem depois, porque o rascunho EM ANDAMENTO só existe localmente até ser
+  // compilado. Também mede o quanto já falta de cota pra avisar o advogado ANTES de perder algo.
+  useEffect(() => {
+    if (navigator?.storage?.persist) {
+      navigator.storage.persist().then((granted) => {
+        console.log(`[Armazenamento] Persistência ${granted ? "concedida" : "NEGADA"} pelo navegador.`);
+      }).catch(() => {});
+    }
+    if (navigator?.storage?.estimate) {
+      navigator.storage.estimate().then(({ usage, quota }) => {
+        if (usage && quota && quota > 0 && (usage / quota) > 0.8) {
+          setStorageWarning(`⚠️ O armazenamento do celular está quase cheio (${Math.round((usage / quota) * 100)}% da cota do navegador usada). Isso pode fazer o sistema apagar rascunhos de escaneamento em andamento antes de salvar. Libere espaço no aparelho (apague fotos/apps não usados) antes de escanear lotes grandes.`);
+        }
+      }).catch(() => {});
+    }
+  }, []);
+
   const recoverDraft = async () => {
     try {
       const val = await get('lexscan_camera_pages_draft');
       if (val && Array.isArray(val) && val.length > 0) {
         setCameraPages(val);
         setIsBatchModalOpen(true);
+        showToast(`✓ ${val.length} página(s) recuperada(s) com sucesso!`, "success");
+      } else {
+        showToast("⚠️ Não foi possível recuperar: o rascunho não está mais disponível. Provavelmente o sistema do celular o apagou por falta de armazenamento interno. Libere espaço no aparelho.", "error");
       }
-    } catch(e) {}
+    } catch(e) {
+      console.error("[Rascunho] Falha ao recuperar rascunho:", e);
+      showToast("⚠️ Falha ao recuperar o rascunho — provavelmente apagado pelo sistema por falta de armazenamento interno no celular.", "error");
+    }
     setHasRecoverableBatch(false);
   };
 
@@ -3566,9 +3593,16 @@ export default function ScannerJuridico() {
     showToast("Rascunho descartado com sucesso!", "info");
   };
 
+  const draftSaveWarnedRef = useRef(false);
   useEffect(() => {
     if (cameraPages && cameraPages.length > 0) {
-      set('lexscan_camera_pages_draft', cameraPages).catch(() => {});
+      set('lexscan_camera_pages_draft', cameraPages).catch((e) => {
+        console.error("[Rascunho] Falha ao salvar rascunho localmente:", e);
+        if (!draftSaveWarnedRef.current) {
+          draftSaveWarnedRef.current = true;
+          showToast("⚠️ Armazenamento do celular cheio — o rascunho automático desta página pode não ter sido salvo. Finalize e salve o lote assim que possível.", "error");
+        }
+      });
     } else {
       del('lexscan_camera_pages_draft').catch(() => {});
     }
@@ -7206,6 +7240,22 @@ export default function ScannerJuridico() {
                     <button onClick={recoverDraft} style={{ flex: 1, padding: '8px', borderRadius: '6px', background: G.accent, color: '#000', border: 'none', fontWeight: 'bold', cursor: 'pointer' }}>Recuperar</button>
                     <button onClick={discardDraft} style={{ flex: 1, padding: '8px', borderRadius: '6px', background: 'transparent', color: G.text, border: `1px solid ${G.border}`, cursor: 'pointer' }}>Descartar</button>
                   </div>
+                </div>
+              )}
+
+              {storageWarning && (
+                <div style={{
+                  marginBottom: '16px',
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '8px'
+                }}>
+                  <span style={{ fontSize: '14px', flexShrink: 0 }}>💾</span>
+                  <p style={{ color: '#f87171', fontSize: '11.5px', lineHeight: '1.5', margin: 0 }}>{storageWarning}</p>
                 </div>
               )}
 
