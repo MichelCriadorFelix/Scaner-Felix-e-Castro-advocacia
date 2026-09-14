@@ -3551,34 +3551,103 @@ export default function ScannerJuridico() {
     }
   })());
   const pageCloudIdMapRef = useRef<WeakMap<any, string>>(new WeakMap());
+  // Marca quais blobs já têm backup CONFIRMADO na nuvem — só esses podem ter a versão em
+  // alta resolução liberada da memória depois. Nunca libera um blob sem backup confirmado.
+  const uploadConfirmedRef = useRef<WeakSet<any>>(new WeakSet());
+  // Cache de blobs já baixados de volta da nuvem (pra reabrir/editar/compilar uma página que
+  // já teve a versão local liberada), pra não baixar a mesma página duas vezes.
+  const cloudDownloadCacheRef = useRef<Map<string, any>>(new Map());
 
-  const getOrAssignPageCloudId = (blob: any) => {
-    let id = pageCloudIdMapRef.current.get(blob);
+  const isCloudPageRef = (p: any) => !!(p && typeof p === "object" && p.__cloudRef);
+
+  const getOrAssignPageCloudId = (page: any) => {
+    if (isCloudPageRef(page)) return page.id;
+    let id = pageCloudIdMapRef.current.get(page);
     if (!id) {
       id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-      pageCloudIdMapRef.current.set(blob, id);
+      pageCloudIdMapRef.current.set(page, id);
     }
     return id;
   };
 
+  // Baixa de volta a foto em alta resolução de uma página, se ela já tiver sido liberada da
+  // memória (virou uma referência leve). Se ainda for um Blob local, devolve ele direto.
+  const resolvePageBlob = async (page: any): Promise<any> => {
+    if (!isCloudPageRef(page)) return page;
+    const cache = cloudDownloadCacheRef.current;
+    if (cache.has(page.path)) return cache.get(page.path);
+    const { data, error } = await supabase.storage.from('ged-auditoria').download(page.path);
+    if (error || !data) throw new Error("Não foi possível baixar esta página da nuvem: " + (error?.message || "erro desconhecido"));
+    cache.set(page.path, data);
+    return data;
+  };
+
   // Envia UMA página pra nuvem em segundo plano, sem bloquear nada e sem lançar erro pra
   // fora — falha em silêncio (só loga) porque a segurança real já está garantida localmente.
+  // Só ao confirmar sucesso é que essa página fica elegível pra ter a versão local liberada.
   const backupPageToCloudInBackground = (blob: any) => {
     if (!supabase) return;
     const id = getOrAssignPageCloudId(blob);
     const path = `drafts/${batchSessionIdRef.current}/${id}.jpg`;
     supabase.storage.from('ged-auditoria').upload(path, blob, { contentType: 'image/jpeg', upsert: true })
       .then(({ error }: any) => {
-        if (error) console.error("[Backup em nuvem] Falha ao enviar página (mantida local normalmente):", error);
+        if (error) { console.error("[Backup em nuvem] Falha ao enviar página (mantida local normalmente):", error); return; }
+        uploadConfirmedRef.current.add(blob);
       })
       .catch((e: any) => console.error("[Backup em nuvem] Falha ao enviar página (mantida local normalmente):", e));
   };
 
-  const removePageFromCloudBackup = (blob: any) => {
+  // Libera memória de páginas ANTIGAS do lote (todas menos as 2 mais recentes) que já têm
+  // backup confirmado na nuvem — troca o Blob em alta resolução por uma referência leve com
+  // só uma miniatura pequena, buscando o arquivo de volta na nuvem só se precisar editar
+  // aquela página específica ou compilar o PDF final. Isso é o que impede a memória do
+  // celular de crescer sem limite conforme o lote acumula páginas (o gatilho real do erro
+  // "insuficiência de memória" a partir da 3ª/4ª foto em aparelhos com menos RAM disponível).
+  useEffect(() => {
     if (!supabase) return;
-    const id = pageCloudIdMapRef.current.get(blob);
-    if (!id) return;
-    const path = `drafts/${batchSessionIdRef.current}/${id}.jpg`;
+    const KEEP_RAW_COUNT = 2;
+    const releasable = cameraPages
+      .slice(0, Math.max(0, cameraPages.length - KEEP_RAW_COUNT))
+      .filter((p: any) => !isCloudPageRef(p) && uploadConfirmedRef.current.has(p));
+    if (releasable.length === 0) return;
+
+    (async () => {
+      for (const blob of releasable) {
+        try {
+          const MAX_THUMB_DIM = 240;
+          let thumbBlob: any = null;
+          if (typeof createImageBitmap === "function") {
+            const bitmap = await createImageBitmap(blob, { resizeWidth: MAX_THUMB_DIM, resizeQuality: "high" });
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(bitmap, 0, 0);
+              thumbBlob = await new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/jpeg", 0.6));
+            }
+            bitmap.close();
+            canvas.width = 0; canvas.height = 0;
+          }
+          const id = getOrAssignPageCloudId(blob);
+          const path = `drafts/${batchSessionIdRef.current}/${id}.jpg`;
+          const cloudRef = { __cloudRef: true, id, path, thumbBlob };
+          if (thumbBlob) thumbUrlCacheRef.current.set(cloudRef, URL.createObjectURL(thumbBlob));
+          setCameraPages((prev: any[]) => prev.map((p) => (p === blob ? cloudRef : p)));
+        } catch (e) {
+          console.error("[Backup em nuvem] Falha ao liberar página da memória (mantida local, sem risco):", e);
+        }
+      }
+    })();
+  }, [cameraPages]);
+
+  const removePageFromCloudBackup = (page: any) => {
+    if (!supabase) return;
+    const path = isCloudPageRef(page) ? page.path : (() => {
+      const id = pageCloudIdMapRef.current.get(page);
+      return id ? `drafts/${batchSessionIdRef.current}/${id}.jpg` : null;
+    })();
+    if (!path) return;
     supabase.storage.from('ged-auditoria').remove([path]).catch(() => {});
   };
 
@@ -3672,6 +3741,7 @@ export default function ScannerJuridico() {
         const { data: pageBlob, error: pageErr } = await supabase.storage.from('ged-auditoria').download(`drafts/${batchSessionIdRef.current}/${ids[i]}.jpg`);
         if (!pageErr && pageBlob) {
           pageCloudIdMapRef.current.set(pageBlob, ids[i]);
+          uploadConfirmedRef.current.add(pageBlob); // já veio da nuvem: elegível pra liberar de novo depois
           recovered.push(pageBlob);
         }
       }
@@ -3700,6 +3770,11 @@ export default function ScannerJuridico() {
         setCameraPages(val);
         setIsBatchModalOpen(true);
         setHasRecoverableBatch(false); // só esconde o aviso aqui: a recuperação teve êxito de fato
+        // Reenvia (idempotente) as páginas recuperadas que ainda são Blob puro — depois de um
+        // crash/recarregamento, o app "esquece" quais já tinham backup confirmado, então sem
+        // isso elas nunca ficariam elegíveis pra liberar da memória de novo (reintroduzindo o
+        // mesmo acúmulo de RAM logo na recuperação, que é exatamente quando mais importa).
+        val.forEach((p: any) => { if (!isCloudPageRef(p)) backupPageToCloudInBackground(p); });
         showToast(`✓ ${val.length} página(s) recuperada(s) com sucesso!`, "success");
         return;
       }
@@ -3834,6 +3909,14 @@ export default function ScannerJuridico() {
       for (const blob of pending) {
         if (cancelled) break;
         try {
+          // Página já liberada da memória (backup em nuvem confirmado, virou referência leve):
+          // já carrega sua própria miniatura pronta, não precisa gerar de novo.
+          if (isCloudPageRef(blob)) {
+            if (blob.thumbBlob) cache.set(blob, URL.createObjectURL(blob.thumbBlob));
+            setThumbTick((t) => t + 1);
+            continue;
+          }
+
           const MAX_THUMB_DIM = 240;
           let thumbBlob: any = null;
 
@@ -3961,6 +4044,36 @@ export default function ScannerJuridico() {
   }, [compilationLogs]);
 
   const [viewingBatchPage, setViewingBatchPage] = useState(null);
+
+  // Resolve a página sendo visualizada em tela cheia — se ela já tiver sido liberada da
+  // memória (backup em nuvem confirmado), baixa de volta antes de exibir.
+  const [viewingPageUrl, setViewingPageUrl] = useState<string | null>(null);
+  const [viewingPageLoading, setViewingPageLoading] = useState(false);
+  useEffect(() => {
+    if (viewingBatchPage === null) { setViewingPageUrl(null); return; }
+    const page = cameraPages[viewingBatchPage];
+    if (!page) { setViewingPageUrl(null); return; }
+    if (!isCloudPageRef(page)) {
+      setViewingPageUrl(getStableBlobUrl(page));
+      setViewingPageLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setViewingPageLoading(true);
+    setViewingPageUrl(null);
+    resolvePageBlob(page).then((blob) => {
+      if (cancelled) return;
+      setViewingPageUrl(getStableBlobUrl(blob));
+      setViewingPageLoading(false);
+    }).catch((e) => {
+      console.error("[Backup em nuvem] Falha ao baixar página pra visualizar:", e);
+      if (!cancelled) {
+        setViewingPageLoading(false);
+        showToast("Não foi possível baixar esta página da nuvem.", "error");
+      }
+    });
+    return () => { cancelled = true; };
+  }, [viewingBatchPage, cameraPages]);
 
   // Expor função de tracking para o motor externo de IA
   useEffect(() => {
@@ -5463,8 +5576,24 @@ export default function ScannerJuridico() {
     }, 50);
   };
 
-  const handleEditPage = (index) => {
-    const pageBlob = cameraPages[index];
+  const handleEditPage = async (index) => {
+    const page = cameraPages[index];
+    if (isCloudPageRef(page)) {
+      setProcessing(true);
+      setProgressMsg("Baixando página da nuvem para editar...");
+    }
+    let pageBlob;
+    try {
+      pageBlob = await resolvePageBlob(page);
+    } catch (e) {
+      console.error(e);
+      showToast("Não foi possível baixar esta página da nuvem para editar.", "error");
+      setProcessing(false);
+      setProgressMsg("");
+      return;
+    }
+    setProcessing(false);
+    setProgressMsg("");
     setCroppingPageIndex(index);
     setFile(pageBlob);
     setPreview(URL.createObjectURL(pageBlob));
@@ -5539,7 +5668,10 @@ export default function ScannerJuridico() {
     
     for (let i = 0; i < cameraPages.length; i++) {
       if (i > 0) doc.addPage();
-      const pageBlob = cameraPages[i];
+      if (isCloudPageRef(cameraPages[i])) {
+        setProgressMsg(`Baixando página ${i + 1} de volta da nuvem...`);
+      }
+      const pageBlob = await resolvePageBlob(cameraPages[i]);
       console.log('compiling pageBlob:', pageBlob);
       if (!(pageBlob instanceof Blob)) {
          throw new Error("Página recuperada está corrompida. Descarte e tente novamente.");
@@ -7102,13 +7234,17 @@ export default function ScannerJuridico() {
                  }} style={{background: G.error, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer'}}>🗑️ Excluir Página</button>
               </div>
               <div style={{flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '16px', overflow: 'hidden', position: 'relative'}}>
-                 <img 
-                    src={getStableBlobUrl(cameraPages[viewingBatchPage])} 
-                    style={{maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${G.border}`}} 
-                    onClick={() => handleEditPage(viewingBatchPage)}
-                    title="Clique na imagem para recortar/tratar"
-                 />
-                 
+                 {viewingPageLoading ? (
+                   <div style={{color: G.text, fontSize: '13px', textAlign: 'center'}}>⏳ Baixando página da nuvem...</div>
+                 ) : (
+                   <img
+                      src={viewingPageUrl || ""}
+                      style={{maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', borderRadius: '8px', cursor: 'pointer', border: `1px solid ${G.border}`}}
+                      onClick={() => handleEditPage(viewingBatchPage)}
+                      title="Clique na imagem para recortar/tratar"
+                   />
+                 )}
+
                  <div style={{ marginTop: '16px', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
                      <button 
                         onClick={() => handleEditPage(viewingBatchPage)}
