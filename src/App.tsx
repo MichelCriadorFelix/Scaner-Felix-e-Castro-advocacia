@@ -3568,21 +3568,25 @@ export default function ScannerJuridico() {
     }
   }, []);
 
+  // Importante (pedido explícito do advogado): o aviso de "Escaneamento Recuperado" só pode
+  // sumir se ele DESCARTAR sabendo do risco (discardDraft) ou se a recuperação REALMENTE
+  // funcionar. Uma tentativa que falha (erro, travamento, ou rascunho vazio) NÃO pode fazer
+  // o aviso desaparecer sozinho — senão a única cópia de segurança do lote se perde de vez.
   const recoverDraft = async () => {
     try {
       const val = await get('lexscan_camera_pages_draft');
       if (val && Array.isArray(val) && val.length > 0) {
         setCameraPages(val);
         setIsBatchModalOpen(true);
+        setHasRecoverableBatch(false); // só esconde o aviso aqui: a recuperação teve êxito de fato
         showToast(`✓ ${val.length} página(s) recuperada(s) com sucesso!`, "success");
       } else {
         showToast("⚠️ Não foi possível recuperar: o rascunho não está mais disponível. Provavelmente o sistema do celular o apagou por falta de armazenamento interno. Libere espaço no aparelho.", "error");
       }
     } catch(e) {
       console.error("[Rascunho] Falha ao recuperar rascunho:", e);
-      showToast("⚠️ Falha ao recuperar o rascunho — provavelmente apagado pelo sistema por falta de armazenamento interno no celular.", "error");
+      showToast("⚠️ Falha ao tentar recuperar. O aviso continua disponível — tente novamente, ou descarte se preferir recomeçar.", "error");
     }
-    setHasRecoverableBatch(false);
   };
 
   const discardDraft = async () => {
@@ -3700,30 +3704,54 @@ export default function ScannerJuridico() {
       for (const blob of pending) {
         if (cancelled) break;
         try {
-          const thumbUrl: string = await new Promise((resolve, reject) => {
-            const sourceUrl = URL.createObjectURL(blob);
-            const img = new Image();
-            img.onload = () => {
-              const MAX_THUMB_DIM = 240;
-              const scale = Math.min(1, MAX_THUMB_DIM / Math.max(img.naturalWidth, img.naturalHeight));
-              const canvas = document.createElement('canvas');
-              canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-              canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-              const ctx = canvas.getContext('2d');
-              if (!ctx) { URL.revokeObjectURL(sourceUrl); reject(new Error("no ctx")); return; }
-              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-              canvas.toBlob((thumbBlob) => {
-                canvas.width = 0; canvas.height = 0;
-                URL.revokeObjectURL(sourceUrl);
-                if (!thumbBlob) { reject(new Error("toBlob falhou")); return; }
-                resolve(URL.createObjectURL(thumbBlob));
-              }, "image/jpeg", 0.6);
-            };
-            img.onerror = (e) => { URL.revokeObjectURL(sourceUrl); reject(e); };
-            img.src = sourceUrl;
-          });
-          if (!cancelled) {
-            cache.set(blob, thumbUrl);
+          const MAX_THUMB_DIM = 240;
+          let thumbBlob: any = null;
+
+          // IMPORTANTE: usar createImageBitmap com resize em vez de new Image() — a versão
+          // antiga decodificava a foto em resolução TOTAL antes de reduzir, o que travava o
+          // celular ao recuperar um rascunho com fotos grandes (o próprio gatilho do crash
+          // "insuficiência de memória" ao clicar em Recuperar). resizeWidth já entrega a
+          // imagem pronta em tamanho pequeno, sem nunca alocar a versão gigante original.
+          if (typeof createImageBitmap === "function") {
+            const bitmap = await createImageBitmap(blob, { resizeWidth: MAX_THUMB_DIM, resizeQuality: "high" });
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { bitmap.close(); throw new Error("no ctx"); }
+            ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            thumbBlob = await new Promise((resolve, reject) => {
+              canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falhou"))), "image/jpeg", 0.6);
+            });
+            canvas.width = 0; canvas.height = 0;
+          } else {
+            // Fallback pra navegadores muito antigos sem suporte a resize no createImageBitmap.
+            thumbBlob = await new Promise((resolve, reject) => {
+              const sourceUrl = URL.createObjectURL(blob);
+              const img = new Image();
+              img.onload = () => {
+                const scale = Math.min(1, MAX_THUMB_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+                canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+                const ctx = canvas.getContext('2d');
+                if (!ctx) { URL.revokeObjectURL(sourceUrl); reject(new Error("no ctx")); return; }
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob((b) => {
+                  canvas.width = 0; canvas.height = 0;
+                  URL.revokeObjectURL(sourceUrl);
+                  if (!b) { reject(new Error("toBlob falhou")); return; }
+                  resolve(b);
+                }, "image/jpeg", 0.6);
+              };
+              img.onerror = (e) => { URL.revokeObjectURL(sourceUrl); reject(e); };
+              img.src = sourceUrl;
+            });
+          }
+
+          if (!cancelled && thumbBlob) {
+            cache.set(blob, URL.createObjectURL(thumbBlob));
             setThumbTick((t) => t + 1);
           }
         } catch (e) {
