@@ -3531,6 +3531,86 @@ export default function ScannerJuridico() {
 
   // Flow State para Escaneamento em Lote (Multi-Páginas)
   const [cameraPages, setCameraPages] = useState([]);
+
+  // --- Backup em nuvem em tempo real das páginas do lote (rede de segurança extra) ---
+  // IMPORTANTE: isso é só uma camada ADICIONAL de segurança. O rascunho local (IndexedDB,
+  // cameraPages em memória) continua sendo a fonte principal, funcionando exatamente como
+  // antes. Se o envio pra nuvem falhar (sem internet, erro, timeout), a página continua
+  // garantida localmente — nada muda, nada se perde. O backup em nuvem só entra em jogo como
+  // uma TERCEIRA rede de segurança, pro caso raro de perder o rascunho local por completo
+  // (RAM zerada E IndexedDB evacuado pelo sistema por pouco armazenamento).
+  const batchSessionIdRef = useRef<string>((() => {
+    try {
+      const existing = localStorage.getItem('lexscan_batch_session_id');
+      if (existing) return existing;
+      const fresh = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem('lexscan_batch_session_id', fresh);
+      return fresh;
+    } catch (e) {
+      return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+  })());
+  const pageCloudIdMapRef = useRef<WeakMap<any, string>>(new WeakMap());
+
+  const getOrAssignPageCloudId = (blob: any) => {
+    let id = pageCloudIdMapRef.current.get(blob);
+    if (!id) {
+      id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      pageCloudIdMapRef.current.set(blob, id);
+    }
+    return id;
+  };
+
+  // Envia UMA página pra nuvem em segundo plano, sem bloquear nada e sem lançar erro pra
+  // fora — falha em silêncio (só loga) porque a segurança real já está garantida localmente.
+  const backupPageToCloudInBackground = (blob: any) => {
+    if (!supabase) return;
+    const id = getOrAssignPageCloudId(blob);
+    const path = `drafts/${batchSessionIdRef.current}/${id}.jpg`;
+    supabase.storage.from('ged-auditoria').upload(path, blob, { contentType: 'image/jpeg', upsert: true })
+      .then(({ error }: any) => {
+        if (error) console.error("[Backup em nuvem] Falha ao enviar página (mantida local normalmente):", error);
+      })
+      .catch((e: any) => console.error("[Backup em nuvem] Falha ao enviar página (mantida local normalmente):", e));
+  };
+
+  const removePageFromCloudBackup = (blob: any) => {
+    if (!supabase) return;
+    const id = pageCloudIdMapRef.current.get(blob);
+    if (!id) return;
+    const path = `drafts/${batchSessionIdRef.current}/${id}.jpg`;
+    supabase.storage.from('ged-auditoria').remove([path]).catch(() => {});
+  };
+
+  // Reescreve a lista de ids na ordem atual — permite reconstruir o lote na ordem certa numa
+  // recuperação via nuvem, mesmo que o advogado tenha reordenado ou apagado páginas.
+  useEffect(() => {
+    if (!supabase) return;
+    if (cameraPages.length === 0) return;
+    const ids = cameraPages.map((p: any) => getOrAssignPageCloudId(p));
+    const manifestPath = `drafts/${batchSessionIdRef.current}/_manifest.json`;
+    const manifestBlob = new Blob([JSON.stringify({ ids, updatedAt: Date.now() })], { type: 'application/json' });
+    supabase.storage.from('ged-auditoria').upload(manifestPath, manifestBlob, { contentType: 'application/json', upsert: true }).catch(() => {});
+  }, [cameraPages]);
+
+  // Encerra a sessão de backup em nuvem do lote atual (lote finalizado ou descartado) — o
+  // próximo lote começa numa pasta nova. Apaga os arquivos de rascunho já enviados, já que
+  // não são mais necessários (documento finalizado já está salvo definitivamente, ou foi
+  // descartado deliberadamente pelo advogado).
+  const clearCloudBatchSession = async () => {
+    try { localStorage.removeItem('lexscan_batch_session_id'); } catch (e) {}
+    if (supabase) {
+      try {
+        const { data } = await supabase.storage.from('ged-auditoria').list(`drafts/${batchSessionIdRef.current}`);
+        if (data && data.length > 0) {
+          await supabase.storage.from('ged-auditoria').remove(data.map((f: any) => `drafts/${batchSessionIdRef.current}/${f.name}`));
+        }
+      } catch (e) { console.error("[Backup em nuvem] Falha ao limpar rascunho da nuvem:", e); }
+    }
+    batchSessionIdRef.current = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    try { localStorage.setItem('lexscan_batch_session_id', batchSessionIdRef.current); } catch (e) {}
+  };
+
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
@@ -3572,6 +3652,47 @@ export default function ScannerJuridico() {
   // sumir se ele DESCARTAR sabendo do risco (discardDraft) ou se a recuperação REALMENTE
   // funcionar. Uma tentativa que falha (erro, travamento, ou rascunho vazio) NÃO pode fazer
   // o aviso desaparecer sozinho — senão a única cópia de segurança do lote se perde de vez.
+  // Terceira rede de segurança: se o rascunho local (IndexedDB) realmente não existe mais,
+  // tenta reconstruir o lote a partir do backup em nuvem (drafts/<sessão>/) antes de desistir.
+  // Baixa uma página de cada vez (nunca em paralelo), do mesmo jeito seguro usado no resto do app.
+  const tryRecoverFromCloud = async (): Promise<boolean> => {
+    if (!supabase) return false;
+    try {
+      const manifestPath = `drafts/${batchSessionIdRef.current}/_manifest.json`;
+      const { data: manifestBlob, error: manifestErr } = await supabase.storage.from('ged-auditoria').download(manifestPath);
+      if (manifestErr || !manifestBlob) return false;
+      const manifest = JSON.parse(await manifestBlob.text());
+      const ids: string[] = Array.isArray(manifest?.ids) ? manifest.ids : [];
+      if (ids.length === 0) return false;
+
+      setProcessing(true);
+      const recovered: any[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        setProgressMsg(`Recuperando página ${i + 1} de ${ids.length} da nuvem...`);
+        const { data: pageBlob, error: pageErr } = await supabase.storage.from('ged-auditoria').download(`drafts/${batchSessionIdRef.current}/${ids[i]}.jpg`);
+        if (!pageErr && pageBlob) {
+          pageCloudIdMapRef.current.set(pageBlob, ids[i]);
+          recovered.push(pageBlob);
+        }
+      }
+      setProcessing(false);
+      setProgressMsg("");
+
+      if (recovered.length === 0) return false;
+
+      setCameraPages(recovered);
+      setIsBatchModalOpen(true);
+      setHasRecoverableBatch(false);
+      showToast(`✓ ${recovered.length} página(s) recuperada(s) da nuvem com sucesso!`, "success");
+      return true;
+    } catch (e) {
+      console.error("[Backup em nuvem] Falha ao recuperar da nuvem:", e);
+      setProcessing(false);
+      setProgressMsg("");
+      return false;
+    }
+  };
+
   const recoverDraft = async () => {
     try {
       const val = await get('lexscan_camera_pages_draft');
@@ -3580,12 +3701,20 @@ export default function ScannerJuridico() {
         setIsBatchModalOpen(true);
         setHasRecoverableBatch(false); // só esconde o aviso aqui: a recuperação teve êxito de fato
         showToast(`✓ ${val.length} página(s) recuperada(s) com sucesso!`, "success");
-      } else {
-        showToast("⚠️ Não foi possível recuperar: o rascunho não está mais disponível. Provavelmente o sistema do celular o apagou por falta de armazenamento interno. Libere espaço no aparelho.", "error");
+        return;
+      }
+      // Rascunho local vazio/ausente — tenta a rede de segurança extra (backup em nuvem)
+      // antes de avisar que perdeu, já que agora cada página é enviada em segundo plano.
+      const recoveredFromCloud = await tryRecoverFromCloud();
+      if (!recoveredFromCloud) {
+        showToast("⚠️ Não foi possível recuperar: o rascunho não está mais disponível (nem localmente, nem na nuvem). Provavelmente o sistema do celular o apagou por falta de armazenamento interno. Libere espaço no aparelho.", "error");
       }
     } catch(e) {
       console.error("[Rascunho] Falha ao recuperar rascunho:", e);
-      showToast("⚠️ Falha ao tentar recuperar. O aviso continua disponível — tente novamente, ou descarte se preferir recomeçar.", "error");
+      const recoveredFromCloud = await tryRecoverFromCloud();
+      if (!recoveredFromCloud) {
+        showToast("⚠️ Falha ao tentar recuperar. O aviso continua disponível — tente novamente, ou descarte se preferir recomeçar.", "error");
+      }
     }
   };
 
@@ -3598,6 +3727,7 @@ export default function ScannerJuridico() {
     } catch (e) {}
     setCameraPages([]);
     setHasRecoverableBatch(false);
+    clearCloudBatchSession(); // apaga também o backup em nuvem — descarte explícito e ciente do risco
     showToast("Rascunho descartado com sucesso!", "info");
   };
 
@@ -5115,6 +5245,7 @@ export default function ScannerJuridico() {
             } else {
               setCameraPages(prev => [...prev, blob]);
             }
+            backupPageToCloudInBackground(blob);
             setIsBatchModalOpen(true);
           }, "image/jpeg", Math.min(0.95, scaleOutput < 1 ? 0.90 : 0.95));
         } else {
@@ -5276,6 +5407,7 @@ export default function ScannerJuridico() {
             } else {
               setCameraPages(prev => [...prev, blob]);
             }
+            backupPageToCloudInBackground(blob);
             setIsBatchModalOpen(true);
          }).catch(e => console.error(e));
       }
@@ -5316,6 +5448,7 @@ export default function ScannerJuridico() {
             } else {
               setCameraPages(prev => [...prev, blob]);
             }
+            backupPageToCloudInBackground(blob);
             setIsBatchModalOpen(true);
           }, "image/jpeg", Math.min(0.95, scaleOutput < 1 ? 0.90 : 0.95));
         } else {
@@ -5366,6 +5499,7 @@ export default function ScannerJuridico() {
        }
        setProgressMsg("");
        setCameraPages(prev => [...prev, ...valid]);
+       valid.forEach((v: any) => backupPageToCloudInBackground(v));
        showToast(`${valid.length} imagens adicionadas!`);
     }
   };
@@ -5530,6 +5664,7 @@ export default function ScannerJuridico() {
     if (!supabase) addToHistory(newItem);
 
     setCameraPages([]);
+    clearCloudBatchSession(); // documento já finalizado e salvo — não precisa mais do rascunho na nuvem
     setIsBatchModalOpen(false);
     setBatchDocName("Documento_Escaneado"); // reset config
     setAppendingDoc(null); // clean up
@@ -6943,6 +7078,7 @@ export default function ScannerJuridico() {
                   setIsBatchModalOpen(false);
                   setCameraPages([]);
                   setAppendingDoc(null);
+                  clearCloudBatchSession();
                   showToast("Lote cancelado / descartado", "info");
                 }}
               >
@@ -6959,6 +7095,7 @@ export default function ScannerJuridico() {
               <div style={{display: 'flex', padding: '16px', justifyContent: 'space-between', alignItems: 'center'}}>
                  <button onClick={() => setViewingBatchPage(null)} style={{background: 'transparent', color: '#fff', border: 'none', fontSize: '16px', cursor: 'pointer'}}>← Voltar</button>
                  <button onClick={() => {
+                   removePageFromCloudBackup(cameraPages[viewingBatchPage]);
                    setCameraPages(prev => prev.filter((_, idx) => idx !== viewingBatchPage));
                    setViewingBatchPage(null);
                    if (cameraPages.length === 1) setIsBatchModalOpen(false); // fechar se for a última
