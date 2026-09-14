@@ -554,8 +554,12 @@ const css = `
     color: ${G.text};
     z-index: 999;
     animation: slideUp .3s ease;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: break-word;
+    width: max-content;
     max-width: 90vw;
+    text-align: center;
+    line-height: 1.4;
   }
   .toast.success { border-color: ${G.success}; color: ${G.success}; }
   .toast.error { border-color: ${G.error}; color: ${G.error}; }
@@ -5138,19 +5142,84 @@ export default function ScannerJuridico() {
 
 
 
+  // Câmeras de celulares atuais tiram fotos de 48, 64 ou até 108 megapixels. Exibir esse arquivo
+  // cru direto num <img> (mesmo só pra pré-visualização/recorte) obriga o navegador a decodificar
+  // a imagem NA RESOLUÇÃO ORIGINAL inteira na memória antes de desenhar qualquer coisa na tela —
+  // isso sozinho já é o suficiente pra estourar a memória do Chrome em boa parte dos celulares,
+  // independente de RAM ou armazenamento livres no aparelho (o erro "insuficiência de memória"
+  // é conhecidamente disparado por isso). A solução é usar createImageBitmap() com resize: o
+  // PRÓPRIO decodificador do navegador já entrega a imagem reduzida, sem nunca alocar o bitmap
+  // gigante original — só then desenhamos essa versão já pequena num canvas pra gerar o arquivo
+  // final que efetivamente usamos daqui em diante (preview, corte, lote, compilação).
+  const downscaleImageForSafeMemory = async (file, maxDim = 3000, quality = 0.92) => {
+    try {
+      const { width, height } = await new Promise((resolve, reject) => {
+        const probeUrl = URL.createObjectURL(file);
+        const probeImg = new Image();
+        probeImg.onload = () => {
+          const d = { width: probeImg.naturalWidth, height: probeImg.naturalHeight };
+          URL.revokeObjectURL(probeUrl);
+          resolve(d);
+        };
+        probeImg.onerror = (e) => { URL.revokeObjectURL(probeUrl); reject(e); };
+        probeImg.src = probeUrl;
+      });
+
+      if (!width || !height || Math.max(width, height) <= maxDim) {
+        return file; // Já está em tamanho seguro, não precisa reprocessar.
+      }
+
+      const scale = maxDim / Math.max(width, height);
+      const targetW = Math.max(1, Math.round(width * scale));
+      const targetH = Math.max(1, Math.round(height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return file;
+      ctx.imageSmoothingQuality = 'high';
+
+      if (typeof createImageBitmap === "function") {
+        const bitmap = await createImageBitmap(file, { resizeWidth: targetW, resizeHeight: targetH, resizeQuality: "high" });
+        ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+        bitmap.close();
+      } else {
+        // Fallback para navegadores muito antigos sem suporte a resize no createImageBitmap.
+        const img = await new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(file);
+          const el = new Image();
+          el.onload = () => { resolve(el); };
+          el.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+          el.src = url;
+        });
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+      }
+
+      const blob: any = await new Promise((resolve, reject) => {
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falhou"))), "image/jpeg", quality);
+      });
+      canvas.width = 0; canvas.height = 0;
+      return new File([blob], file.name, { type: "image/jpeg" });
+    } catch (e) {
+      console.error("[Downscale] Falha ao reduzir a foto com segurança, usando o arquivo original:", e);
+      return file;
+    }
+  };
+
   const handleNativeCameraCapture = async (files) => {
     if (!files || files.length === 0) return;
-    const f = files[0];
-    if (!f.type.startsWith("image/")) return;
-    
+    const rawFile = files[0];
+    if (!rawFile.type.startsWith("image/")) return;
+
     setProcessing(true);
     setProgress(0);
     setProgressMsg("Carregando foto...");
 
     try {
-      // Cria a URL de preview diretamente sobre o arquivo original enviado pela câmera nativa do celular.
-      // SEM decodificar em Canvas gigante e SEM alocar buffers pesados em RAM!
-      // Isso evita de forma absoluta que o Chrome/Android sofra travamento de falta de memória (OutOfMemory) e reinicie o app.
+      // Reduz a foto crua da câmera ANTES de exibi-la — evita que o navegador precise
+      // decodificar a imagem em resolução total (ver comentário acima em downscaleImageForSafeMemory).
+      const f = await downscaleImageForSafeMemory(rawFile);
       const objectUrl = URL.createObjectURL(f);
       setFile(f);
       setPreview(objectUrl);
@@ -5245,20 +5314,29 @@ export default function ScannerJuridico() {
     setIsCropping(true);
   };
 
-  const handleBatchImageAdd = (files) => {
+  const handleBatchImageAdd = async (files) => {
     if (!files || files.length === 0) return;
-    
+
     if (files.length === 1) {
-       const f = files[0];
+       // Reduz a foto ANTES de exibir no recorte — mesma proteção de memória da câmera nativa.
+       const f = await downscaleImageForSafeMemory(files[0]);
        setIsBatchModalOpen(false);
        const objectUrl = URL.createObjectURL(f);
-       setPreview(objectUrl); 
+       setPreview(objectUrl);
        setFile(f);
        setCrop({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
        setCompletedCrop(null);
        setTimeout(() => setIsCropping(true), 150);
     } else {
-       const valid = Array.from(files).filter(f => f.type.startsWith('image/'));
+       const validRaw = Array.from(files).filter((f: any) => f.type.startsWith('image/'));
+       setProgressMsg("Reduzindo imagens com segurança...");
+       // Reduz uma imagem de cada vez (nunca em paralelo) pra nunca ter mais de uma foto em
+       // resolução total decodificada na memória ao mesmo tempo durante o processamento do lote.
+       const valid = [];
+       for (const f of validRaw as any[]) {
+         valid.push(await downscaleImageForSafeMemory(f));
+       }
+       setProgressMsg("");
        setCameraPages(prev => [...prev, ...valid]);
        showToast(`${valid.length} imagens adicionadas!`);
     }
