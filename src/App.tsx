@@ -3633,6 +3633,85 @@ export default function ScannerJuridico() {
     };
   }, []);
 
+  // --- Miniaturas leves para a faixa do lote (evita OOM em celulares com pouca RAM) ---
+  // A faixa de páginas do lote antes renderizava a foto em resolução ORIGINAL (até 3000px)
+  // para cada página simultaneamente, só encolhida por CSS — decodificando todas de uma vez
+  // na memória. Em lotes grandes (muitas páginas de um mesmo cliente) isso estoura a RAM do
+  // aparelho, e como a recuperação de rascunho reabre essa mesma faixa automaticamente, o
+  // travamento se repete a cada tentativa de continuar. Aqui geramos uma miniatura pequena
+  // (240px) por página, UMA DE CADA VEZ (nunca em paralelo), e usamos só ela na faixa.
+  const thumbUrlCacheRef = useRef<Map<any, string>>(new Map());
+  const [, setThumbTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cache = thumbUrlCacheRef.current;
+    const currentPagesSet = new Set(cameraPages);
+
+    for (const [blob, url] of cache.entries()) {
+      if (!currentPagesSet.has(blob)) {
+        try { URL.revokeObjectURL(url); } catch (e) {}
+        cache.delete(blob);
+      }
+    }
+
+    const pending = cameraPages.filter((p) => p && !cache.has(p));
+    if (pending.length === 0) return;
+
+    (async () => {
+      for (const blob of pending) {
+        if (cancelled) break;
+        try {
+          const thumbUrl: string = await new Promise((resolve, reject) => {
+            const sourceUrl = URL.createObjectURL(blob);
+            const img = new Image();
+            img.onload = () => {
+              const MAX_THUMB_DIM = 240;
+              const scale = Math.min(1, MAX_THUMB_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+              canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+              const ctx = canvas.getContext('2d');
+              if (!ctx) { URL.revokeObjectURL(sourceUrl); reject(new Error("no ctx")); return; }
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              canvas.toBlob((thumbBlob) => {
+                canvas.width = 0; canvas.height = 0;
+                URL.revokeObjectURL(sourceUrl);
+                if (!thumbBlob) { reject(new Error("toBlob falhou")); return; }
+                resolve(URL.createObjectURL(thumbBlob));
+              }, "image/jpeg", 0.6);
+            };
+            img.onerror = (e) => { URL.revokeObjectURL(sourceUrl); reject(e); };
+            img.src = sourceUrl;
+          });
+          if (!cancelled) {
+            cache.set(blob, thumbUrl);
+            setThumbTick((t) => t + 1);
+          }
+        } catch (e) {
+          console.error("[Miniatura do lote] Falha ao gerar miniatura de uma página:", e);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [cameraPages]);
+
+  const getStableThumbUrl = (blob: any) => {
+    if (!blob) return "";
+    return thumbUrlCacheRef.current.get(blob) || "";
+  };
+
+  useEffect(() => {
+    return () => {
+      const cache = thumbUrlCacheRef.current;
+      for (const url of cache.values()) {
+        try { URL.revokeObjectURL(url); } catch (e) {}
+      }
+      cache.clear();
+    };
+  }, []);
+
   const [isCropping, setIsCropping] = useState(false);
   const [crop, setCrop] = useState({ unit: '%', width: 90, height: 90, x: 5, y: 5 });
   const [completedCrop, setCompletedCrop] = useState(null);
@@ -6637,7 +6716,11 @@ export default function ScannerJuridico() {
                {cameraPages.map((p, i) => (
                   <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
                     <div onClick={() => setViewingBatchPage(i)} style={{minWidth: '80px', height: '110px', background: G.bg, borderRadius: '8px', overflow: 'hidden', position: 'relative', border: `1px solid ${G.border}`, cursor: 'pointer'}}>
-                      <img src={getStableBlobUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+                      {getStableThumbUrl(p) ? (
+                        <img src={getStableThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+                      ) : (
+                        <div style={{width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: G.muted, fontSize: '10px'}}>...</div>
+                      )}
                       <div style={{position: 'absolute', bottom: 2, right: 4, fontSize: '10px', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 4px', borderRadius: '4px'}}>{i+1}</div>
                       <div className="hover-overlay" style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: '0.2s'}}>
                          <span style={{color: '#fff', fontSize: '20px'}}>👁️</span>
