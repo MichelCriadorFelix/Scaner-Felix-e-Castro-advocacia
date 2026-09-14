@@ -5179,87 +5179,41 @@ export default function ScannerJuridico() {
   // PRÓPRIO decodificador do navegador já entrega a imagem reduzida, sem nunca alocar o bitmap
   // gigante original — só then desenhamos essa versão já pequena num canvas pra gerar o arquivo
   // final que efetivamente usamos daqui em diante (preview, corte, lote, compilação).
-  // Lê só os primeiros bytes do arquivo (cabeçalho JPEG/PNG) pra achar a largura/altura reais
-  // SEM decodificar nenhum pixel — isso nunca aciona o decodificador de imagem do navegador,
-  // então é 100% seguro contra o estouro de memória, diferente de qualquer abordagem baseada
-  // em Image()/<img> pra "só medir" o tamanho.
-  const getImageDimensionsFromHeaderBytes = async (file) => {
-    try {
-      const buf = await file.slice(0, 256 * 1024).arrayBuffer();
-      const view = new DataView(buf);
-      if (view.byteLength < 24) return null;
-
-      // PNG: assinatura fixa de 8 bytes, seguida do chunk IHDR com largura/altura em big-endian.
-      if (view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a) {
-        return { width: view.getUint32(16), height: view.getUint32(20) };
-      }
-
-      // JPEG: percorre os marcadores até achar um SOF (Start Of Frame), que carrega as dimensões.
-      if (view.getUint16(0) === 0xffd8) {
-        let offset = 2;
-        while (offset + 4 <= view.byteLength) {
-          if (view.getUint8(offset) !== 0xff) break;
-          const marker = view.getUint8(offset + 1);
-          if (marker === 0xd8 || marker === 0xd9) { offset += 2; continue; }
-          if (marker >= 0xd0 && marker <= 0xd7) { offset += 2; continue; }
-          const segmentLength = view.getUint16(offset + 2);
-          const isSOF = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
-          if (isSOF) {
-            if (offset + 9 > view.byteLength) return null;
-            return { height: view.getUint16(offset + 5), width: view.getUint16(offset + 7) };
-          }
-          offset += 2 + segmentLength;
-        }
-      }
-      return null; // Formato não reconhecido pelo parser leve (ex: WEBP/HEIC) — sem risco, só sem dimensão prévia.
-    } catch (e) {
-      return null;
-    }
-  };
-
   const downscaleImageForSafeMemory = async (file, maxDim = 3000, quality = 0.92) => {
     try {
-      // Descobrir a largura/altura reais SEM decodificar nenhum pixel: lê só os bytes de
-      // cabeçalho do arquivo (JPEG/PNG) e extrai as dimensões diretamente do formato binário.
-      // A versão anterior usava new Image() só pra "ler as dimensões" antes de reduzir — mas
-      // em bastante navegador/aparelho Android isso NÃO é preguiçoso: decodifica a imagem
-      // INTEIRA em resolução original mesmo sem desenhar nada na tela, o que travava o
-      // celular já na foto de número 3 a 5, mesmo com o resto da correção de hoje aplicado.
-      const dims = await getImageDimensionsFromHeaderBytes(file);
+      const { width, height } = await new Promise((resolve, reject) => {
+        const probeUrl = URL.createObjectURL(file);
+        const probeImg = new Image();
+        probeImg.onload = () => {
+          const d = { width: probeImg.naturalWidth, height: probeImg.naturalHeight };
+          URL.revokeObjectURL(probeUrl);
+          resolve(d);
+        };
+        probeImg.onerror = (e) => { URL.revokeObjectURL(probeUrl); reject(e); };
+        probeImg.src = probeUrl;
+      });
 
-      if (dims && Math.max(dims.width, dims.height) <= maxDim) {
+      if (!width || !height || Math.max(width, height) <= maxDim) {
         return file; // Já está em tamanho seguro, não precisa reprocessar.
       }
 
+      const scale = maxDim / Math.max(width, height);
+      const targetW = Math.max(1, Math.round(width * scale));
+      const targetH = Math.max(1, Math.round(height * scale));
+
       const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
       const ctx = canvas.getContext('2d');
       if (!ctx) return file;
       ctx.imageSmoothingQuality = 'high';
 
       if (typeof createImageBitmap === "function") {
-        // Sabendo a proporção real (dims), pedimos ao PRÓPRIO decodificador do navegador
-        // pra já entregar a imagem no tamanho reduzido — nunca aloca o bitmap gigante
-        // original. Se não conseguimos ler o cabeçalho (formato raro), pedimos só a
-        // largura e deixamos o navegador calcular a altura proporcionalmente: ainda 100%
-        // seguro contra decodificação em resolução total, só um pouco menos preciso.
-        const resizeOpts = dims
-          ? (() => {
-              const scale = maxDim / Math.max(dims.width, dims.height);
-              return { resizeWidth: Math.max(1, Math.round(dims.width * scale)), resizeHeight: Math.max(1, Math.round(dims.height * scale)) };
-            })()
-          : { resizeWidth: maxDim };
-        const bitmap = await createImageBitmap(file, { ...resizeOpts, resizeQuality: "high" });
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        ctx.drawImage(bitmap, 0, 0);
+        const bitmap = await createImageBitmap(file, { resizeWidth: targetW, resizeHeight: targetH, resizeQuality: "high" });
+        ctx.drawImage(bitmap, 0, 0, targetW, targetH);
         bitmap.close();
-      } else if (dims) {
+      } else {
         // Fallback para navegadores muito antigos sem suporte a resize no createImageBitmap.
-        // Só é seguro fazer isso aqui porque JÁ sabemos as dimensões (não precisamos de
-        // outro decode "só pra medir" — desenhamos direto no tamanho final desejado).
-        const scale = maxDim / Math.max(dims.width, dims.height);
-        canvas.width = Math.max(1, Math.round(dims.width * scale));
-        canvas.height = Math.max(1, Math.round(dims.height * scale));
         const img = await new Promise((resolve, reject) => {
           const url = URL.createObjectURL(file);
           const el = new Image();
@@ -5267,11 +5221,7 @@ export default function ScannerJuridico() {
           el.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
           el.src = url;
         });
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      } else {
-        // Sem createImageBitmap e sem dimensões conhecidas: não há forma segura de reduzir
-        // sem arriscar decodificar em resolução total. Devolve o arquivo original.
-        return file;
+        ctx.drawImage(img, 0, 0, targetW, targetH);
       }
 
       const blob: any = await new Promise((resolve, reject) => {
