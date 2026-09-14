@@ -944,6 +944,29 @@ const PDFJS_BASE_OPTIONS = {
   standardFontDataUrl: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/",
 };
 
+// ── Seleção de Modelo Gemini (escolhido pelo advogado na tela do Scanner) ────────────────
+// As funções de OCR/refinamento ficam FORA do componente React (são módulo-level), então não
+// têm acesso direto ao estado do React — por isso a escolha do advogado é lida/gravada
+// diretamente do localStorage aqui, e cada chamada ao Gemini pega o modelo mais atual na hora.
+const GEMINI_MODEL_OPTIONS = [
+  { value: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+];
+const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
+
+function getSelectedGeminiModel(): string {
+  try {
+    const stored = localStorage.getItem('lexscan_selected_model');
+    if (stored && GEMINI_MODEL_OPTIONS.some(m => m.value === stored)) return stored;
+  } catch (e) {}
+  return DEFAULT_GEMINI_MODEL;
+}
+
+function setSelectedGeminiModel(model: string) {
+  try { localStorage.setItem('lexscan_selected_model', model); } catch (e) {}
+}
+
 // ── Banco de API Keys & Auto-Failover ────────────────────────
 function getAvailableGeminiKeys() {
   const rawKeys = [];
@@ -1303,7 +1326,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Em seguida, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:`;
 
-  const modelsToTry = ["gemini-3.7-flash"];
+  const modelsToTry = [getSelectedGeminiModel()];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1462,7 +1485,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
           await new Promise(r => setTimeout(r, 800));
           try {
             const retryRes = await ai.models.generateContent({
-              model: "gemini-3.7-flash",
+              model: getSelectedGeminiModel(),
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1479,7 +1502,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
               lastModelErr = new Error("Resposta de repescagem com repetição degenerada.");
             } else if (retryText && isTruncatedResponse(retryRes)) {
               const completedRetry = await completeTruncatedTranscription(
-                ai, "gemini-3.7-flash", [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
+                ai, getSelectedGeminiModel(), [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
               );
               if (completedRetry) {
                 textOutput = completedRetry;
@@ -1548,7 +1571,7 @@ REGRAS CRÍTICAS:
 2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const MODEL_NAME = "gemini-3.7-flash";
+  const MODEL_NAME = getSelectedGeminiModel();
 
   const parts: any[] = [
     { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
@@ -2164,9 +2187,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  const modelsToTry = [
-    "gemini-3.7-flash"
-  ];
+  const modelsToTry = [getSelectedGeminiModel()];
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     const apiKey = finalSortedKeys[i];
@@ -2516,10 +2537,8 @@ async function refineChunkWithGemini(
   sortedKeys: string[],
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
-  const modelsToTry = [
-    "gemini-3.7-flash"
-  ];
-  
+  const modelsToTry = [getSelectedGeminiModel()];
+
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
 Sua missão única é revisar o trecho de texto fornecido pelo usuário e entregar uma versão impecável, livre de erros ortográficos, concordâncias truncadas ou caracteres espúrios gerados pelo escaneamento.
 
@@ -2643,9 +2662,7 @@ Retorne APENAS um objeto JSON no formato abaixo, sem qualquer formatação markd
 Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio {}.`;
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
-    const modelsToTry = [
-      "gemini-3.7-flash"
-    ];
+    const modelsToTry = [getSelectedGeminiModel()];
     let success = false;
 
     for (let i = 0; i < finalSortedKeys.length; i++) {
@@ -3406,6 +3423,13 @@ export default function ScannerJuridico() {
   // Garante reset diário de cotas na inicialização do app
   checkDailyReset();
   const [tab, setTab] = useState("scanner");
+  // Modelo Gemini escolhido pelo advogado (persiste no localStorage) — deixa trocar na hora
+  // pra qual estiver "mais livre"/rápido no momento, sem precisar mexer em código.
+  const [selectedModel, setSelectedModelState] = useState(() => getSelectedGeminiModel());
+  const handleModelChange = (model: string) => {
+    setSelectedGeminiModel(model);
+    setSelectedModelState(model);
+  };
   const [file, setFile] = useState(null);
   const [queue, setQueue] = useState([]); // Fila de arquivos para processamento em massa
   const [currentQueueIndex, setCurrentQueueIndex] = useState(-1);
@@ -7525,6 +7549,32 @@ export default function ScannerJuridico() {
               </button>
               <span style={{ fontSize: '10px', color: G.success, background: 'rgba(34, 197, 94, 0.1)', padding: '2px 8px', borderRadius: '10px' }}>Ativo</span>
             </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+            <label style={{ fontSize: '10px', color: G.muted, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>MODELO GEMINI:</label>
+            <select
+              value={selectedModel}
+              onChange={(e) => handleModelChange(e.target.value)}
+              title="Escolha qual modelo Gemini o app deve usar para transcrever e refinar os documentos. Troque para o que estiver mais livre no momento."
+              style={{
+                flex: 1,
+                maxWidth: '220px',
+                background: G.card,
+                color: G.text,
+                border: `1px solid ${G.border}`,
+                borderRadius: '6px',
+                padding: '5px 8px',
+                fontSize: '11px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              {GEMINI_MODEL_OPTIONS.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
             {getAvailableGeminiKeys().map((key, idx) => {
