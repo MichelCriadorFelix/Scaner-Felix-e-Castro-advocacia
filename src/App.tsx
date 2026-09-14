@@ -3430,6 +3430,7 @@ export default function ScannerJuridico() {
     setSelectedGeminiModel(model);
     setSelectedModelState(model);
   };
+  const [showApiKeyDetails, setShowApiKeyDetails] = useState(false);
   const [file, setFile] = useState(null);
   const [queue, setQueue] = useState([]); // Fila de arquivos para processamento em massa
   const [currentQueueIndex, setCurrentQueueIndex] = useState(-1);
@@ -7517,11 +7518,12 @@ export default function ScannerJuridico() {
 
         {/* API STATUS DASHBOARD (DEMONSTRADOR) */}
         <div style={{ padding: '12px 20px', background: G.bg, borderBottom: `1px solid ${G.border}` }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <span style={{ fontSize: '11px', color: G.muted, fontWeight: 600, letterSpacing: '0.05em' }}>STATUS DA INFRAESTRUTURA IA</span>
+          <div onClick={() => setShowApiKeyDetails(v => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, cursor: 'pointer', userSelect: 'none' }}>
+            <span style={{ fontSize: '11px', color: G.muted, fontWeight: 600, letterSpacing: '0.05em' }}>{showApiKeyDetails ? '▼' : '▶'} STATUS DA INFRAESTRUTURA IA</span>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <button 
-                onClick={() => {
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   if (confirm("Deseja realmente limpar/resetar o status e contadores de todas as chaves de API?")) {
                     localStorage.removeItem('lexscan_key_errors');
                     localStorage.removeItem('lexscan_key_usage');
@@ -7576,7 +7578,7 @@ export default function ScannerJuridico() {
               ))}
             </select>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+          <div style={{ display: showApiKeyDetails ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
             {getAvailableGeminiKeys().map((key, idx) => {
               const hash = key.slice(-6);
               const usageCount = keyUsage[hash] || 0;
