@@ -3,39 +3,58 @@
 // (bloqueio de CORS) — diferente da API do Gemini, que permite. Isso roda no servidor da
 // Vercel, então a restrição de CORS do navegador não se aplica aqui.
 //
-// O Nemotron 3 Nano Omni é um modelo "reasoning" — pode demorar bem mais que um modelo
-// rápido tipo Gemini Flash pra responder. O limite PADRÃO de função da Vercel (bem curto,
-// ~10-15s) estava matando a função antes da NVIDIA terminar de responder (erro 504). Isso
-// aqui pede um limite maior — o plano Pro permite até 300s.
+// IMPORTANTE: usa o padrão moderno de Request/Response (Web Standard) da Vercel, não o
+// estilo antigo (req, res). O estilo antigo, nesse projeto, fez uma requisição GET (que
+// devia ser rejeitada em milissegundos com 405) travar por 90s até estourar o tempo limite
+// — sinal de que a função não estava encerrando a resposta corretamente. Retornar um objeto
+// Response de verdade não deixa essa ambiguidade existir: a função termina no instante em
+// que o Response é devolvido.
 export const config = {
-  maxDuration: 90,
+  maxDuration: 60,
 };
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Método não permitido.' });
-    return;
+function json(data, status) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+export default async function handler(request) {
+  if (request.method !== 'POST') {
+    return json({ error: 'Método não permitido.' }, 405);
   }
 
   const apiKey = process.env.VITE_NVIDIA_NIM_KEY || process.env.NVIDIA_NIM_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: 'NVIDIA NIM não configurada no servidor (VITE_NVIDIA_NIM_KEY ausente).' });
-    return;
+    return json({ error: 'NVIDIA NIM não configurada no servidor (VITE_NVIDIA_NIM_KEY ausente).' }, 500);
   }
 
+  let body;
   try {
-    const { base64, mimeType, systemPrompt, userText } = req.body || {};
-    if (!base64 || !systemPrompt) {
-      res.status(400).json({ error: 'Requisição incompleta (faltando imagem ou prompt).' });
-      return;
-    }
+    body = await request.json();
+  } catch (e) {
+    return json({ error: 'Corpo da requisição inválido (não é JSON).' }, 400);
+  }
 
+  const { base64, mimeType, systemPrompt, userText } = body || {};
+  if (!base64 || !systemPrompt) {
+    return json({ error: 'Requisição incompleta (faltando imagem ou prompt).' }, 400);
+  }
+
+  // Limite de tempo pra chamada da NVIDIA em si, com folga sob o maxDuration (60s) da função —
+  // se a NVIDIA travar, falha limpo aqui em vez de deixar a própria plataforma matar a função.
+  const upstreamController = new AbortController();
+  const upstreamTimeout = setTimeout(() => upstreamController.abort(), 50000);
+
+  try {
     const nvidiaRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
+      signal: upstreamController.signal,
       body: JSON.stringify({
         model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
         messages: [
@@ -63,13 +82,15 @@ export default async function handler(req, res) {
     const data = await nvidiaRes.json().catch(() => null);
 
     if (!nvidiaRes.ok) {
-      res.status(nvidiaRes.status).json({ error: data?.error?.message || `NVIDIA NIM HTTP ${nvidiaRes.status}` });
-      return;
+      return json({ error: data?.error?.message || `NVIDIA NIM HTTP ${nvidiaRes.status}` }, nvidiaRes.status);
     }
 
     const text = data?.choices?.[0]?.message?.content || '';
-    res.status(200).json({ text });
+    return json({ text }, 200);
   } catch (e) {
-    res.status(502).json({ error: String(e?.message || e) });
+    const isTimeout = e?.name === 'AbortError';
+    return json({ error: isTimeout ? 'A NVIDIA NIM demorou demais pra responder (50s).' : String(e?.message || e) }, isTimeout ? 504 : 502);
+  } finally {
+    clearTimeout(upstreamTimeout);
   }
 }

@@ -1364,11 +1364,11 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
       if (onProgress) onProgress(30, `NVIDIA Nemotron: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
       // Chama nossa própria ponte de servidor (/api/nvidia-transcribe), não a NVIDIA direto —
       // a API da NVIDIA bloqueia chamadas vindas do navegador (CORS), diferente da do Gemini.
-      // Modelo "reasoning" pode demorar bastante — usa um limite de tempo (95s, um pouco
-      // maior que os 90s configurados na função do servidor) pra NUNCA travar a tela pra
-      // sempre esperando uma resposta que pode não vir, mas sem desistir antes da hora.
+      // Modelo "reasoning" pode demorar — usa um limite de tempo (65s, um pouco maior que os
+      // 60s configurados na função do servidor) pra NUNCA travar a tela esperando uma resposta
+      // que pode não vir, mas sem desistir antes da hora.
       const timeoutController = new AbortController();
-      const timeoutId = setTimeout(() => timeoutController.abort(), 95000);
+      const timeoutId = setTimeout(() => timeoutController.abort(), 65000);
       let res: Response;
       try {
         res = await fetch("/api/nvidia-transcribe", {
