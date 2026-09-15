@@ -1182,10 +1182,24 @@ function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
 
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
 
+  const priorityKey = getPriorityApiKey();
+
+  // Toggle manual "Forçar chave paga": ignora até status de erro travado (ex: cota
+  // marcada como esgotada num teste de ANTES do faturamento ser ativado hoje) — serve
+  // pra confirmar na prática que a chave paga está sendo chamada.
+  let forcePriority = false;
+  try { forcePriority = localStorage.getItem('lexscan_force_paid_key') === 'true'; } catch (e) {}
+  if (forcePriority && priorityKey && keysMetadata.some(k => k.key === priorityKey)) {
+    const forced = keysMetadata.find(k => k.key === priorityKey)!;
+    const others = keysMetadata.filter(k => k.key !== priorityKey);
+    others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
+    return [forced.key, ...others.map(o => o.key)];
+  }
+
   // Se nenhuma chave foi fixada explicitamente (ex: continuidade de um documento em
   // andamento), a chave paga é a preferida por padrão — só cai pras gratuitas se ela
   // estiver ausente ou com erro de cota/bloqueio.
-  const effectivePreferred = preferredApiKey || getPriorityApiKey();
+  const effectivePreferred = preferredApiKey || priorityKey;
 
   // Se effectivePreferred for fornecida e estiver válida, ela continua fixa no topo!
   if (effectivePreferred && candidateKeysInfo.some(k => k.key === effectivePreferred)) {
@@ -3573,6 +3587,15 @@ export default function ScannerJuridico() {
     setSelectedModelState(model);
   };
   const [showApiKeyDetails, setShowApiKeyDetails] = useState(false);
+  // Força o uso da chave paga em toda requisição (ignora até status de erro travado,
+  // útil pra testar/confirmar manualmente que ela está sendo chamada de verdade).
+  const [forcePaidKey, setForcePaidKey] = useState(() => {
+    try { return localStorage.getItem('lexscan_force_paid_key') === 'true'; } catch (e) { return false; }
+  });
+  const handleForcePaidKeyChange = (checked: boolean) => {
+    setForcePaidKey(checked);
+    try { localStorage.setItem('lexscan_force_paid_key', checked ? 'true' : 'false'); } catch (e) {}
+  };
   const [file, setFile] = useState(null);
   const [queue, setQueue] = useState([]); // Fila de arquivos para processamento em massa
   const [currentQueueIndex, setCurrentQueueIndex] = useState(-1);
@@ -7719,13 +7742,26 @@ export default function ScannerJuridico() {
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
+            <label
+              title="Força toda transcrição a chamar a chave Gemini paga primeiro, ignorando até status de erro travado — use pra confirmar na prática que ela está sendo usada."
+              style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: forcePaidKey ? '#f0b429' : G.muted, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            >
+              <input
+                type="checkbox"
+                checked={forcePaidKey}
+                onChange={(e) => handleForcePaidKeyChange(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              💰 Forçar chave paga
+            </label>
           </div>
           <div style={{ display: showApiKeyDetails ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
             {getAvailableGeminiKeys().map((key, idx) => {
               const hash = key.slice(-6);
               const usageCount = keyUsage[hash] || 0;
               const errorStatus = keyErrors[hash] || 'ok';
-              
+              const isPriorityKey = key === getPriorityApiKey();
+
               const isOk = errorStatus === 'ok' || errorStatus === 'active' || errorStatus === 'server_error';
 
               let badgeText = `${usageCount} ${usageCount === 1 ? 'requisito' : 'requisições'}`;
@@ -7769,12 +7805,14 @@ export default function ScannerJuridico() {
               }
 
               return (
-                <div key={hash} style={{ 
-                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${cardBorder}`,
+                <div key={hash} style={{
+                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${isPriorityKey ? '#f0b429' : cardBorder}`,
                   display: 'flex', flexDirection: 'column', gap: '4px'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '10px', color: G.text, fontWeight: 500 }}>API #{idx + 1} (..{hash})</span>
+                    <span style={{ fontSize: '10px', color: G.text, fontWeight: 500 }}>
+                      API #{idx + 1} (..{hash}) {isPriorityKey && <span style={{ color: '#f0b429' }}>💰 PAGA</span>}
+                    </span>
                     <span style={{ fontSize: '9px', color: badgeColor, fontWeight: '600' }}>{badgeText}</span>
                   </div>
                   <div style={{ fontSize: '9px', color: statusColor, textAlign: 'left', marginTop: '2px' }}>{statusText}</div>
