@@ -3,46 +3,43 @@
 // (bloqueio de CORS) — diferente da API do Gemini, que permite. Isso roda no servidor da
 // Vercel, então a restrição de CORS do navegador não se aplica aqui.
 //
-// IMPORTANTE: usa Request/Response (padrão Web Standard) — isso só funciona de verdade se a
-// runtime for "edge". Testei ao vivo (curl com timing) e confirmei: SEM essa declaração, a
-// Vercel trata a função como runtime Node clássica (que espera o formato antigo (req, res),
-// chamando res.end()/res.send()), e como a função nunca chama isso (só retorna um Response),
-// a resposta HTTP nunca é de fato enviada — a requisição fica pendurada até estourar o
-// maxDuration (confirmado: GET, que deveria retornar 405 em milissegundos, travou os 60s
-// inteiros e caiu em FUNCTION_INVOCATION_TIMEOUT). Com runtime "edge" declarada, o Response
-// é entendido nativamente e a função termina no instante em que ele é devolvido.
+// HISTÓRICO (pra não repetir os mesmos erros):
+// 1) Handler clássico (req, res) sem maxDuration: 504 aos 300s (teto da conta) — a NVIDIA
+//    "pensando" sem limite de raciocínio (reasoning_budget) genuinamente demorava demais.
+// 2) Handler moderno (Request) => Response, SEM declarar runtime: nesse tipo de projeto
+//    (Vite, não Next.js), isso é tratado como runtime Node clássica, que espera (req, res)
+//    de verdade — devolver um Response nunca chega a ser enviado, e a função fica pendurada
+//    até estourar o tempo (confirmado ao vivo com curl: GET, que devia responder em
+//    milissegundos, travou os 60s inteiros).
+// 3) Mesmo handler moderno, COM runtime: 'edge': aí sim funciona (GET instantâneo,
+//    confirmado ao vivo) — só que a runtime Edge da Vercel tem uma regra PRÓPRIA e mais
+//    rígida: precisa mandar o PRIMEIRO byte de resposta em até 25s, senão é interrompida
+//    ("did not return an initial response within 25s") — diferente do limite total
+//    (maxDuration). Como a NVIDIA pode legitimamente demorar mais que 25s só pra começar a
+//    responder, Edge não serve aqui sem reestruturar pra streaming.
+// SOLUÇÃO FINAL: runtime Node clássica (sem declarar "edge") + handler (req, res) de
+// verdade + maxDuration alto (sem o limite de 25s da Edge) + reasoning_budget baixo (pra
+// nem chegar perto do limite).
 export const config = {
-  runtime: 'edge',
   maxDuration: 60,
 };
 
-function json(data, status) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-export default async function handler(request) {
-  if (request.method !== 'POST') {
-    return json({ error: 'Método não permitido.' }, 405);
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Método não permitido.' });
+    return;
   }
 
   const apiKey = process.env.VITE_NVIDIA_NIM_KEY || process.env.NVIDIA_NIM_KEY;
   if (!apiKey) {
-    return json({ error: 'NVIDIA NIM não configurada no servidor (VITE_NVIDIA_NIM_KEY ausente).' }, 500);
+    res.status(500).json({ error: 'NVIDIA NIM não configurada no servidor (VITE_NVIDIA_NIM_KEY ausente).' });
+    return;
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch (e) {
-    return json({ error: 'Corpo da requisição inválido (não é JSON).' }, 400);
-  }
-
-  const { base64, mimeType, systemPrompt, userText } = body || {};
+  const { base64, mimeType, systemPrompt, userText } = req.body || {};
   if (!base64 || !systemPrompt) {
-    return json({ error: 'Requisição incompleta (faltando imagem ou prompt).' }, 400);
+    res.status(400).json({ error: 'Requisição incompleta (faltando imagem ou prompt).' });
+    return;
   }
 
   // Limite de tempo pra chamada da NVIDIA em si, com folga sob o maxDuration (60s) da função —
@@ -73,10 +70,9 @@ export default async function handler(request) {
         temperature: 0.1,
         max_tokens: 65536,
         // Nemotron é um modelo "reasoning": por padrão ele "pensa" bastante internamente antes
-        // de responder, e é isso que estava estourando o tempo limite da função (504). Transcrever
-        // uma página é uma tarefa de PERCEPÇÃO, não de raciocínio profundo — reduzir o orçamento
-        // de raciocínio (documentado na própria página do modelo) deixa a resposta bem mais rápida
-        // sem perder qualidade na leitura em si.
+        // de responder. Transcrever uma página é uma tarefa de PERCEPÇÃO, não de raciocínio
+        // profundo — reduzir o orçamento de raciocínio deixa a resposta bem mais rápida sem
+        // perder qualidade na leitura em si.
         reasoning_budget: 2048,
         stream: false,
       }),
@@ -85,14 +81,15 @@ export default async function handler(request) {
     const data = await nvidiaRes.json().catch(() => null);
 
     if (!nvidiaRes.ok) {
-      return json({ error: data?.error?.message || `NVIDIA NIM HTTP ${nvidiaRes.status}` }, nvidiaRes.status);
+      res.status(nvidiaRes.status).json({ error: data?.error?.message || `NVIDIA NIM HTTP ${nvidiaRes.status}` });
+      return;
     }
 
     const text = data?.choices?.[0]?.message?.content || '';
-    return json({ text }, 200);
+    res.status(200).json({ text });
   } catch (e) {
     const isTimeout = e?.name === 'AbortError';
-    return json({ error: isTimeout ? 'A NVIDIA NIM demorou demais pra responder (50s).' : String(e?.message || e) }, isTimeout ? 504 : 502);
+    res.status(isTimeout ? 504 : 502).json({ error: isTimeout ? 'A NVIDIA NIM demorou demais pra responder (50s).' : String(e?.message || e) });
   } finally {
     clearTimeout(upstreamTimeout);
   }
