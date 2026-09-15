@@ -1079,6 +1079,70 @@ function getKeyMetadata(apiKey) {
   return { hash, usage, errorStatus };
 }
 
+// ── Throttling proativo por chave (só pras chaves GRATUITAS) ────────────────
+// Google trava uma chave gratuita o dia inteiro se ela estourar o limite real de ~5
+// chamadas/minuto (o erro 429 de "por minuto" e o de "cota diária" eram tratados como
+// a mesma coisa — corrigido abaixo). Solução: nunca deixar uma chave gratuita passar de
+// 4 chamadas na janela de 60s corrente; cada chave tem sua PRÓPRIA janela independente
+// (uma nunca consome o "orçamento" de chamadas de outra).
+const KEY_MINUTE_LIMIT = 4;
+const MINUTE_MS = 60000;
+
+function getKeyMinuteWindow(hash: string): { windowStart: number; count: number } {
+  try {
+    const raw = localStorage.getItem('lexscan_key_minute_window');
+    const all = raw ? JSON.parse(raw) : {};
+    return all[hash] || { windowStart: 0, count: 0 };
+  } catch (e) {
+    return { windowStart: 0, count: 0 };
+  }
+}
+
+// A chave paga tem limite de 1000 req/min (faturamento ativo) — não faz sentido nem é
+// desejado aplicar o throttle de 4/min pensado pras chaves gratuitas nela.
+function isKeyThrottled(apiKey: string): boolean {
+  if (apiKey === getPriorityApiKey()) return false;
+  const hash = apiKey.slice(-6);
+  const w = getKeyMinuteWindow(hash);
+  if (Date.now() - w.windowStart >= MINUTE_MS) return false;
+  return w.count >= KEY_MINUTE_LIMIT;
+}
+
+function getKeyCooldownRemainingMs(apiKey: string): number {
+  const hash = apiKey.slice(-6);
+  const w = getKeyMinuteWindow(hash);
+  const remaining = (w.windowStart + MINUTE_MS) - Date.now();
+  return remaining > 0 ? remaining : 0;
+}
+
+// Estado em memória (não em localStorage) do toggle "Forçar chave paga": reseta sozinho
+// pra "desmarcado" toda vez que a página é aberta ou atualizada, porque uma variável de
+// módulo é reinicializada do zero a cada carregamento — exatamente o comportamento pedido
+// (a chave paga NUNCA deve ser usada "sem querer" logo depois de um F5).
+let forcePaidKeyRuntime = false;
+function isForcePaidKeyEnabled(): boolean {
+  return forcePaidKeyRuntime;
+}
+function setForcePaidKeyEnabled(enabled: boolean): void {
+  forcePaidKeyRuntime = enabled;
+}
+
+// Registra uma tentativa de chamada nessa chave (conta pro limite por minuto independente
+// de sucesso ou erro — é isso que o limite real do Google conta).
+function recordKeyMinuteCall(apiKey: string): void {
+  try {
+    const hash = apiKey.slice(-6);
+    const now = Date.now();
+    const raw = localStorage.getItem('lexscan_key_minute_window');
+    const all = raw ? JSON.parse(raw) : {};
+    const w = all[hash] || { windowStart: 0, count: 0 };
+    all[hash] = (now - w.windowStart >= MINUTE_MS)
+      ? { windowStart: now, count: 1 }
+      : { windowStart: w.windowStart, count: w.count + 1 };
+    localStorage.setItem('lexscan_key_minute_window', JSON.stringify(all));
+  } catch (e) {}
+}
+
 // Aumenta o contraste, nitidez e saturação para PDFs ou imagens de baixa qualidade antes do OCR/IA, sem perder as cores originais importantes para CNH/RG.
 async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
   try {
@@ -1169,42 +1233,49 @@ function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
   const allKeys = getAvailableGeminiKeys();
   if (allKeys.length === 0) return [];
 
+  const priorityKey = getPriorityApiKey();
+  const forcePriority = isForcePaidKeyEnabled();
+
+  // A chave paga só entra em jogo quando o advogado marca "Forçar chave paga" explicitamente
+  // (a caixinha nasce sempre desmarcada ao abrir/atualizar o app). Enquanto desmarcada, ela
+  // fica de fora até da rotação normal — nunca é usada "sem querer" nem como preferência padrão.
+  const poolKeys = (priorityKey && !forcePriority) ? allKeys.filter(k => k !== priorityKey) : allKeys;
+  if (poolKeys.length === 0) return [];
+
   // Mapeia todas as chaves com metadados do localStorage
-  const keysMetadata = allKeys.map((key) => {
+  const keysMetadata = poolKeys.map((key) => {
     const meta = getKeyMetadata(key);
     return { key, ...meta };
   });
 
-  // Filtra chaves que NÃO estão com erro de cota ou bloqueio
-  const activeKeys = keysMetadata.filter(m =>
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error'
-  );
-
-  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
-
-  const priorityKey = getPriorityApiKey();
-
-  // Toggle manual "Forçar chave paga": ignora até status de erro travado (ex: cota
-  // marcada como esgotada num teste de ANTES do faturamento ser ativado hoje) — serve
-  // pra confirmar na prática que a chave paga está sendo chamada.
-  let forcePriority = false;
-  try { forcePriority = localStorage.getItem('lexscan_force_paid_key') === 'true'; } catch (e) {}
   if (forcePriority && priorityKey && keysMetadata.some(k => k.key === priorityKey)) {
+    // Ignora até status de erro travado (ex: cota marcada como esgotada num teste de ANTES
+    // do faturamento ser ativado) — serve pra confirmar na prática que a chave paga funciona.
     const forced = keysMetadata.find(k => k.key === priorityKey)!;
     const others = keysMetadata.filter(k => k.key !== priorityKey);
     others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
     return [forced.key, ...others.map(o => o.key)];
   }
 
-  // Se nenhuma chave foi fixada explicitamente (ex: continuidade de um documento em
-  // andamento), a chave paga é a preferida por padrão — só cai pras gratuitas se ela
-  // estiver ausente ou com erro de cota/bloqueio.
-  const effectivePreferred = preferredApiKey || priorityKey;
+  // Throttling proativo: tira de cogitação (por ora) qualquer chave gratuita que já bateu
+  // 4 chamadas na janela de 60s corrente — só volta a ser candidata quando a janela expirar.
+  // Só cai pra lista completa (incluindo travadas) se TODAS estiverem no limite, como último recurso.
+  const notThrottled = keysMetadata.filter(m => !isKeyThrottled(m.key));
+  const throttleFilteredMetadata = notThrottled.length > 0 ? notThrottled : keysMetadata;
 
-  // Se effectivePreferred for fornecida e estiver válida, ela continua fixa no topo!
-  if (effectivePreferred && candidateKeysInfo.some(k => k.key === effectivePreferred)) {
-    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === effectivePreferred)!;
-    const others = candidateKeysInfo.filter(k => k.key !== effectivePreferred);
+  // Filtra chaves que NÃO estão com erro de cota ou bloqueio ('rate_limited' é passageiro,
+  // some sozinho quando a chave funcionar de novo — nunca deve banir a chave o dia todo)
+  const activeKeys = throttleFilteredMetadata.filter(m =>
+    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error' || m.errorStatus === 'rate_limited'
+  );
+
+  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : throttleFilteredMetadata;
+
+  // Se effectivePreferred for fornecida e estiver válida, ela continua fixa no topo! (nunca
+  // cai de volta pra chave paga aqui — enquanto não forçada, ela nem está no pool acima)
+  if (preferredApiKey && candidateKeysInfo.some(k => k.key === preferredApiKey)) {
+    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === preferredApiKey)!;
+    const others = candidateKeysInfo.filter(k => k.key !== preferredApiKey);
     others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
     return [preferredKeyInfo.key, ...others.map(o => o.key)];
   } else {
@@ -1488,7 +1559,16 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
-    
+
+    if (isKeyThrottled(apiKey)) {
+      const waitMs = getKeyCooldownRemainingMs(apiKey);
+      if (waitMs > 0) {
+        console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+    recordKeyMinuteCall(apiKey);
+
     console.log(`[Gemini Flash - Página] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando página...`);
     const ai = new GoogleGenAI({ apiKey });
     
@@ -1697,7 +1777,13 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     let errorType = 'error';
     if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
     else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
-    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
+    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
+      // Só marca "esgotada até amanhã de verdade" quando o próprio erro do Google sinaliza
+      // cota DIÁRIA (menciona "day"/"daily"). Um 429 genérico agora é sempre tratado como
+      // limite POR MINUTO passageiro (rate_limited) — nunca mais trava a chave o dia inteiro
+      // por um estouro momentâneo (o throttle proativo de 4/min já evita isso na prática).
+      errorType = (errorStr.includes("day") || errorStr.includes("daily") || errorStr.includes("perday")) ? 'quota_exceeded' : 'rate_limited';
+    }
     // "truncada"/"degenerada" vêm da nossa própria detecção de loop de repetição — é um problema de conteúdo
     // daquela página específica, não da chave. Classificar como server_error (em vez de 'error' genérico)
     // impede que a chave seja banida do pool pras próximas páginas por causa de algo que não é culpa dela.
@@ -1747,7 +1833,16 @@ REGRAS CRÍTICAS:
     
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
-    
+
+    if (isKeyThrottled(apiKey)) {
+      const waitMs = getKeyCooldownRemainingMs(apiKey);
+      if (waitMs > 0) {
+        console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+    recordKeyMinuteCall(apiKey);
+
     console.log(`[Gemini Flash - Batch] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando lote de ${images.length} páginas...`);
     const ai = new GoogleGenAI({ apiKey });
     
@@ -1878,7 +1973,13 @@ REGRAS CRÍTICAS:
     let errorType = 'error';
     if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
     else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
-    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) errorType = 'quota_exceeded';
+    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
+      // Só marca "esgotada até amanhã de verdade" quando o próprio erro do Google sinaliza
+      // cota DIÁRIA (menciona "day"/"daily"). Um 429 genérico agora é sempre tratado como
+      // limite POR MINUTO passageiro (rate_limited) — nunca mais trava a chave o dia inteiro
+      // por um estouro momentâneo (o throttle proativo de 4/min já evita isso na prática).
+      errorType = (errorStr.includes("day") || errorStr.includes("daily") || errorStr.includes("perday")) ? 'quota_exceeded' : 'rate_limited';
+    }
     else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout") || errorStr.includes("truncada") || errorStr.includes("degenerada")) errorType = 'server_error';
 
     console.warn(`[Batch Failover] Chave ..${keyHash} falhou (${errorType}). Avançando imediatamente para a próxima chave...`);
@@ -2303,23 +2404,10 @@ function getRealConfidence(text, fallbackConfidence) {
 }
 
 async function refineTextWithGemini(mangledText) {
-  const allKeys = getAvailableGeminiKeys();
-  if (allKeys.length === 0) {
+  const finalSortedKeys = getSortedApiKeys();
+  if (finalSortedKeys.length === 0) {
     throw new Error("❌ Nenhuma Chave GEMINI configurada.");
   }
-  
-  const keysMetadata = allKeys.map(key => {
-    const meta = getKeyMetadata(key);
-    return { key, ...meta };
-  });
-  
-  const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
-  );
-  
-  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
-  candidateKeysInfo.sort((a, b) => a.usage - b.usage);
-  const finalSortedKeys = candidateKeysInfo.map(info => info.key);
 
   const systemInstruction = `Você é um corretor e reconstrutor de textos ortográficos de altíssima precisão e inteligência do escritório Felix & Castro Advocacia.
 Sua tarefa é analisar um texto transcrito por leitores automáticos (OCR) que veio com ruídos, símbolos corrompidos, letras trocadas por números ou pontuações bizarras, e RECONSTRUIR o texto de forma limpa, fluida e impecável em português correto e formal.
@@ -2348,12 +2436,21 @@ REGRAS CRÍTICAS DE REFINAMENTO:
   for (let i = 0; i < finalSortedKeys.length; i++) {
     const apiKey = finalSortedKeys[i];
     const keyHash = apiKey.slice(-6);
-    
+
+    if (isKeyThrottled(apiKey)) {
+      const waitMs = getKeyCooldownRemainingMs(apiKey);
+      if (waitMs > 0) {
+        console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+    recordKeyMinuteCall(apiKey);
+
     for (let m = 0; m < modelsToTry.length; m++) {
       const modelName = modelsToTry[m];
       try {
         const ai = new GoogleGenAI({ apiKey });
-        
+
         const response = await ai.models.generateContent({
           model: modelName,
           contents: [
@@ -2798,23 +2895,10 @@ async function refineCompiledTextWithGemini(
   addLogCallback?: (msg: string) => void,
   onProgressCallback?: (progress: number, statusText?: string) => void
 ): Promise<string> {
-  const allKeys = getAvailableGeminiKeys();
-  if (allKeys.length === 0) {
+  const finalSortedKeys = getSortedApiKeys();
+  if (finalSortedKeys.length === 0) {
     throw new Error("❌ Nenhuma Chave GEMINI configurada.");
   }
-  
-  const keysMetadata = allKeys.map(key => {
-    const meta = getKeyMetadata(key);
-    return { key, ...meta };
-  });
-  
-  const activeKeys = keysMetadata.filter(m => 
-    !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active'
-  );
-  
-  const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
-  candidateKeysInfo.sort((a, b) => a.usage - b.usage);
-  const finalSortedKeys = candidateKeysInfo.map(info => info.key);
 
   if (addLogCallback) {
     addLogCallback(`[${new Date().toLocaleTimeString()}] 🔍 Iniciando auditoria e cruzamento inteligente de dados cadastrais...`);
@@ -2859,7 +2943,16 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
     for (let i = 0; i < finalSortedKeys.length; i++) {
       const apiKey = finalSortedKeys[i];
       const keyHash = apiKey.slice(-6);
-      
+
+      if (isKeyThrottled(apiKey)) {
+        const waitMs = getKeyCooldownRemainingMs(apiKey);
+        if (waitMs > 0) {
+          console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
+          await new Promise(r => setTimeout(r, waitMs));
+        }
+      }
+      recordKeyMinuteCall(apiKey);
+
       for (let m = 0; m < modelsToTry.length; m++) {
         const modelName = modelsToTry[m];
         try {
@@ -3622,14 +3715,13 @@ export default function ScannerJuridico() {
     setSelectedModelState(model);
   };
   const [showApiKeyDetails, setShowApiKeyDetails] = useState(false);
-  // Força o uso da chave paga em toda requisição (ignora até status de erro travado,
-  // útil pra testar/confirmar manualmente que ela está sendo chamada de verdade).
-  const [forcePaidKey, setForcePaidKey] = useState(() => {
-    try { return localStorage.getItem('lexscan_force_paid_key') === 'true'; } catch (e) { return false; }
-  });
+  // Força o uso da chave paga (ignora até status de erro travado). Nasce sempre DESMARCADA
+  // ao abrir/atualizar o app (nunca persiste em localStorage de propósito) — a chave paga
+  // só é usada quando o advogado marca isso explicitamente na sessão atual.
+  const [forcePaidKey, setForcePaidKey] = useState(false);
   const handleForcePaidKeyChange = (checked: boolean) => {
     setForcePaidKey(checked);
-    try { localStorage.setItem('lexscan_force_paid_key', checked ? 'true' : 'false'); } catch (e) {}
+    setForcePaidKeyEnabled(checked);
   };
   const [file, setFile] = useState(null);
   const [queue, setQueue] = useState([]); // Fila de arquivos para processamento em massa
@@ -7797,7 +7889,7 @@ export default function ScannerJuridico() {
               const errorStatus = keyErrors[hash] || 'ok';
               const isPriorityKey = key === getPriorityApiKey();
 
-              const isOk = errorStatus === 'ok' || errorStatus === 'active' || errorStatus === 'server_error';
+              const isOk = errorStatus === 'ok' || errorStatus === 'active' || errorStatus === 'server_error' || errorStatus === 'rate_limited';
 
               let badgeText = `${usageCount} ${usageCount === 1 ? 'requisito' : 'requisições'}`;
               let statusText = 'Status: Ok';
@@ -7811,6 +7903,14 @@ export default function ScannerJuridico() {
                 statusColor = '#ef4444';
                 cardBorder = 'rgba(239, 68, 68, 0.6)';
                 badgeColor = '#ef4444';
+              } else if (errorStatus === 'rate_limited') {
+                // Passageiro: limite de chamadas/minuto, não cota diária — some sozinho assim
+                // que a chave for usada de novo com sucesso (ver isKeyThrottled/throttle proativo).
+                badgeText = 'AGUARDANDO';
+                statusText = 'Limite por minuto — libera sozinha em instantes.';
+                statusColor = '#f59e0b';
+                cardBorder = 'rgba(245, 158, 11, 0.5)';
+                badgeColor = '#f59e0b';
               } else if (errorStatus === 'blocked') {
                 badgeText = 'BLOQUEADA';
                 statusText = 'Chave suspensa / Denied Access.';
