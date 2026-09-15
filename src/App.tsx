@@ -955,12 +955,30 @@ const GEMINI_MODEL_OPTIONS = [
 ];
 const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
 
+// Modelo alternativo (provedor diferente, NVIDIA NIM) — fica FORA da cascata de reforço entre
+// os Gemini porque usa uma API completamente diferente (formato OpenAI, chave própria). Só
+// entra em uso quando o advogado escolhe ele explicitamente no seletor.
+const NVIDIA_NEMOTRON_MODEL = "nvidia-nemotron-3-nano-omni";
+const MODEL_OPTIONS = [
+  ...GEMINI_MODEL_OPTIONS,
+  { value: NVIDIA_NEMOTRON_MODEL, label: "NVIDIA Nemotron 3 Nano Omni" },
+];
+
 function getSelectedGeminiModel(): string {
   try {
     const stored = localStorage.getItem('lexscan_selected_model');
-    if (stored && GEMINI_MODEL_OPTIONS.some(m => m.value === stored)) return stored;
+    if (stored && MODEL_OPTIONS.some(m => m.value === stored)) return stored;
   } catch (e) {}
   return DEFAULT_GEMINI_MODEL;
+}
+
+function getNvidiaNimApiKey(): string {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_NVIDIA_NIM_KEY) {
+      return import.meta.env.VITE_NVIDIA_NIM_KEY;
+    }
+  } catch (e) {}
+  return "";
 }
 
 function setSelectedGeminiModel(model: string) {
@@ -975,8 +993,13 @@ function setSelectedGeminiModel(model: string) {
 // os outros 2 modelos continuam disponíveis.
 function getModelFallbackCascade(): string[] {
   const selected = getSelectedGeminiModel();
-  const others = GEMINI_MODEL_OPTIONS.map(m => m.value).filter(v => v !== selected);
-  return [selected, ...others];
+  // Se o modelo escolhido for o NVIDIA (provedor diferente, sem esse mecanismo de cascata),
+  // usa o Gemini padrão aqui — o roteamento pro NVIDIA acontece antes desse ponto, direto em
+  // extractPageWithGemini. Isso garante que refinamento de texto (que não tem versão NVIDIA
+  // implementada) sempre recebe uma lista válida de modelos Gemini.
+  const geminiSelected = GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
+  const others = GEMINI_MODEL_OPTIONS.map(m => m.value).filter(v => v !== geminiSelected);
+  return [geminiSelected, ...others];
 }
 
 // ── Banco de API Keys & Auto-Failover ────────────────────────
@@ -1272,22 +1295,11 @@ async function completeTruncatedTranscription(
   return combinedText;
 }
 
-// ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
-async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
-  const finalSortedKeys = getSortedApiKeys(preferredApiKey);
-  let lastError = null;
-
-  if (finalSortedKeys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI ou API_KEY configurada.");
-  }
-
-  const base64 = await new Promise((r) => {
-    const reader = new FileReader();
-    reader.onload = () => r(reader.result.split(',')[1]);
-    reader.readAsDataURL(blob);
-  });
-  
-  const prompt = `Você é o Transcritor e Reconstituidor de Documentos Jurídicos Oficial de Elite (PADRÃO GOD / PADRÃO OURO) do escritório Felix & Castro Advocacia. Sua missão de altíssima relevância e responsabilidade é produzir uma transcrição 100% IDÊNTICA, VERBATIM E LITERAL de todas as páginas do documento fornecido.
+// Prompt de sistema compartilhado entre o Gemini e qualquer outro provedor de IA de visão
+// (ex: NVIDIA Nemotron) — garante que as mesmas regras de transcrição (PADRÃO OURO) valham
+// independente de qual modelo o advogado escolher no seletor.
+function getPadraoOuroPrompt(): string {
+  return `Você é o Transcritor e Reconstituidor de Documentos Jurídicos Oficial de Elite (PADRÃO GOD / PADRÃO OURO) do escritório Felix & Castro Advocacia. Sua missão de altíssima relevância e responsabilidade é produzir uma transcrição 100% IDÊNTICA, VERBATIM E LITERAL de todas as páginas do documento fornecido.
 
 Nenhuma palavra, número, sigla, cabeçalho, rodapé, CNPJ, nota marginal, data ou elemento de tabela do documento original deve ser omitido, ignorado, filtrado ou resumido. Qualquer desvio ou omissão comprometerá a integridade do processo judicial.
 
@@ -1295,7 +1307,7 @@ Nenhuma palavra, número, sigla, cabeçalho, rodapé, CNPJ, nota marginal, data 
 REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 ══════════════════════════════════════════════════
 
-1. TRANSCRIÇÃO INTEGRAL E LITERAL: 
+1. TRANSCRIÇÃO INTEGRAL E LITERAL:
    - Transcreva TODO e qualquer texto visível na imagem, exatamente na ordem em que aparece, de cima para baixo.
    - NÃO ignore cabeçalhos institucionais, logotipos descritos por extenso, brasões, rodapés, números de página, notas marginais, selos, marcas d'água, assinaturas, certidões ou termos formais do Diário Oficial.
    - Se o diário oficial ou documento contiver certidões, portarias de aposentadoria de terceiros, exonerações, atos ou decisões, transcreva TUDO do início ao fim da página sem omitir nada.
@@ -1337,6 +1349,115 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
      - OBS: [Observações importantes se houver, ou omita]
    - Em seguida, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:`;
+}
+
+// Transcreve uma página via NVIDIA NIM (Nemotron 3 Nano Omni) — provedor alternativo, gratuito,
+// usado quando o advogado escolhe essa opção no seletor de modelo. API compatível com OpenAI
+// (chat completions), diferente do SDK do Google — por isso é uma implementação própria, sem
+// reutilizar a rotação de múltiplas chaves do Gemini (usa 1 única chave, de uma conta separada).
+async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number, msg: string) => void): Promise<{ text: string; usedKey: string }> {
+  const apiKey = getNvidiaNimApiKey();
+  if (!apiKey) {
+    throw new Error("❌ Chave da NVIDIA NIM não configurada (VITE_NVIDIA_NIM_KEY).");
+  }
+
+  const base64 = await new Promise<string>((r) => {
+    const reader = new FileReader();
+    reader.onload = () => r((reader.result as string).split(',')[1]);
+    reader.readAsDataURL(blob);
+  });
+
+  const prompt = getPadraoOuroPrompt();
+  const mimeType = blob.type || "image/jpeg";
+  const MAX_ATTEMPTS = 3;
+  let lastErr: any = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+    try {
+      if (onProgress) onProgress(30, `NVIDIA Nemotron: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
+      const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          messages: [
+            { role: "system", content: prompt },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+              ],
+            },
+          ],
+          temperature: 0.1,
+          max_tokens: 8192,
+          stream: false,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        const err: any = new Error(`NVIDIA NIM HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        err.status = res.status;
+        throw err;
+      }
+
+      const data = await res.json();
+      const text = (data?.choices?.[0]?.message?.content || "").trim();
+
+      if (!text) {
+        throw new Error("NVIDIA NIM retornou resposta vazia.");
+      }
+      if (containsDegenerateRepetition(text)) {
+        lastErr = new Error("Resposta com repetição degenerada (NVIDIA).");
+        continue;
+      }
+
+      if (onProgress) onProgress(95, "NVIDIA Nemotron: transcrição concluída.");
+      return { text, usedKey: "nvidia-nim" };
+    } catch (e: any) {
+      lastErr = e;
+      const status = e?.status;
+      const msg = String(e?.message || e || "").toLowerCase();
+      // 429 (limite de requisições) ou 503/overloaded: espera um pouco e tenta de novo.
+      if (status === 429 || status === 503 || msg.includes("429") || msg.includes("503") || msg.includes("overloaded") || msg.includes("rate limit")) {
+        console.warn(`[NVIDIA Nemotron] Tentativa ${attempt}/${MAX_ATTEMPTS} falhou (${msg.slice(0, 80)}). Aguardando antes de tentar de novo...`);
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+        continue;
+      }
+      // Erro definitivo (ex: chave inválida) — não adianta insistir.
+      throw e;
+    }
+  }
+
+  throw lastErr || new Error("NVIDIA NIM: falha após múltiplas tentativas.");
+}
+
+// ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
+async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
+  if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
+    return await extractPageWithNvidiaNemotron(blob, onProgress);
+  }
+
+  const finalSortedKeys = getSortedApiKeys(preferredApiKey);
+  let lastError = null;
+
+  if (finalSortedKeys.length === 0) {
+    throw new Error("❌ Nenhuma Chave GEMINI ou API_KEY configurada.");
+  }
+
+  const base64 = await new Promise((r) => {
+    const reader = new FileReader();
+    reader.onload = () => r(reader.result.split(',')[1]);
+    reader.readAsDataURL(blob);
+  });
+  
+  const prompt = getPadraoOuroPrompt();
 
   const modelsToTry = getModelFallbackCascade();
 
@@ -7585,7 +7706,7 @@ export default function ScannerJuridico() {
                 outline: 'none',
               }}
             >
-              {GEMINI_MODEL_OPTIONS.map((m) => (
+              {MODEL_OPTIONS.map((m) => (
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
