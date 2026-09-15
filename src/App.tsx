@@ -967,6 +967,18 @@ function setSelectedGeminiModel(model: string) {
   try { localStorage.setItem('lexscan_selected_model', model); } catch (e) {}
 }
 
+// Monta a lista de modelos a tentar: o escolhido pelo advogado primeiro, seguido pelos outros
+// 2 como reforço automático. As funções de OCR/refinamento JÁ SABEM alternar de modelo sozinhas
+// quando um deles retorna sobrecarga/indisponibilidade (503/"high demand"/"unavailable") — esse
+// mecanismo só não era usado porque antes só passávamos 1 modelo na lista. Isso é o que evita
+// que uma instabilidade temporária do Google EM UM MODELO específico pare o app inteiro, já que
+// os outros 2 modelos continuam disponíveis.
+function getModelFallbackCascade(): string[] {
+  const selected = getSelectedGeminiModel();
+  const others = GEMINI_MODEL_OPTIONS.map(m => m.value).filter(v => v !== selected);
+  return [selected, ...others];
+}
+
 // ── Banco de API Keys & Auto-Failover ────────────────────────
 function getAvailableGeminiKeys() {
   const rawKeys = [];
@@ -1326,7 +1338,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
    - Em seguida, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════
    - E então forneça a **TRANSCRIÇÃO LITERAL E INTEGRAL DO TEXTO DO DOCUMENTO**:`;
 
-  const modelsToTry = [getSelectedGeminiModel()];
+  const modelsToTry = getModelFallbackCascade();
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -2187,7 +2199,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  const modelsToTry = [getSelectedGeminiModel()];
+  const modelsToTry = getModelFallbackCascade();
 
   for (let i = 0; i < finalSortedKeys.length; i++) {
     const apiKey = finalSortedKeys[i];
@@ -2537,7 +2549,7 @@ async function refineChunkWithGemini(
   sortedKeys: string[],
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
-  const modelsToTry = [getSelectedGeminiModel()];
+  const modelsToTry = getModelFallbackCascade();
 
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
 Sua missão única é revisar o trecho de texto fornecido pelo usuário e entregar uma versão impecável, livre de erros ortográficos, concordâncias truncadas ou caracteres espúrios gerados pelo escaneamento.
@@ -2662,7 +2674,7 @@ Retorne APENAS um objeto JSON no formato abaixo, sem qualquer formatação markd
 Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio {}.`;
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
-    const modelsToTry = [getSelectedGeminiModel()];
+    const modelsToTry = getModelFallbackCascade();
     let success = false;
 
     for (let i = 0; i < finalSortedKeys.length; i++) {
