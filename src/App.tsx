@@ -972,15 +972,6 @@ function getSelectedGeminiModel(): string {
   return DEFAULT_GEMINI_MODEL;
 }
 
-function getNvidiaNimApiKey(): string {
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_NVIDIA_NIM_KEY) {
-      return import.meta.env.VITE_NVIDIA_NIM_KEY;
-    }
-  } catch (e) {}
-  return "";
-}
-
 function setSelectedGeminiModel(model: string) {
   try { localStorage.setItem('lexscan_selected_model', model); } catch (e) {}
 }
@@ -1356,11 +1347,6 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
 // (chat completions), diferente do SDK do Google — por isso é uma implementação própria, sem
 // reutilizar a rotação de múltiplas chaves do Gemini (usa 1 única chave, de uma conta separada).
 async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number, msg: string) => void): Promise<{ text: string; usedKey: string }> {
-  const apiKey = getNvidiaNimApiKey();
-  if (!apiKey) {
-    throw new Error("❌ Chave da NVIDIA NIM não configurada (VITE_NVIDIA_NIM_KEY).");
-  }
-
   const base64 = await new Promise<string>((r) => {
     const reader = new FileReader();
     reader.onload = () => r((reader.result as string).split(',')[1]);
@@ -1376,39 +1362,28 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
     try {
       if (onProgress) onProgress(30, `NVIDIA Nemotron: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
-      const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      // Chama nossa própria ponte de servidor (/api/nvidia-transcribe), não a NVIDIA direto —
+      // a API da NVIDIA bloqueia chamadas vindas do navegador (CORS), diferente da do Gemini.
+      const res = await fetch("/api/nvidia-transcribe", {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-          messages: [
-            { role: "system", content: prompt },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
-              ],
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 8192,
-          stream: false,
+          base64,
+          mimeType,
+          systemPrompt: prompt,
+          userText: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema.",
         }),
       });
 
+      const data = await res.json().catch(() => null);
+
       if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        const err: any = new Error(`NVIDIA NIM HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        const err: any = new Error(data?.error || `NVIDIA NIM HTTP ${res.status}`);
         err.status = res.status;
         throw err;
       }
 
-      const data = await res.json();
-      const text = (data?.choices?.[0]?.message?.content || "").trim();
+      const text = (data?.text || "").trim();
 
       if (!text) {
         throw new Error("NVIDIA NIM retornou resposta vazia.");
