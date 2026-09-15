@@ -2534,16 +2534,42 @@ function buildAuditFormattedReport(
   return formattedReport;
 }
 
+// Localiza o número de página do marcador estrutural [PÁGINA N - ...] mais próximo que vem
+// ANTES de um índice de caractere no texto — usado pra apontar ao advogado exatamente em
+// que página do documento uma divergência foi encontrada, pra ele conferir no original.
+function findPageNumberAtIndex(text: string, index: number): number | null {
+  const headerRegex = /\[P[ÁA]GINA\s+(\d+)\s*-/gi;
+  let lastPageNum: number | null = null;
+  let hm;
+  headerRegex.lastIndex = 0;
+  while ((hm = headerRegex.exec(text)) !== null) {
+    if (hm.index > index) break;
+    lastPageNum = parseInt(hm[1], 10);
+  }
+  return lastPageNum;
+}
+
+// Formata uma localização (documento + página, se encontrada) pra exibir ao advogado.
+function formatLocation(doc: string, page: number | null): string {
+  return page !== null ? `${doc} (pág. ${page})` : doc;
+}
+
+interface IdentifierLocation {
+  doc: string;
+  page: number | null;
+}
+
 // Extrai números (RG/CPF/Identidade) associados a um papel genérico (ex: requerente, genitora), agrupando
-// por número normalizado -> lista de documentos onde aparece. Não depende de nomes ou casos específicos.
-function collectRoleIdentifiers(fullDocs: any[], roleRegex: RegExp): Map<string, string[]> {
-  const map = new Map<string, string[]>();
+// por número normalizado -> lista de locais (documento + página) onde aparece. Não depende de nomes ou
+// casos específicos.
+function collectRoleIdentifiers(fullDocs: any[], roleRegex: RegExp): Map<string, IdentifierLocation[]> {
+  const map = new Map<string, IdentifierLocation[]>();
   fullDocs.forEach(d => {
     const text = d.text || '';
     const name = d.name || 'Documento';
-    const matches = text.match(roleRegex) || [];
-    matches.forEach((match: string) => {
-      const raw = match.match(/[\d.\-\/]{7,18}/)?.[0]?.replace(/[^\d]/g, '');
+    const matches = Array.from(text.matchAll(roleRegex));
+    matches.forEach((match) => {
+      const raw = match[0].match(/[\d.\-\/]{7,18}/)?.[0]?.replace(/[^\d]/g, '');
       if (!raw || raw.length < 7 || raw.length > 11) return;
       let formatted = raw;
       if (raw.length === 11) {
@@ -2551,8 +2577,10 @@ function collectRoleIdentifiers(fullDocs: any[], roleRegex: RegExp): Map<string,
       } else if (raw.length === 9) {
         formatted = `${raw.slice(0, 2)}.${raw.slice(2, 5)}.${raw.slice(5, 8)}-${raw.slice(8)}`;
       }
+      const page = findPageNumberAtIndex(text, match.index ?? 0);
       if (!map.has(formatted)) map.set(formatted, []);
-      if (!map.get(formatted)!.includes(name)) map.get(formatted)!.push(name);
+      const locations = map.get(formatted)!;
+      if (!locations.some(l => l.doc === name && l.page === page)) locations.push({ doc: name, page });
     });
   });
   return map;
@@ -2587,14 +2615,14 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   const representanteNumbers = collectRoleIdentifiers(fullDocs, representanteRoleRegex);
 
   if (titularNumbers.size > 1) {
-    const details = Array.from(titularNumbers.entries()).map(([num, docs]) => `  - ${num} nos arquivos: ${docs.join(', ')}`).join('\n');
+    const details = Array.from(titularNumbers.entries()).map(([num, locs]) => `  - ${num} em: ${locs.map(l => formatLocation(l.doc, l.page)).join(', ')}`).join('\n');
     substantiveAlerts.push(
       `• DIVERGÊNCIA DE IDENTIDADE DO REQUERENTE/AUTOR:\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o requerente em documentos distintos. Escolha abaixo qual está correto.`
     );
     identityDivergences.push({ label: "Identidade do Requerente/Autor", candidates: Array.from(titularNumbers.keys()) });
   }
   if (representanteNumbers.size > 1) {
-    const details = Array.from(representanteNumbers.entries()).map(([num, docs]) => `  - ${num} nos arquivos: ${docs.join(', ')}`).join('\n');
+    const details = Array.from(representanteNumbers.entries()).map(([num, locs]) => `  - ${num} em: ${locs.map(l => formatLocation(l.doc, l.page)).join(', ')}`).join('\n');
     substantiveAlerts.push(
       `• DIVERGÊNCIA DE IDENTIDADE DO REPRESENTANTE/GENITOR(A):\n${details}\n  ➔ Números diferentes de RG/CPF foram encontrados para o representante legal em documentos distintos. Escolha abaixo qual está correto.`
     );
@@ -2602,26 +2630,33 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   }
 
   // Divergência de CRM médico por médico (nome extraído do próprio documento, não fixo) — mesma lógica: só sinaliza.
-  const crmByDoctor = new Map<string, Set<string>>();
+  // Guarda também documento + página de cada ocorrência, pra o advogado conferir no original.
+  const crmByDoctor = new Map<string, Map<string, IdentifierLocation[]>>();
   const crmPattern = /Dr[a]?\.?\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4})[\s\S]{0,120}?CRM[\s\/:\-]*([A-Z]{0,2}\s?[\d.\-]{4,10})|CRM[\s\/:\-]*([A-Z]{0,2}\s?[\d.\-]{4,10})[\s\S]{0,120}?Dr[a]?\.?\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4})/g;
   fullDocs.forEach(d => {
     const text = d.text || '';
+    const name = d.name || 'Documento';
     let cm;
     crmPattern.lastIndex = 0;
     while ((cm = crmPattern.exec(text)) !== null) {
       const doctorName = (cm[1] || cm[4] || '').trim().toUpperCase();
       const crmNum = (cm[2] || cm[3] || '').replace(/\s+/g, '');
       if (!doctorName || !crmNum) continue;
-      if (!crmByDoctor.has(doctorName)) crmByDoctor.set(doctorName, new Set());
-      crmByDoctor.get(doctorName)!.add(crmNum);
+      if (!crmByDoctor.has(doctorName)) crmByDoctor.set(doctorName, new Map());
+      const crmMap = crmByDoctor.get(doctorName)!;
+      if (!crmMap.has(crmNum)) crmMap.set(crmNum, []);
+      const page = findPageNumberAtIndex(text, cm.index ?? 0);
+      const locations = crmMap.get(crmNum)!;
+      if (!locations.some(l => l.doc === name && l.page === page)) locations.push({ doc: name, page });
     }
   });
-  crmByDoctor.forEach((crmSet, doctorName) => {
-    if (crmSet.size > 1) {
+  crmByDoctor.forEach((crmMap, doctorName) => {
+    if (crmMap.size > 1) {
+      const details = Array.from(crmMap.entries()).map(([num, locs]) => `  - ${num} em: ${locs.map(l => formatLocation(l.doc, l.page)).join(', ')}`).join('\n');
       substantiveAlerts.push(
-        `• DIVERGÊNCIA DE CRM MÉDICO — ${doctorName}:\n  - Números de CRM encontrados: ${Array.from(crmSet).join(', ')}\n  ➔ Provável ruído de OCR no carimbo/rodapé. Escolha abaixo o número correto (ex: confirme no site do CRM/UF).`
+        `• DIVERGÊNCIA DE CRM MÉDICO — ${doctorName}:\n${details}\n  ➔ Provável ruído de OCR no carimbo/rodapé. Escolha abaixo o número correto (ex: confirme no site do CRM/UF).`
       );
-      identityDivergences.push({ label: `CRM Médico — ${doctorName}`, candidates: Array.from(crmSet) });
+      identityDivergences.push({ label: `CRM Médico — ${doctorName}`, candidates: Array.from(crmMap.keys()) });
     }
   });
 
