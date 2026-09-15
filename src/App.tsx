@@ -1223,7 +1223,7 @@ ${partialTextSoFar.slice(-2500)}
       systemInstruction: continuationInstruction,
       temperature: 0.1,
       maxOutputTokens: 65536,
-      thinkingConfig: { thinkingLevel: "medium" }
+      thinkingConfig: { thinkingLevel: "low" }
     }
   });
   return { text: res?.text?.trim() || "", finishReason: res?.candidates?.[0]?.finishReason };
@@ -1371,7 +1371,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "medium" },
+                thinkingConfig: { thinkingLevel: "low" },
               }
             });
           } catch (initErr: any) {
@@ -1451,7 +1451,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "medium" },
+                thinkingConfig: { thinkingLevel: "low" },
               }
             });
 
@@ -1506,7 +1506,7 @@ REGRAS ABSOLUTAS DE TRANSCRIÇÃO (PADRÃO OURO)
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "medium" },
+                thinkingConfig: { thinkingLevel: "low" },
               }
             });
             const retryText = retryRes?.text?.trim() || "";
@@ -1620,7 +1620,7 @@ REGRAS CRÍTICAS:
               systemInstruction: prompt,
               temperature: 0.1,
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingLevel: "medium" }
+              thinkingConfig: { thinkingLevel: "low" }
             }
           });
         } catch (initErr: any) {
@@ -1635,7 +1635,7 @@ REGRAS CRÍTICAS:
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "medium" }
+                thinkingConfig: { thinkingLevel: "low" }
               }
             });
           } else {
@@ -1694,7 +1694,7 @@ REGRAS CRÍTICAS:
             systemInstruction: prompt,
             temperature: 0.1,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingLevel: "medium" }
+            thinkingConfig: { thinkingLevel: "low" }
           }
         });
 
@@ -2219,7 +2219,7 @@ REGRAS CRÍTICAS DE REFINAMENTO:
             systemInstruction,
             temperature: 0.1,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingLevel: "medium" },
+            thinkingConfig: { thinkingLevel: "low" },
           }
         });
 
@@ -2595,7 +2595,7 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
             systemInstruction,
             temperature: 0.1,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingLevel: "medium" },
+            thinkingConfig: { thinkingLevel: "low" },
           }
         });
 
