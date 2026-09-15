@@ -1364,16 +1364,27 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
       if (onProgress) onProgress(30, `NVIDIA Nemotron: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
       // Chama nossa própria ponte de servidor (/api/nvidia-transcribe), não a NVIDIA direto —
       // a API da NVIDIA bloqueia chamadas vindas do navegador (CORS), diferente da do Gemini.
-      const res = await fetch("/api/nvidia-transcribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          base64,
-          mimeType,
-          systemPrompt: prompt,
-          userText: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema.",
-        }),
-      });
+      // Modelo "reasoning" pode demorar bastante — usa um limite de tempo (95s, um pouco
+      // maior que os 90s configurados na função do servidor) pra NUNCA travar a tela pra
+      // sempre esperando uma resposta que pode não vir, mas sem desistir antes da hora.
+      const timeoutController = new AbortController();
+      const timeoutId = setTimeout(() => timeoutController.abort(), 95000);
+      let res: Response;
+      try {
+        res = await fetch("/api/nvidia-transcribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            base64,
+            mimeType,
+            systemPrompt: prompt,
+            userText: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema.",
+          }),
+          signal: timeoutController.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       const data = await res.json().catch(() => null);
 
@@ -1399,9 +1410,11 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
       lastErr = e;
       const status = e?.status;
       const msg = String(e?.message || e || "").toLowerCase();
-      // 429 (limite de requisições) ou 503/overloaded: espera um pouco e tenta de novo.
-      if (status === 429 || status === 503 || msg.includes("429") || msg.includes("503") || msg.includes("overloaded") || msg.includes("rate limit")) {
-        console.warn(`[NVIDIA Nemotron] Tentativa ${attempt}/${MAX_ATTEMPTS} falhou (${msg.slice(0, 80)}). Aguardando antes de tentar de novo...`);
+      const isTimeout = e?.name === "AbortError" || msg.includes("abort");
+      // 429 (limite de requisições), 503/overloaded, ou estourou o tempo (60s): espera um
+      // pouco e tenta de novo — nunca fica travado pra sempre esperando resposta.
+      if (isTimeout || status === 429 || status === 503 || status === 504 || msg.includes("429") || msg.includes("503") || msg.includes("504") || msg.includes("overloaded") || msg.includes("rate limit") || msg.includes("timeout")) {
+        console.warn(`[NVIDIA Nemotron] Tentativa ${attempt}/${MAX_ATTEMPTS} falhou (${isTimeout ? "tempo esgotado (60s)" : msg.slice(0, 80)}). Aguardando antes de tentar de novo...`);
         await new Promise(r => setTimeout(r, 1500 * attempt));
         continue;
       }
