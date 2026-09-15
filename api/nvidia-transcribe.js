@@ -18,10 +18,17 @@
 //    (maxDuration). Como a NVIDIA pode legitimamente demorar mais que 25s só pra começar a
 //    responder, Edge não serve aqui sem reestruturar pra streaming.
 // SOLUÇÃO FINAL: runtime Node clássica (sem declarar "edge") + handler (req, res) de
-// verdade + maxDuration alto (sem o limite de 25s da Edge) + reasoning_budget baixo (pra
-// nem chegar perto do limite).
+// verdade + maxDuration alto (sem o limite de 25s da Edge) + reasoning_budget baixo.
+//
+// TEMPO REAL MEDIDO NO PLAYGROUND OFICIAL DA NVIDIA (não é chute): pedir uma transcrição
+// completa de uma imagem simples já levou 20,88s, gerando texto a ~41-54 tokens/segundo —
+// uma velocidade FIXA do modelo, não fila nem sobrecarga. Uma página densa de verdade
+// (INSS/CNIS com tabela) facilmente passa de 1.500-2.500 tokens de resposta, o que nessa
+// velocidade dá uns 40-60s SÓ pra gerar o texto, de forma normal e esperada. Por isso o
+// limite de 60s anterior cortava bem na hora que uma página real terminaria. Aumentado com
+// folga generosa em cima desse número medido.
 export const config = {
-  maxDuration: 60,
+  maxDuration: 180,
 };
 
 export default async function handler(req, res) {
@@ -42,10 +49,11 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Limite de tempo pra chamada da NVIDIA em si, com folga sob o maxDuration (60s) da função —
-  // se a NVIDIA travar, falha limpo aqui em vez de deixar a própria plataforma matar a função.
+  // Limite de tempo pra chamada da NVIDIA em si, com folga sob o maxDuration (180s) da função —
+  // se a NVIDIA travar de verdade (não só demorar o esperado), falha limpo aqui em vez de
+  // deixar a própria plataforma matar a função.
   const upstreamController = new AbortController();
-  const upstreamTimeout = setTimeout(() => upstreamController.abort(), 50000);
+  const upstreamTimeout = setTimeout(() => upstreamController.abort(), 170000);
 
   try {
     const nvidiaRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
@@ -89,7 +97,7 @@ export default async function handler(req, res) {
     res.status(200).json({ text });
   } catch (e) {
     const isTimeout = e?.name === 'AbortError';
-    res.status(isTimeout ? 504 : 502).json({ error: isTimeout ? 'A NVIDIA NIM demorou demais pra responder (50s).' : String(e?.message || e) });
+    res.status(isTimeout ? 504 : 502).json({ error: isTimeout ? 'A NVIDIA NIM demorou demais pra responder (170s) — isso é bem incomum, mesmo pra página densa.' : String(e?.message || e) });
   } finally {
     clearTimeout(upstreamTimeout);
   }
