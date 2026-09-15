@@ -3,13 +3,16 @@
 // (bloqueio de CORS) — diferente da API do Gemini, que permite. Isso roda no servidor da
 // Vercel, então a restrição de CORS do navegador não se aplica aqui.
 //
-// IMPORTANTE: usa o padrão moderno de Request/Response (Web Standard) da Vercel, não o
-// estilo antigo (req, res). O estilo antigo, nesse projeto, fez uma requisição GET (que
-// devia ser rejeitada em milissegundos com 405) travar por 90s até estourar o tempo limite
-// — sinal de que a função não estava encerrando a resposta corretamente. Retornar um objeto
-// Response de verdade não deixa essa ambiguidade existir: a função termina no instante em
-// que o Response é devolvido.
+// IMPORTANTE: usa Request/Response (padrão Web Standard) — isso só funciona de verdade se a
+// runtime for "edge". Testei ao vivo (curl com timing) e confirmei: SEM essa declaração, a
+// Vercel trata a função como runtime Node clássica (que espera o formato antigo (req, res),
+// chamando res.end()/res.send()), e como a função nunca chama isso (só retorna um Response),
+// a resposta HTTP nunca é de fato enviada — a requisição fica pendurada até estourar o
+// maxDuration (confirmado: GET, que deveria retornar 405 em milissegundos, travou os 60s
+// inteiros e caiu em FUNCTION_INVOCATION_TIMEOUT). Com runtime "edge" declarada, o Response
+// é entendido nativamente e a função termina no instante em que ele é devolvido.
 export const config = {
+  runtime: 'edge',
   maxDuration: 60,
 };
 
