@@ -1015,6 +1015,9 @@ function getAvailableGeminiKeys() {
   try {
     if (typeof process !== 'undefined' && process.env && process.env.ALL_GEMINI_KEYS) addKey(process.env.ALL_GEMINI_KEYS);
   } catch(e) {}
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY_PAGA) addKey(process.env.API_KEY_PAGA);
+  } catch(e) {}
 
   // 2. Busca nativa VITE (import.meta.env)
   try {
@@ -1150,6 +1153,17 @@ async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
   }
 }
 
+// Chave paga prioritária (projeto com faturamento ativo no Google Cloud): sempre tentada
+// primeiro, com as demais chaves gratuitas como reforço apenas se ela falhar.
+function getPriorityApiKey(): string | null {
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY_PAGA) {
+      return process.env.API_KEY_PAGA;
+    }
+  } catch (e) {}
+  return null;
+}
+
 // Obtém as chaves ordenadas com suporte a fixação de chave ativa (preferredApiKey) e load-balancing
 function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
   const allKeys = getAvailableGeminiKeys();
@@ -1162,16 +1176,21 @@ function getSortedApiKeys(preferredApiKey: string | null = null): string[] {
   });
 
   // Filtra chaves que NÃO estão com erro de cota ou bloqueio
-  const activeKeys = keysMetadata.filter(m => 
+  const activeKeys = keysMetadata.filter(m =>
     !m.errorStatus || m.errorStatus === 'ok' || m.errorStatus === 'active' || m.errorStatus === 'server_error'
   );
-  
+
   const candidateKeysInfo = activeKeys.length > 0 ? activeKeys : keysMetadata;
 
-  // Se preferredApiKey for fornecida e estiver válida, ela continua fixa no topo!
-  if (preferredApiKey && candidateKeysInfo.some(k => k.key === preferredApiKey)) {
-    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === preferredApiKey)!;
-    const others = candidateKeysInfo.filter(k => k.key !== preferredApiKey);
+  // Se nenhuma chave foi fixada explicitamente (ex: continuidade de um documento em
+  // andamento), a chave paga é a preferida por padrão — só cai pras gratuitas se ela
+  // estiver ausente ou com erro de cota/bloqueio.
+  const effectivePreferred = preferredApiKey || getPriorityApiKey();
+
+  // Se effectivePreferred for fornecida e estiver válida, ela continua fixa no topo!
+  if (effectivePreferred && candidateKeysInfo.some(k => k.key === effectivePreferred)) {
+    const preferredKeyInfo = candidateKeysInfo.find(k => k.key === effectivePreferred)!;
+    const others = candidateKeysInfo.filter(k => k.key !== effectivePreferred);
     others.sort((a, b) => (a.usage || 0) - (b.usage || 0));
     return [preferredKeyInfo.key, ...others.map(o => o.key)];
   } else {
