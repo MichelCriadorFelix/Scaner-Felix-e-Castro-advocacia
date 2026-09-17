@@ -1605,13 +1605,38 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
   throw lastErr || new Error("Mistral OCR: falha após múltiplas tentativas.");
 }
 
+// Decide se o texto que a Mistral OCR devolveu pra ESTA página é confiável o bastante, ou
+// se é melhor cair pro Gemini gratuito como reforço automático (ex: formulário manuscrito
+// denso que confundiu a OCR dedicada). Dois sinais concretos, achados em teste real:
+// 1. Nota de confiança geral (a mesma heurística já usada em outras partes do app) baixa.
+// 2. Caractere chinês/japonês/coreano no meio do texto — não tem NENHUMA razão de aparecer
+//    num documento jurídico brasileiro; observado como alucinação real da Mistral numa
+//    página de letra manuscrita difícil.
+function isMistralResultTrustworthy(text: string): boolean {
+  if (!text || text.trim().length < 20) return false;
+  if (/[一-鿿぀-ヿ가-힯]/.test(text)) return false;
+  return getRealConfidence(text) >= 70;
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
   }
   if (getSelectedGeminiModel() === MISTRAL_OCR_MODEL) {
-    return await extractPageWithMistralOCR(blob, onProgress);
+    try {
+      const mistralResult = await extractPageWithMistralOCR(blob, onProgress);
+      if (isMistralResultTrustworthy(mistralResult.text)) {
+        return mistralResult;
+      }
+      console.warn("[Híbrido Mistral+Gemini] Página com qualidade suspeita na Mistral OCR (letra manuscrita/formulário denso, provavelmente) — usando Gemini gratuito como reforço só nesta página.");
+      if (onProgress) onProgress(55, "Página difícil pra Mistral — usando Gemini gratuito como reforço...");
+    } catch (e) {
+      console.warn("[Híbrido Mistral+Gemini] Mistral OCR falhou nesta página — usando Gemini gratuito como reforço:", e);
+      if (onProgress) onProgress(55, "Mistral OCR falhou — usando Gemini gratuito como reforço...");
+    }
+    // Não retornou acima: cai pro fluxo normal do Gemini logo abaixo, só pra ESTA página.
+    // A próxima página volta a tentar a Mistral normalmente (a decisão é por página, não global).
   }
 
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
