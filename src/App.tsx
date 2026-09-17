@@ -1659,15 +1659,21 @@ function markMistralFailure(fingerprint: string): void {
 }
 
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
-async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
+// skipMistral: quem chama pode forçar pular a Mistral direto (ex: já sabe que essa MESMA
+// página falhou nela numa tentativa de releitura anterior, mesmo com a imagem re-renderizada
+// em escala diferente — o que muda os bytes e escaparia da checagem por fingerprint abaixo).
+// outFlags: canal de saída simples pra sinalizar de volta se a Mistral falhou nesta chamada,
+// sem precisar mudar o formato do valor de retorno.
+async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null, skipMistral: boolean = false, outFlags?: { mistralFailed?: boolean }) {
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
   }
-  if (getSelectedGeminiModel() === MISTRAL_OCR_MODEL) {
+  if (getSelectedGeminiModel() === MISTRAL_OCR_MODEL && !skipMistral) {
     const fingerprint = await getBlobFingerprint(blob);
     if (isRecentMistralFailure(fingerprint)) {
       console.warn("[Híbrido Mistral+Gemini] Esta página já falhou na Mistral há pouco — pulando direto pro Gemini (evita repetir dezenas de vezes se algo de fora insistir em reprocessar a mesma página).");
       if (onProgress) onProgress(null, "Página já sabidamente difícil pra Mistral — usando Gemini direto...");
+      if (outFlags) outFlags.mistralFailed = true;
     } else {
       try {
         const mistralResult = await extractPageWithMistralOCR(blob, onProgress);
@@ -1675,10 +1681,12 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           return mistralResult;
         }
         markMistralFailure(fingerprint);
+        if (outFlags) outFlags.mistralFailed = true;
         console.warn("[Híbrido Mistral+Gemini] Página com qualidade suspeita na Mistral OCR (letra manuscrita/formulário denso, provavelmente) — usando Gemini gratuito como reforço só nesta página.");
         if (onProgress) onProgress(null, "Página difícil pra Mistral — usando Gemini gratuito como reforço...");
       } catch (e) {
         markMistralFailure(fingerprint);
+        if (outFlags) outFlags.mistralFailed = true;
         console.warn("[Híbrido Mistral+Gemini] Mistral OCR falhou nesta página — usando Gemini gratuito como reforço:", e);
         if (onProgress) onProgress(null, "Mistral OCR falhou — usando Gemini gratuito como reforço...");
       }
@@ -3299,7 +3307,11 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
 
     let pageSuccess = false;
     let pageText = "";
-    
+    // Uma vez por página (não reseta entre as 3 tentativas de releitura/render abaixo, que
+    // mudam até a escala da imagem) — garante que a Mistral seja tentada no máximo 1x por
+    // página real, não 1x por tentativa de releitura.
+    let mistralFailedThisPage = false;
+
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (window.lexscan_abort) break;
       let finalCanvasToUse: HTMLCanvasElement | null = null;
@@ -3385,7 +3397,9 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
             );
             const enhancedBlob = await enhanceImageForGemini(finalCanvasToUse);
             try {
-              const aiResult = await extractPageWithGemini(enhancedBlob, onProgress, goldStandard, activeDocumentApiKey);
+              const mistralFlags: { mistralFailed?: boolean } = {};
+              const aiResult = await extractPageWithGemini(enhancedBlob, onProgress, goldStandard, activeDocumentApiKey, mistralFailedThisPage, mistralFlags);
+              if (mistralFlags.mistralFailed) mistralFailedThisPage = true;
               const extractedText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
               if (typeof aiResult === 'object' && aiResult?.usedKey) {
                 activeDocumentApiKey = aiResult.usedKey; // Mantém a chave fixa enquanto responder com sucesso!
