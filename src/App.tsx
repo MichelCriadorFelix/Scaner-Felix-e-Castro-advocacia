@@ -1701,6 +1701,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Prom
   ]);
 }
 
+// Backoff exponencial com jitter pra retentativas de 503/sobrecarga — em vez de esperar
+// sempre o mesmo tempo fixo (o que faz várias instâncias baterem no Google no mesmo ritmo),
+// cresce a cada tentativa e varia aleatoriamente, dando mais tempo real pro servidor
+// recuperar quando a sobrecarga persiste.
+function backoffDelay(attempt: number, baseMs: number = 500, maxMs: number = 8000): number {
+  const exp = Math.min(maxMs, baseMs * Math.pow(2, attempt));
+  return Math.round(exp * 0.7 + Math.random() * exp * 0.3);
+}
+
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null, skipMistral: boolean = false, outFlags?: { mistralFailed?: boolean }) {
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
@@ -1797,7 +1806,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             const initMsg = String(initErr?.message || initErr || "").toLowerCase();
             if (initMsg.includes("503") || initMsg.includes("overloaded") || initMsg.includes("high demand") || initMsg.includes("unavailable") || initMsg.includes("not found") || initMsg.includes("404")) {
               console.warn(`[Gemini Flash] Modelo ${currentModel} retornou sobrecarga/indisponível (${initMsg.slice(0, 50)}). Alternando para próximo modelo na mesma chave...`);
-              await new Promise(r => setTimeout(r, 400));
+              await new Promise(r => setTimeout(r, backoffDelay(m)));
               continue;
             }
             throw initErr;
@@ -1859,7 +1868,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           
           if (streamFailMsg.includes("503") || streamFailMsg.includes("overloaded") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404") || streamFailMsg.includes("travou")) {
             console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503/travamento. Alternando para próximo modelo na mesma chave...`);
-            await new Promise(r => setTimeout(r, 400));
+            await new Promise(r => setTimeout(r, backoffDelay(m)));
             continue;
           }
 
@@ -1914,7 +1923,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             const dMsg = String(directErr?.message || directErr || "").toLowerCase();
             if (dMsg.includes("503") || dMsg.includes("overloaded") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404") || dMsg.includes("travou")) {
               console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou 503/travou. Alternando modelo na mesma chave...`);
-              await new Promise(r => setTimeout(r, 400));
+              await new Promise(r => setTimeout(r, backoffDelay(m)));
               continue;
             }
             throw directErr;
@@ -1926,8 +1935,9 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
       if (!modelSuccess && lastModelErr) {
         const errCheck = String(lastModelErr?.message || lastModelErr || "").toLowerCase();
         if (errCheck.includes("503") || errCheck.includes("overloaded") || errCheck.includes("unavailable") || errCheck.includes("high demand") || errCheck.includes("truncada") || errCheck.includes("degenerada")) {
-          console.log(`[Gemini Flash] Breve pausa para o Google recuperar sobrecarga (800ms) na chave ..${keyHash}...`);
-          await new Promise(r => setTimeout(r, 800));
+          const resilientDelay = backoffDelay(1);
+          console.log(`[Gemini Flash] Breve pausa para o Google recuperar sobrecarga (~${resilientDelay}ms) na chave ..${keyHash}...`);
+          await new Promise(r => setTimeout(r, resilientDelay));
           try {
             const retryRes = await ai.models.generateContent({
               model: getSafeGeminiModel(),
@@ -2075,7 +2085,7 @@ REGRAS CRÍTICAS:
           const initMsg = String(initErr?.message || initErr || "").toLowerCase();
           if (initMsg.includes("503") || initMsg.includes("overloaded") || initMsg.includes("high demand") || initMsg.includes("unavailable")) {
             console.warn(`[Gemini Batch] Modelo ${activeModel} com sobrecarga, tentando novamente...`);
-            await new Promise(r => setTimeout(r, 800));
+            await new Promise(r => setTimeout(r, backoffDelay(1)));
             responseStream = await ai.models.generateContentStream({
               model: activeModel,
               contents: parts,
