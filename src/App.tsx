@@ -1557,7 +1557,9 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-    if (onProgress) onProgress(40, `Mistral OCR: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
+    // percentual null = não mexe no % real de progresso multi-página (calculado por quem
+    // chama), só atualiza a mensagem de status.
+    if (onProgress) onProgress(null, `Mistral OCR: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
@@ -1588,7 +1590,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
         continue;
       }
 
-      if (onProgress) onProgress(95, "Mistral OCR: transcrição concluída.");
+      if (onProgress) onProgress(null, "Mistral OCR: transcrição concluída.");
       return { text, usedKey: "mistral-ocr" };
     } catch (e: any) {
       clearTimeout(timeout);
@@ -1620,22 +1622,66 @@ function isMistralResultTrustworthy(text: string): boolean {
   return getRealConfidence(text) >= 70;
 }
 
+// Memória curta de páginas que já falharam na Mistral: outras partes do app têm loops de
+// retentativa próprios (ex: reprocessar a página inteira do PDF do zero) que podem re-chamar
+// extractPageWithGemini várias vezes seguidas pra MESMA página — sem isso, cada uma dessas
+// re-chamadas reinicia a Mistral do zero, gerando dezenas de chamadas desnecessárias numa
+// página que já sabemos que ela não dá conta. Uma vez marcada como falha, pula direto pro
+// Gemini por alguns minutos, não importa quantas vezes insistirem de fora.
+const recentMistralFailures = new Map<string, number>();
+const MISTRAL_FAILURE_MEMORY_MS = 5 * 60 * 1000;
+
+async function getBlobFingerprint(blob: Blob): Promise<string> {
+  try {
+    const sampleSize = Math.min(4096, blob.size);
+    const buf = await blob.slice(0, sampleSize).arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let hash = 0;
+    for (let i = 0; i < bytes.length; i++) hash = (hash * 31 + bytes[i]) | 0;
+    return `${blob.size}-${hash}`;
+  } catch (e) {
+    return `${blob.size}-0`;
+  }
+}
+
+function isRecentMistralFailure(fingerprint: string): boolean {
+  const ts = recentMistralFailures.get(fingerprint);
+  if (!ts) return false;
+  if (Date.now() - ts > MISTRAL_FAILURE_MEMORY_MS) {
+    recentMistralFailures.delete(fingerprint);
+    return false;
+  }
+  return true;
+}
+
+function markMistralFailure(fingerprint: string): void {
+  recentMistralFailures.set(fingerprint, Date.now());
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
   }
   if (getSelectedGeminiModel() === MISTRAL_OCR_MODEL) {
-    try {
-      const mistralResult = await extractPageWithMistralOCR(blob, onProgress);
-      if (isMistralResultTrustworthy(mistralResult.text)) {
-        return mistralResult;
+    const fingerprint = await getBlobFingerprint(blob);
+    if (isRecentMistralFailure(fingerprint)) {
+      console.warn("[Híbrido Mistral+Gemini] Esta página já falhou na Mistral há pouco — pulando direto pro Gemini (evita repetir dezenas de vezes se algo de fora insistir em reprocessar a mesma página).");
+      if (onProgress) onProgress(null, "Página já sabidamente difícil pra Mistral — usando Gemini direto...");
+    } else {
+      try {
+        const mistralResult = await extractPageWithMistralOCR(blob, onProgress);
+        if (isMistralResultTrustworthy(mistralResult.text)) {
+          return mistralResult;
+        }
+        markMistralFailure(fingerprint);
+        console.warn("[Híbrido Mistral+Gemini] Página com qualidade suspeita na Mistral OCR (letra manuscrita/formulário denso, provavelmente) — usando Gemini gratuito como reforço só nesta página.");
+        if (onProgress) onProgress(null, "Página difícil pra Mistral — usando Gemini gratuito como reforço...");
+      } catch (e) {
+        markMistralFailure(fingerprint);
+        console.warn("[Híbrido Mistral+Gemini] Mistral OCR falhou nesta página — usando Gemini gratuito como reforço:", e);
+        if (onProgress) onProgress(null, "Mistral OCR falhou — usando Gemini gratuito como reforço...");
       }
-      console.warn("[Híbrido Mistral+Gemini] Página com qualidade suspeita na Mistral OCR (letra manuscrita/formulário denso, provavelmente) — usando Gemini gratuito como reforço só nesta página.");
-      if (onProgress) onProgress(55, "Página difícil pra Mistral — usando Gemini gratuito como reforço...");
-    } catch (e) {
-      console.warn("[Híbrido Mistral+Gemini] Mistral OCR falhou nesta página — usando Gemini gratuito como reforço:", e);
-      if (onProgress) onProgress(55, "Mistral OCR falhou — usando Gemini gratuito como reforço...");
     }
     // Não retornou acima: cai pro fluxo normal do Gemini logo abaixo, só pra ESTA página.
     // A próxima página volta a tentar a Mistral normalmente (a decisão é por página, não global).
