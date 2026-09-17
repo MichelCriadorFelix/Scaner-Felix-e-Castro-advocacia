@@ -1576,6 +1576,16 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
       }
 
       const text = data?.text || '';
+
+      // Mesma proteção que o caminho do Gemini já tem: descarta e tenta de novo se a
+      // resposta travou num loop de repetição (ex: logotipo/marca d'água mal lida virando
+      // um bloco de lixo repetido centenas de vezes).
+      if (text && containsDegenerateRepetition(text)) {
+        console.warn(`[Mistral OCR] Tentativa ${attempt}/${MAX_ATTEMPTS}: resposta em loop de repetição. Descartando e tentando de novo...`);
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+
       if (onProgress) onProgress(95, "Mistral OCR: transcrição concluída.");
       return { text, usedKey: "mistral-ocr" };
     } catch (e: any) {
