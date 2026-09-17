@@ -1546,7 +1546,7 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
 // Mistral OCR (plano gratuito): OCR dedicada via proxy serverless (api/mistral-ocr.js) — só
 // extrai o texto bruto da página, sem aplicar as regras do Padrão Ouro (isso fica pro botão
 // manual "Refinar com IA", se o advogado quiser, já que aqui não tem chamada de raciocínio).
-async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, msg: string) => void): Promise<{ text: string; usedKey: string }> {
+async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, msg: string) => void): Promise<{ text: string; usedKey: string; confidence?: number | null }> {
   const base64: string = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve((reader.result as string).split(',')[1]);
@@ -1598,7 +1598,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
       }
 
       if (onProgress) onProgress(null, "Mistral OCR: transcrição concluída.");
-      return { text, usedKey: "mistral-ocr" };
+      return { text, usedKey: "mistral-ocr", confidence: typeof data?.confidence === 'number' ? data.confidence : null };
     } catch (e: any) {
       clearTimeout(timeout);
       lastErr = e;
@@ -1623,9 +1623,28 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
 // 2. Caractere chinês/japonês/coreano no meio do texto — não tem NENHUMA razão de aparecer
 //    num documento jurídico brasileiro; observado como alucinação real da Mistral numa
 //    página de letra manuscrita difícil.
-function isMistralResultTrustworthy(text: string): boolean {
+// 3. Confiança REAL devolvida pela própria Mistral (confidence_scores_granularity: 'page'),
+//    quando disponível — mais precisa que a heurística de texto, usada em vez dela.
+//
+// containsDegenerateRepetition (usada pelo Gemini) é propositalmente exigente (40+ repetições
+// / 2000+ caracteres) pra não confundir tabela legítima com loop de verdade — mas o tipo de
+// ruído que a Mistral gera ao confundir um logotipo/marca d'água no cabeçalho é bem menor
+// (ex: "HUMANITARIAN" repetido ~28x, ~300-500 caracteres), passando despercebido por aquele
+// limite. Checagem mais sensível, só usada aqui.
+function containsShortRepetitionNoise(text: string): boolean {
+  if (!text || text.length < 100) return false;
+  return /(.{2,40})\1{9,}/.test(text.slice(0, 50000));
+}
+
+function isMistralResultTrustworthy(text: string, realConfidence?: number | null): boolean {
   if (!text || text.trim().length < 20) return false;
   if (/[一-鿿぀-ヿ가-힯]/.test(text)) return false;
+  if (containsShortRepetitionNoise(text)) return false;
+  if (typeof realConfidence === 'number' && !Number.isNaN(realConfidence)) {
+    // Normaliza: a API pode devolver 0-1 (fração) ou 0-100, dependendo da versão.
+    const normalized = realConfidence <= 1 ? realConfidence * 100 : realConfidence;
+    return normalized >= 70;
+  }
   return getRealConfidence(text) >= 70;
 }
 
@@ -1684,7 +1703,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     } else {
       try {
         const mistralResult = await extractPageWithMistralOCR(blob, onProgress);
-        if (isMistralResultTrustworthy(mistralResult.text)) {
+        if (isMistralResultTrustworthy(mistralResult.text, mistralResult.confidence)) {
           return mistralResult;
         }
         markMistralFailure(fingerprint);

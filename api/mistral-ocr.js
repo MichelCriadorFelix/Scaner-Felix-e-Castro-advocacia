@@ -49,6 +49,9 @@ export default async function handler(req, res) {
           type: 'image_url',
           image_url: `data:${mimeType || 'image/jpeg'};base64,${base64}`,
         },
+        // Pede a confiança real do próprio modelo por página — melhor sinal pra decidir
+        // automaticamente se vale a pena cair pro Gemini do que só analisar o texto depois.
+        confidence_scores_granularity: 'page',
       }),
     });
 
@@ -64,7 +67,17 @@ export default async function handler(req, res) {
       .join('\n\n')
       .trim();
 
-    res.status(200).json({ text });
+    // Formato exato do campo de confiança ainda não 100% confirmado em produção — tenta os
+    // caminhos plausíveis e cai pra null (o cliente usa a heurística de texto como reforço)
+    // se nenhum bater, em vez de quebrar.
+    const firstPage = (data?.pages || [])[0];
+    const confidence =
+      firstPage?.confidence_scores?.average_content_confidence_score ??
+      firstPage?.confidence_scores?.average_confidence_score ??
+      firstPage?.confidence?.average_content_confidence_score ??
+      (typeof firstPage?.confidence === 'number' ? firstPage.confidence : null);
+
+    res.status(200).json({ text, confidence });
   } catch (e) {
     const isTimeout = e?.name === 'AbortError';
     res.status(isTimeout ? 504 : 502).json({
