@@ -959,9 +959,16 @@ const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
 // os Gemini porque usa uma API completamente diferente (formato OpenAI, chave própria). Só
 // entra em uso quando o advogado escolhe ele explicitamente no seletor.
 const NVIDIA_NEMOTRON_MODEL = "nvidia-nemotron-3-nano-omni";
+// OCR dedicada da Mistral (plano gratuito) — mesma lógica: fica fora da cascata Gemini,
+// só entra quando escolhida explicitamente. Ao contrário do Gemini/NVIDIA (que fazem OCR +
+// formatação numa chamada só), essa só extrai o texto bruto; o marcador de página é
+// adicionado localmente (igual já acontece pros outros modelos) e o botão manual "Refinar
+// com IA" continua disponível pra quem quiser aplicar as regras do Padrão Ouro depois.
+const MISTRAL_OCR_MODEL = "mistral-ocr-latest";
 const MODEL_OPTIONS = [
   ...GEMINI_MODEL_OPTIONS,
   { value: NVIDIA_NEMOTRON_MODEL, label: "NVIDIA Nemotron 3 Nano Omni" },
+  { value: MISTRAL_OCR_MODEL, label: "Mistral OCR (gratuito)" },
 ];
 
 function getSelectedGeminiModel(): string {
@@ -1532,10 +1539,69 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
   throw lastErr || new Error("NVIDIA NIM: falha após múltiplas tentativas.");
 }
 
+// Mistral OCR (plano gratuito): OCR dedicada via proxy serverless (api/mistral-ocr.js) — só
+// extrai o texto bruto da página, sem aplicar as regras do Padrão Ouro (isso fica pro botão
+// manual "Refinar com IA", se o advogado quiser, já que aqui não tem chamada de raciocínio).
+async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, msg: string) => void): Promise<{ text: string; usedKey: string }> {
+  const base64: string = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  const MAX_ATTEMPTS = 3;
+  let lastErr: any = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+    if (onProgress) onProgress(40, `Mistral OCR: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const res = await fetch('/api/mistral-ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({ base64, mimeType: blob.type || 'image/jpeg' }),
+      });
+      clearTimeout(timeout);
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.error || `Mistral OCR HTTP ${res.status}`);
+      }
+
+      const text = data?.text || '';
+      if (onProgress) onProgress(95, "Mistral OCR: transcrição concluída.");
+      return { text, usedKey: "mistral-ocr" };
+    } catch (e: any) {
+      clearTimeout(timeout);
+      lastErr = e;
+      const isTimeout = e?.name === 'AbortError';
+      const msg = String(e?.message || e || '').toLowerCase();
+      if (isTimeout || msg.includes('429') || msg.includes('503') || msg.includes('rate limit') || msg.includes('timeout')) {
+        console.warn(`[Mistral OCR] Tentativa ${attempt}/${MAX_ATTEMPTS} falhou. Aguardando antes de tentar de novo...`);
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  throw lastErr || new Error("Mistral OCR: falha após múltiplas tentativas.");
+}
+
 // ── Extrai texto de PDF e Imagem (Sistema Híbrido) ──────────────────────────
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null) {
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
+  }
+  if (getSelectedGeminiModel() === MISTRAL_OCR_MODEL) {
+    return await extractPageWithMistralOCR(blob, onProgress);
   }
 
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
