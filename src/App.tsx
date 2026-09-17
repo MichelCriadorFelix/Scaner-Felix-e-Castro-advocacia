@@ -1705,7 +1705,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Prom
 // sempre o mesmo tempo fixo (o que faz várias instâncias baterem no Google no mesmo ritmo),
 // cresce a cada tentativa e varia aleatoriamente, dando mais tempo real pro servidor
 // recuperar quando a sobrecarga persiste.
-function backoffDelay(attempt: number, baseMs: number = 500, maxMs: number = 8000): number {
+function backoffDelay(attempt: number, baseMs: number = 1200, maxMs: number = 10000): number {
   const exp = Math.min(maxMs, baseMs * Math.pow(2, attempt));
   return Math.round(exp * 0.7 + Math.random() * exp * 0.3);
 }
