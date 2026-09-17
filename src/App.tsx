@@ -1690,6 +1690,17 @@ function markMistralFailure(fingerprint: string): void {
 // em escala diferente — o que muda os bytes e escaparia da checagem por fingerprint abaixo).
 // outFlags: canal de saída simples pra sinalizar de volta se a Mistral falhou nesta chamada,
 // sem precisar mudar o formato do valor de retorno.
+
+// Corrida entre uma Promise real e um timeout — usado pra nunca deixar o app esperar pra
+// sempre por algo que travou (ex: stream do Gemini que manda alguns fragmentos e trava no
+// meio, sem erro nenhum — o SDK não avisa, só fica parado).
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(errorMsg)), ms)),
+  ]);
+}
+
 async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null, skipMistral: boolean = false, outFlags?: { mistralFailed?: boolean }) {
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
@@ -1795,7 +1806,18 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           let chunksReceived = 0;
           let streamFinishReason: string | undefined;
           textOutput = "";
-          for await (const chunk of responseStream) {
+          // Itera manualmente (em vez de "for await") pra poder colocar um timeout de
+          // INATIVIDADE em cada fragmento — o Google às vezes aceita a conexão de streaming,
+          // manda alguns fragmentos e trava no meio sem erro nenhum; sem isso o app ficava
+          // esperando pra sempre (visto na prática: "puxou fragmentos e parou" por minutos).
+          const streamIterator = responseStream[Symbol.asyncIterator]();
+          while (true) {
+            const { value: chunk, done } = await withTimeout(
+              streamIterator.next(),
+              30000,
+              `Stream do modelo ${currentModel} travou (sem novo fragmento em 30s)`
+            );
+            if (done) break;
             if (window.lexscan_abort) break;
             textOutput += chunk.text || "";
             chunksReceived++;
@@ -1835,8 +1857,8 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           lastModelErr = streamFail;
           const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
           
-          if (streamFailMsg.includes("503") || streamFailMsg.includes("overloaded") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404")) {
-            console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503. Alternando para próximo modelo na mesma chave...`);
+          if (streamFailMsg.includes("503") || streamFailMsg.includes("overloaded") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404") || streamFailMsg.includes("travou")) {
+            console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503/travamento. Alternando para próximo modelo na mesma chave...`);
             await new Promise(r => setTimeout(r, 400));
             continue;
           }
@@ -1848,19 +1870,23 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           console.warn(`[Gemini Flash] Streaming falhou, tentando chamada direta com ${currentModel} na chave ..${keyHash}:`, streamFailMsg.slice(0, 60));
           
           try {
-            const directRes = await ai.models.generateContent({
-              model: currentModel,
-              contents: [
-                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
-              ],
-              config: {
-                systemInstruction: prompt,
-                temperature: 0.1,
-                maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "low" },
-              }
-            });
+            const directRes = await withTimeout(
+              ai.models.generateContent({
+                model: currentModel,
+                contents: [
+                  { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                  { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+                ],
+                config: {
+                  systemInstruction: prompt,
+                  temperature: 0.1,
+                  maxOutputTokens: 65536,
+                  thinkingConfig: { thinkingLevel: "low" },
+                }
+              }),
+              45000,
+              `Chamada direta ${currentModel} travou (sem resposta em 45s)`
+            );
 
             const directText = directRes?.text?.trim() || "";
             if (directText && containsDegenerateRepetition(directText)) {
@@ -1886,8 +1912,8 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           } catch (directErr: any) {
             lastModelErr = directErr;
             const dMsg = String(directErr?.message || directErr || "").toLowerCase();
-            if (dMsg.includes("503") || dMsg.includes("overloaded") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404")) {
-              console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou 503. Alternando modelo na mesma chave...`);
+            if (dMsg.includes("503") || dMsg.includes("overloaded") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404") || dMsg.includes("travou")) {
+              console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou 503/travou. Alternando modelo na mesma chave...`);
               await new Promise(r => setTimeout(r, 400));
               continue;
             }
@@ -2068,7 +2094,16 @@ REGRAS CRÍTICAS:
         let fullText = "";
         let chunksCount = 0;
         let batchFinishReason: string | undefined;
-        for await (const chunk of responseStream) {
+        // Mesma proteção contra stream travado que extractPageWithGemini tem — sem isso, o
+        // lote fica esperando pra sempre se o Google aceitar a conexão e travar no meio.
+        const batchStreamIterator = responseStream[Symbol.asyncIterator]();
+        while (true) {
+          const { value: chunk, done } = await withTimeout(
+            batchStreamIterator.next(),
+            30000,
+            `Stream do lote travou (sem novo fragmento em 30s)`
+          );
+          if (done) break;
           if (window.lexscan_abort) break;
           if (chunk?.candidates?.[0]?.finishReason) batchFinishReason = chunk.candidates[0].finishReason;
           if (chunk && chunk.text) {
@@ -2109,16 +2144,20 @@ REGRAS CRÍTICAS:
 
         console.warn(`[Gemini 3.5 Flash Batch] Streaming falhou, tentando chamada direta:`, streamFailMsg);
         
-        const directRes = await ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: parts,
-          config: {
-            systemInstruction: prompt,
-            temperature: 0.1,
-            maxOutputTokens: 65536,
-            thinkingConfig: { thinkingLevel: "low" }
-          }
-        });
+        const directRes = await withTimeout(
+          ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: parts,
+            config: {
+              systemInstruction: prompt,
+              temperature: 0.1,
+              maxOutputTokens: 65536,
+              thinkingConfig: { thinkingLevel: "low" }
+            }
+          }),
+          45000,
+          `Chamada direta do lote travou (sem resposta em 45s)`
+        );
 
         textOutput = directRes?.text?.trim() || "";
         if (!textOutput) {
