@@ -5,8 +5,12 @@
 // Mesmo padrão já validado com a NVIDIA (ver api/nvidia-transcribe.js): runtime Node
 // clássica (req, res) — nunca "runtime: 'edge'" nem retornar um objeto Response — porque
 // esse tipo de projeto (Vite, não Next.js) trata api/*.js como Node clássica por padrão.
+//
+// Diferente da NVIDIA (modelo de raciocínio, genuinamente lento), OCR dedicada responde em
+// poucos segundos — timeout curto de propósito, pra nunca deixar uma página travada aqui
+// segurar o fallback pro Gemini por muito tempo.
 export const config = {
-  maxDuration: 60,
+  maxDuration: 25,
 };
 
 export default async function handler(req, res) {
@@ -27,10 +31,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  // OCR dedicada é rápida (não é um modelo de "raciocínio" como a NVIDIA) — timeout mais
-  // curto, com folga sob o maxDuration (60s) da função.
+  // OCR dedicada é rápida — timeout curto, com folga sob o maxDuration (25s) da função.
   const upstreamController = new AbortController();
-  const upstreamTimeout = setTimeout(() => upstreamController.abort(), 55000);
+  const upstreamTimeout = setTimeout(() => upstreamController.abort(), 20000);
 
   try {
     const mistralRes = await fetch('https://api.mistral.ai/v1/ocr', {
@@ -66,7 +69,7 @@ export default async function handler(req, res) {
     const isTimeout = e?.name === 'AbortError';
     res.status(isTimeout ? 504 : 502).json({
       error: isTimeout
-        ? 'A Mistral OCR demorou demais pra responder (55s) — isso é bem incomum pra uma página só.'
+        ? 'timeout: a Mistral OCR demorou demais pra responder (20s) — isso é incomum pra uma página só.'
         : String(e?.message || e),
     });
   } finally {

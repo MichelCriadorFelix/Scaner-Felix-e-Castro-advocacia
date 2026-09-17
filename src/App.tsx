@@ -1550,7 +1550,9 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
     reader.readAsDataURL(blob);
   });
 
-  const MAX_ATTEMPTS = 3;
+  // OCR dedicada responde em poucos segundos — 2 tentativas de 25s cada (nunca 3x60s como
+  // um modelo de raciocínio) pra não segurar o fallback pro Gemini por minutos à toa.
+  const MAX_ATTEMPTS = 2;
   let lastErr: any = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -1558,7 +1560,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
     if (onProgress) onProgress(40, `Mistral OCR: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
+    const timeout = setTimeout(() => controller.abort(), 25000);
 
     try {
       const res = await fetch('/api/mistral-ocr', {
