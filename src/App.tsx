@@ -3008,7 +3008,7 @@ function extractDocumentHeaderExcerpts(fullDocs: any[], maxCharsPerDoc: number =
 // identificação de todos os documentos da pasta e apontar QUALQUER dado que devia ser igual
 // (mesma pessoa/processo) mas aparece diferente entre documentos — sem precisar prever o
 // tipo de campo com antecedência. Roda uma vez só por pasta compilada, não por página.
-async function generateAiConsistencyAudit(fullDocs: any[], clientName: string): Promise<string[]> {
+async function generateAiConsistencyAudit(fullDocs: any[], clientName: string): Promise<{ alert: string; candidates: string[] }[]> {
   const headerExcerpts = extractDocumentHeaderExcerpts(fullDocs);
   if (!headerExcerpts.trim()) return [];
 
@@ -3017,13 +3017,14 @@ async function generateAiConsistencyAudit(fullDocs: any[], clientName: string): 
 
   const systemInstruction = `Você é um auditor jurídico sênior do escritório Félix & Castro Advocacia, especialista em detectar inconsistências factuais entre documentos de um mesmo processo previdenciário.
 
-Sua ÚNICA tarefa: ler os trechos iniciais (dados de identificação) de vários documentos abaixo, todos relativos ao mesmo cliente${clientName ? ` ("${clientName}")` : ''}, e apontar qualquer dado que DEVERIA ser idêntico entre documentos (por se referir à mesma pessoa, mesmo processo, mesmo evento) mas aparece com valores DIFERENTES em documentos diferentes — por exemplo: data de nascimento, CPF, RG, número de benefício (NB), endereço, nome de familiar, número de processo, CID, data de um mesmo evento citado em mais de um lugar, etc. NÃO se limite a essa lista — aponte qualquer inconsistência factual real que encontrar.
+Sua ÚNICA tarefa: ler os trechos iniciais (dados de identificação) de vários documentos abaixo, todos relativos ao mesmo cliente${clientName ? ` ("${clientName}")` : ''}, e apontar qualquer dado que DEVERIA ser idêntico entre documentos (por se referir à mesma pessoa, mesmo processo, mesmo evento) mas aparece com valores DIFERENTES em documentos diferentes — por exemplo: data de nascimento, CPF, RG, número de benefício (NB), endereço, nome de familiar, número de processo, CID, lateralidade (direito/esquerdo), data de um mesmo evento citado em mais de um lugar, etc. NÃO se limite a essa lista — aponte qualquer inconsistência factual real que encontrar.
 
 REGRAS CRÍTICAS:
 1. Só aponte divergência REAL de VALOR (ex: "29/01/1963" em um documento vs "20/01/1963" em outro). NÃO aponte diferenças de formatação, abreviação ou grafia que representem o MESMO valor (ex: "SUS - AMBULATORIO" vs "SUS-AMBULATORIO" não é divergência).
 2. Se não encontrar nenhuma divergência real, retorne um array vazio.
-3. Para cada divergência, cite o número do documento (ex: "Documento 3") e o valor exato encontrado em cada um.
-4. Retorne APENAS um JSON válido, no formato: {"divergencias": ["texto do alerta 1", "texto do alerta 2"]}. Cada texto de alerta deve ser autoexplicativo, citando documentos e valores.`;
+3. Para cada divergência, cite o número do documento (ex: "Documento 3") e o valor exato encontrado em cada um no texto de "alerta".
+4. Em "candidatos", liste cada valor divergente encontrado EXATAMENTE como aparece no texto original, caractere por caractere (incluindo pontuação, maiúsculas/minúsculas) — isso será usado pra substituição automática no texto, então precisa ser uma cópia literal e exata do trecho, nunca parafraseado ou corrigido por você.
+5. Retorne APENAS um JSON válido, no formato: {"divergencias": [{"alerta": "texto autoexplicativo citando documentos e valores", "candidatos": ["valor exato 1", "valor exato 2"]}]}.`;
 
   const modelsToTry = getModelFallbackCascade();
 
@@ -3056,8 +3057,13 @@ REGRAS CRÍTICAS:
             const jsonMatch = response.text.match(/\{[\s\S]*\}/);
             if (jsonMatch) parsed = JSON.parse(jsonMatch[0].trim());
           }
-          const divergencias = Array.isArray(parsed?.divergencias) ? parsed.divergencias.filter((d: any) => typeof d === 'string' && d.trim()) : [];
-          return divergencias.map((d: string) => `• DIVERGÊNCIA (Auditoria Geral IA): ${d}`);
+          const divergencias = Array.isArray(parsed?.divergencias) ? parsed.divergencias : [];
+          return divergencias
+            .filter((d: any) => d && typeof d.alerta === 'string' && d.alerta.trim())
+            .map((d: any) => ({
+              alert: `• DIVERGÊNCIA (Auditoria Geral IA): ${d.alerta}`,
+              candidates: Array.isArray(d.candidatos) ? d.candidatos.filter((c: any) => typeof c === 'string' && c.trim()) : [],
+            }));
         }
       } catch (err) {
         console.warn(`[Auditoria Geral IA] Falha com modelo ${modelName}:`, err);
@@ -7182,19 +7188,21 @@ export default function ScannerJuridico() {
       ...prev,
       `[${new Date().toLocaleTimeString()}] 🧠 Rodando auditoria geral de consistência via IA (além de CPF/RG/CRM)...`
     ]);
-    const aiConsistencyAlerts = await generateAiConsistencyAudit(fullDocs, clientName);
-    if (aiConsistencyAlerts.length > 0) {
+    const aiConsistencyResults = await generateAiConsistencyAudit(fullDocs, clientName);
+    if (aiConsistencyResults.length > 0) {
       setCompilationLogs(prev => [
         ...prev,
-        `[${new Date().toLocaleTimeString()}] ⚠️ Auditoria geral de IA encontrou ${aiConsistencyAlerts.length} divergência(s) adicional(is).`
+        `[${new Date().toLocaleTimeString()}] ⚠️ Auditoria geral de IA encontrou ${aiConsistencyResults.length} divergência(s) adicional(is).`
       ]);
     }
-    auditResult.substantiveAlerts = [...auditResult.substantiveAlerts, ...aiConsistencyAlerts];
-    // Alertas da auditoria geral não têm candidatos estruturados pra correção automática
-    // (são texto livre) — undefined faz o painel mostrar só o aviso, sem os botões de escolha.
+    auditResult.substantiveAlerts = [...auditResult.substantiveAlerts, ...aiConsistencyResults.map(r => r.alert)];
+    // Quando a IA devolveu candidatos exatos (2+), liga o mesmo botão de correção
+    // automática do CPF/CRM. Se veio só 1 candidato ou nenhum, mostra só o aviso.
     const auditResultDivergences: (IdentityDivergence | undefined)[] = [
       ...auditResult.identityDivergences,
-      ...aiConsistencyAlerts.map(() => undefined),
+      ...aiConsistencyResults.map(r =>
+        r.candidates.length >= 2 ? { label: "Auditoria Geral IA", candidates: r.candidates } : undefined
+      ),
     ];
 
     // Monta o corpo dos documentos
