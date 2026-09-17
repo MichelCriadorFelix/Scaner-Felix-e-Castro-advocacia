@@ -6146,7 +6146,11 @@ export default function ScannerJuridico() {
     
     try {
       const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
-      
+
+      if (!urlToFetch) {
+        throw new Error("Este documento não tem um arquivo original salvo pra reprocessar (o upload/backup dele pode ter falhado na hora do scan). Escaneie a página de novo.");
+      }
+
       let blob;
       let sdkSuccess = false;
 
@@ -6311,7 +6315,11 @@ export default function ScannerJuridico() {
 
         try {
           const urlToFetch = item.fileUrl || item.localBlobUrl || item.preview;
-          
+
+          if (!urlToFetch) {
+            throw new Error("Documento sem arquivo original salvo pra reprocessar (upload/backup pode ter falhado no scan).");
+          }
+
           let blob;
           let sdkSuccess = false;
 
