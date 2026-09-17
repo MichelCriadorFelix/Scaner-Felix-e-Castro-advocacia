@@ -2993,6 +2993,84 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   };
 }
 
+// Pega só o TRECHO INICIAL de cada documento (onde normalmente ficam os dados de
+// identificação: nome, CPF, RG, data de nascimento, endereço) em vez do texto inteiro —
+// mantém o custo baixo e previsível independente de quantas páginas o documento tem.
+function extractDocumentHeaderExcerpts(fullDocs: any[], maxCharsPerDoc: number = 700): string {
+  return fullDocs.map((d, i) => {
+    const text = (d.text || '').slice(0, maxCharsPerDoc);
+    return `--- DOCUMENTO ${i + 1}: ${d.name || 'Documento'} ---\n${text}`;
+  }).join('\n\n');
+}
+
+// Auditoria GERAL de consistência via IA — em vez de escrever um regex novo pra cada tipo de
+// dado (CPF, CRM, data de nascimento, endereço, etc.), pede pra própria IA ler os trechos de
+// identificação de todos os documentos da pasta e apontar QUALQUER dado que devia ser igual
+// (mesma pessoa/processo) mas aparece diferente entre documentos — sem precisar prever o
+// tipo de campo com antecedência. Roda uma vez só por pasta compilada, não por página.
+async function generateAiConsistencyAudit(fullDocs: any[], clientName: string): Promise<string[]> {
+  const headerExcerpts = extractDocumentHeaderExcerpts(fullDocs);
+  if (!headerExcerpts.trim()) return [];
+
+  const finalSortedKeys = getSortedApiKeys();
+  if (finalSortedKeys.length === 0) return [];
+
+  const systemInstruction = `Você é um auditor jurídico sênior do escritório Félix & Castro Advocacia, especialista em detectar inconsistências factuais entre documentos de um mesmo processo previdenciário.
+
+Sua ÚNICA tarefa: ler os trechos iniciais (dados de identificação) de vários documentos abaixo, todos relativos ao mesmo cliente${clientName ? ` ("${clientName}")` : ''}, e apontar qualquer dado que DEVERIA ser idêntico entre documentos (por se referir à mesma pessoa, mesmo processo, mesmo evento) mas aparece com valores DIFERENTES em documentos diferentes — por exemplo: data de nascimento, CPF, RG, número de benefício (NB), endereço, nome de familiar, número de processo, CID, data de um mesmo evento citado em mais de um lugar, etc. NÃO se limite a essa lista — aponte qualquer inconsistência factual real que encontrar.
+
+REGRAS CRÍTICAS:
+1. Só aponte divergência REAL de VALOR (ex: "29/01/1963" em um documento vs "20/01/1963" em outro). NÃO aponte diferenças de formatação, abreviação ou grafia que representem o MESMO valor (ex: "SUS - AMBULATORIO" vs "SUS-AMBULATORIO" não é divergência).
+2. Se não encontrar nenhuma divergência real, retorne um array vazio.
+3. Para cada divergência, cite o número do documento (ex: "Documento 3") e o valor exato encontrado em cada um.
+4. Retorne APENAS um JSON válido, no formato: {"divergencias": ["texto do alerta 1", "texto do alerta 2"]}. Cada texto de alerta deve ser autoexplicativo, citando documentos e valores.`;
+
+  const modelsToTry = getModelFallbackCascade();
+
+  for (let i = 0; i < finalSortedKeys.length; i++) {
+    const apiKey = finalSortedKeys[i];
+
+    for (let m = 0; m < modelsToTry.length; m++) {
+      const modelName = modelsToTry[m];
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        const response = await withTimeout(
+          ai.models.generateContent({
+            model: modelName,
+            contents: [{ text: `Trechos de identificação dos documentos:\n\n${headerExcerpts}` }],
+            config: {
+              systemInstruction,
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            }
+          }),
+          45000,
+          `Auditoria geral de consistência travou (sem resposta em 45s)`
+        );
+
+        if (response && response.text) {
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(response.text.trim());
+          } catch (jsonErr) {
+            const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) parsed = JSON.parse(jsonMatch[0].trim());
+          }
+          const divergencias = Array.isArray(parsed?.divergencias) ? parsed.divergencias.filter((d: any) => typeof d === 'string' && d.trim()) : [];
+          return divergencias.map((d: string) => `• DIVERGÊNCIA (Auditoria Geral IA): ${d}`);
+        }
+      } catch (err) {
+        console.warn(`[Auditoria Geral IA] Falha com modelo ${modelName}:`, err);
+      }
+    }
+  }
+
+  // Falhou em todas as chaves/modelos: não bloqueia a compilação, só não traz esse
+  // reforço extra — as checagens de CPF/RG/CRM continuam funcionando normalmente.
+  console.warn("[Auditoria Geral IA] Não foi possível completar a auditoria geral — seguindo só com as checagens específicas.");
+  return [];
+}
+
 function splitTextIntoCleanChunks(text: string, maxChunkSize: number = 12000): string[] {
   const chunks: string[] = [];
   let currentIndex = 0;
@@ -3993,7 +4071,9 @@ export default function ScannerJuridico() {
   const [compilationLogs, setCompilationLogs] = useState<string[]>([]);
   const [pendingStrategicReview, setPendingStrategicReview] = useState<{
     alerts: string[];
-    divergences: IdentityDivergence[];
+    // undefined pros alertas só informativos vindos da auditoria geral de IA (sem
+    // candidatos pra corrigir automaticamente, ao contrário dos de CPF/RG/CRM)
+    divergences: (IdentityDivergence | undefined)[];
     resolve: (result: { keptAlerts: string[]; corrections: { candidates: string[]; chosenValue: string }[] }) => void;
   } | null>(null);
   const [selectedStrategicAlerts, setSelectedStrategicAlerts] = useState<number[]>([]);
@@ -7095,6 +7175,28 @@ export default function ScannerJuridico() {
 
     const auditResult = generateFolderPrePetitionAudit(fullDocs, clientName);
 
+    // Auditoria GERAL por IA: pega qualquer divergência factual entre documentos que as
+    // checagens específicas de CPF/RG/CRM acima não cobrem (data de nascimento, endereço,
+    // número de benefício, CID, etc.) — sem precisar de um regex novo pra cada campo.
+    setCompilationLogs(prev => [
+      ...prev,
+      `[${new Date().toLocaleTimeString()}] 🧠 Rodando auditoria geral de consistência via IA (além de CPF/RG/CRM)...`
+    ]);
+    const aiConsistencyAlerts = await generateAiConsistencyAudit(fullDocs, clientName);
+    if (aiConsistencyAlerts.length > 0) {
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ⚠️ Auditoria geral de IA encontrou ${aiConsistencyAlerts.length} divergência(s) adicional(is).`
+      ]);
+    }
+    auditResult.substantiveAlerts = [...auditResult.substantiveAlerts, ...aiConsistencyAlerts];
+    // Alertas da auditoria geral não têm candidatos estruturados pra correção automática
+    // (são texto livre) — undefined faz o painel mostrar só o aviso, sem os botões de escolha.
+    const auditResultDivergences: (IdentityDivergence | undefined)[] = [
+      ...auditResult.identityDivergences,
+      ...aiConsistencyAlerts.map(() => undefined),
+    ];
+
     // Monta o corpo dos documentos
     let docsBodyText = "";
     fullDocs.forEach((doc, i) => {
@@ -7162,7 +7264,7 @@ export default function ScannerJuridico() {
       const reviewResult = await new Promise<{ keptAlerts: string[]; corrections: { candidates: string[]; chosenValue: string }[] }>((resolve) => {
         setPendingStrategicReview({
           alerts: auditResult.substantiveAlerts,
-          divergences: auditResult.identityDivergences,
+          divergences: auditResultDivergences,
           resolve
         });
       });
