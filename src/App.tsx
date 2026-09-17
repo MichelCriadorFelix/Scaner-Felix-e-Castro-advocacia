@@ -1741,6 +1741,11 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     // A próxima página volta a tentar a Mistral normalmente (a decisão é por página, não global).
   }
 
+  // Página já sabidamente difícil (a Mistral falhou ou veio suspeita nela) — sobe o thinking
+  // de "low" pra "medium" só pra ESTA chamada, dando ao Gemini mais raciocínio pra decifrar
+  // letra manuscrita/formulário denso. Fora desse cenário, continua em "low" (rápido, barato).
+  const boostThinking = outFlags?.mistralFailed === true;
+
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
   let lastError = null;
 
@@ -1798,7 +1803,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "low" },
+                thinkingConfig: { thinkingLevel: boostThinking ? "medium" : "low" },
               }
             });
           } catch (initErr: any) {
@@ -1890,7 +1895,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                   systemInstruction: prompt,
                   temperature: 0.1,
                   maxOutputTokens: 65536,
-                  thinkingConfig: { thinkingLevel: "low" },
+                  thinkingConfig: { thinkingLevel: boostThinking ? "medium" : "low" },
                 }
               }),
               45000,
@@ -1949,7 +1954,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "low" },
+                thinkingConfig: { thinkingLevel: boostThinking ? "medium" : "low" },
               }
             });
             const retryText = retryRes?.text?.trim() || "";
