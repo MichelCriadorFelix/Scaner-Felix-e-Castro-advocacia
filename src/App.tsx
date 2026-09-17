@@ -989,13 +989,17 @@ function setSelectedGeminiModel(model: string) {
 // mecanismo só não era usado porque antes só passávamos 1 modelo na lista. Isso é o que evita
 // que uma instabilidade temporária do Google EM UM MODELO específico pare o app inteiro, já que
 // os outros 2 modelos continuam disponíveis.
-function getModelFallbackCascade(): string[] {
+// Se o modelo escolhido no seletor for de outro provedor (NVIDIA/Mistral, sentinelas que não
+// existem como modelo dentro da API do Gemini), usa o Gemini padrão em vez disso — protege
+// qualquer chamada direta à API do Gemini de tentar usar "nvidia-..."/"mistral-..." como
+// nome de modelo (o que gera 404 e desperdiça tentativas em cada chave do pool).
+function getSafeGeminiModel(): string {
   const selected = getSelectedGeminiModel();
-  // Se o modelo escolhido for o NVIDIA (provedor diferente, sem esse mecanismo de cascata),
-  // usa o Gemini padrão aqui — o roteamento pro NVIDIA acontece antes desse ponto, direto em
-  // extractPageWithGemini. Isso garante que refinamento de texto (que não tem versão NVIDIA
-  // implementada) sempre recebe uma lista válida de modelos Gemini.
-  const geminiSelected = GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
+  return GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
+}
+
+function getModelFallbackCascade(): string[] {
+  const geminiSelected = getSafeGeminiModel();
   const others = GEMINI_MODEL_OPTIONS.map(m => m.value).filter(v => v !== geminiSelected);
   return [geminiSelected, ...others];
 }
@@ -1878,7 +1882,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           await new Promise(r => setTimeout(r, 800));
           try {
             const retryRes = await ai.models.generateContent({
-              model: getSelectedGeminiModel(),
+              model: getSafeGeminiModel(),
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
@@ -1895,7 +1899,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               lastModelErr = new Error("Resposta de repescagem com repetição degenerada.");
             } else if (retryText && isTruncatedResponse(retryRes)) {
               const completedRetry = await completeTruncatedTranscription(
-                ai, getSelectedGeminiModel(), [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
+                ai, getSafeGeminiModel(), [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
               );
               if (completedRetry) {
                 textOutput = completedRetry;
@@ -1970,7 +1974,7 @@ REGRAS CRÍTICAS:
 2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
 3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
 
-  const MODEL_NAME = getSelectedGeminiModel();
+  const MODEL_NAME = getSafeGeminiModel();
 
   const parts: any[] = [
     { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
