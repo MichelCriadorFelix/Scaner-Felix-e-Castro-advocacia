@@ -1561,9 +1561,12 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-    // percentual null = não mexe no % real de progresso multi-página (calculado por quem
-    // chama), só atualiza a mensagem de status.
-    if (onProgress) onProgress(null, `Mistral OCR: lendo página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
+    // Só avisa na tela quando é de fato uma retentativa (attempt > 1) — na maioria das
+    // páginas a 1ª tentativa já resolve, e sobrescrever a mensagem "Pág X/Y: ..." (que TEM
+    // o número da página) por uma genérica sem número é o que fazia parecer travado.
+    if (onProgress && attempt > 1) {
+      onProgress(null, `Mistral OCR: repetindo leitura da página (tentativa ${attempt}/${MAX_ATTEMPTS})...`);
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
