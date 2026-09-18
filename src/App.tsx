@@ -950,9 +950,13 @@ const PDFJS_BASE_OPTIONS = {
 // diretamente do localStorage aqui, e cada chamada ao Gemini pega o modelo mais atual na hora.
 const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (mais novo)" },
   { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
   { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
 ];
+// 3.7 continua padrão de propósito: 3.8 é recém-lançado (02/09/2026) e modelo novo tende a
+// ter MAIS demanda/sobrecarga logo depois do lançamento — entra como reforço extra na
+// cascata (mais um pool de capacidade independente pra tentar), não como primeira tentativa.
 const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
 
 // Modelo alternativo (provedor diferente, NVIDIA NIM) — fica FORA da cascata de reforço entre
