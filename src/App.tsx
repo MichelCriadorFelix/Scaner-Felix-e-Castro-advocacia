@@ -6638,10 +6638,14 @@ export default function ScannerJuridico() {
 
     setTab("scanner");
     setProcessing(true);
-    
+    setIsAborting(false);
+    window.lexscan_abort = false;
+
     let processedCount = 0;
+    let stoppedEarly = false;
 
     for (let i = 0; i < docs.length; i++) {
+        if (window.lexscan_abort) { stoppedEarly = true; break; }
         const item = docs[i];
         setProgress(0);
         setProgressMsg(`[${i + 1}/${docs.length}] Analisando: ${item.name}...`);
@@ -6694,12 +6698,10 @@ export default function ScannerJuridico() {
             // Micro-pausa de 100ms apenas para manter a renderização fluida sem travamento
             if (i > 0) await new Promise(r => setTimeout(r, 100));
 
-            const onProgress = (p, msg) => { 
-               setProgress(p); 
-               setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`); 
+            const onProgress = (p, msg) => {
+               setProgress(p);
+               setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`);
             };
-      
-            window.lexscan_abort = false;
 
             if (fileToProcess.type === "application/pdf") {
               extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
@@ -6743,16 +6745,21 @@ export default function ScannerJuridico() {
           }
         } catch (fileErr) {
           console.error(`Erro no arquivo ${item.name}:`, fileErr);
-          if (window.lexscan_abort) break;
+          if (window.lexscan_abort) { stoppedEarly = true; break; }
         }
     }
     
     setProcessing(false);
+    setIsAborting(false);
+    window.lexscan_abort = false;
     setProgress(0);
     setProgressMsg("");
     setTab("history"); // Retorna para o histórico após processar todos
-    showToast(`✓ Lote concluído! ${processedCount} documentos processados.`, "success");
-    if (processedCount > 0) setTab("history");
+    if (stoppedEarly) {
+      showToast(`⏸ Pasta pausada. ${processedCount} documentos processados e salvos até aqui!`, "info");
+    } else {
+      showToast(`✓ Lote concluído! ${processedCount} documentos processados.`, "success");
+    }
   };
 
   const handleSaveManualEdit = async () => {
