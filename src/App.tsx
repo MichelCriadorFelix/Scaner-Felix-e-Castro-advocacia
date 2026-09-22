@@ -950,6 +950,7 @@ const PDFJS_BASE_OPTIONS = {
 // diretamente do localStorage aqui, e cada chamada ao Gemini pega o modelo mais atual na hora.
 const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (legado, reforço anti-sobrecarga)" },
   { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (mais novo)" },
   { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
   { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
@@ -957,6 +958,14 @@ const GEMINI_MODEL_OPTIONS = [
 // 3.7 continua padrão de propósito: 3.8 é recém-lançado (02/09/2026) e modelo novo tende a
 // ter MAIS demanda/sobrecarga logo depois do lançamento — entra como reforço extra na
 // cascata (mais um pool de capacidade independente pra tentar), não como primeira tentativa.
+//
+// 2.5-flash entra em 2º lugar na cascata (geração anterior, infraestrutura/capacidade
+// separada da linha 3.x que andou tendo apagões inteiros — visto na prática em 22/09/2026,
+// 503 em 100% das chaves nos 4 modelos 3.x ao mesmo tempo) — na prática cai bem menos em
+// alta demanda que a linha nova. Google anuncia desativação não antes de 16/10/2026, com
+// pelo menos 6 meses de aviso quando a data final for travada — dá tempo de sobra pra tirar
+// depois sem pressa. Continua fora do padrão (não vira DEFAULT_GEMINI_MODEL) porque é geração
+// anterior e será desativado; só serve como rede de segurança extra na cascata automática.
 const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
 
 // Modelo alternativo (provedor diferente, NVIDIA NIM) — fica FORA da cascata de reforço entre
