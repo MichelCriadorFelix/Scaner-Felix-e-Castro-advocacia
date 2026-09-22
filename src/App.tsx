@@ -3047,8 +3047,18 @@ REGRAS CRÍTICAS:
 
   const modelsToTry = getModelFallbackCascade();
 
+  // Circuit breaker: se 2 chaves seguidas falharem em TODOS os modelos por sobrecarga
+  // (503/overloaded), é sinal de apagão global do Google (mesma infraestrutura
+  // compartilhada por todas as chaves/projetos) — insistir nas outras 14 chaves não
+  // resolve e só faz o advogado esperar minutos à toa por um reforço opcional. Nesse
+  // caso desiste cedo; qualquer erro de chave específica (403/429/inválida) NÃO conta
+  // pra esse contador, porque aí sim outra chave pode genuinamente ser diferente.
+  let consecutiveOverloadedKeys = 0;
+
   for (let i = 0; i < finalSortedKeys.length; i++) {
     const apiKey = finalSortedKeys[i];
+    let modelsAttemptedOnThisKey = 0;
+    let overloadFailuresOnThisKey = 0;
 
     for (let m = 0; m < modelsToTry.length; m++) {
       const modelName = modelsToTry[m];
@@ -3064,8 +3074,8 @@ REGRAS CRÍTICAS:
               responseMimeType: "application/json",
             }
           }),
-          45000,
-          `Auditoria geral de consistência travou (sem resposta em 45s)`
+          15000,
+          `Auditoria geral de consistência travou (sem resposta em 15s)`
         );
 
         if (response && response.text) {
@@ -3084,14 +3094,34 @@ REGRAS CRÍTICAS:
               candidates: Array.isArray(d.candidatos) ? d.candidatos.filter((c: any) => typeof c === 'string' && c.trim()) : [],
             }));
         }
-      } catch (err) {
+      } catch (err: any) {
+        modelsAttemptedOnThisKey++;
+        const msg = String(err?.message || err || "").toLowerCase();
+        const isOverload = msg.includes("503") || msg.includes("overloaded") || msg.includes("high demand") || msg.includes("unavailable") || msg.includes("travou");
+        if (isOverload) overloadFailuresOnThisKey++;
         console.warn(`[Auditoria Geral IA] Falha com modelo ${modelName}:`, err);
+        // Erro de projeto/chave (403 permissão negada, 429 cota, chave inválida) já
+        // condena os OUTROS modelos dessa mesma chave também — não vale a pena testar
+        // os 3 restantes, pula direto pra próxima chave.
+        if (!isOverload && (msg.includes("403") || msg.includes("permission") || msg.includes("429") || msg.includes("quota") || msg.includes("api key not valid"))) {
+          break;
+        }
       }
+    }
+
+    if (modelsAttemptedOnThisKey > 0 && overloadFailuresOnThisKey === modelsAttemptedOnThisKey) {
+      consecutiveOverloadedKeys++;
+      if (consecutiveOverloadedKeys >= 2) {
+        console.warn(`[Auditoria Geral IA] ${consecutiveOverloadedKeys} chaves seguidas com sobrecarga (503) em todos os modelos — provável apagão global do Google. Desistindo cedo em vez de testar as demais ${finalSortedKeys.length - i - 1} chaves.`);
+        break;
+      }
+    } else {
+      consecutiveOverloadedKeys = 0;
     }
   }
 
-  // Falhou em todas as chaves/modelos: não bloqueia a compilação, só não traz esse
-  // reforço extra — as checagens de CPF/RG/CRM continuam funcionando normalmente.
+  // Falhou (ou desistiu cedo por apagão global): não bloqueia a compilação, só não
+  // traz esse reforço extra — as checagens de CPF/RG/CRM continuam funcionando normalmente.
   console.warn("[Auditoria Geral IA] Não foi possível completar a auditoria geral — seguindo só com as checagens específicas.");
   return [];
 }
