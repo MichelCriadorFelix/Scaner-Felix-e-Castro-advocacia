@@ -1667,6 +1667,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
         continue;
       }
 
+      consecutiveMistralFailures = 0;
       if (onProgress) onProgress(null, "Mistral OCR: transcrição concluída.");
       return { text, usedKey: "mistral-ocr", confidence: typeof data?.confidence === 'number' ? data.confidence : null };
     } catch (e: any) {
@@ -1674,7 +1675,14 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
       lastErr = e;
       const isTimeout = e?.name === 'AbortError';
       const msg = String(e?.message || e || '').toLowerCase();
-      if (isTimeout || msg.includes('429') || msg.includes('503') || msg.includes('rate limit') || msg.includes('timeout')) {
+      // Cota/chave da Mistral esgotada ou recusada (todas as chaves do servidor já foram
+      // tentadas lá): repetir só gasta tempo. Entra em pausa e as próximas páginas vão direto
+      // pro Gemini, em vez de cada uma esperar ~50s pra descobrir a mesma coisa.
+      if (msg.includes('429') || msg.includes('401') || msg.includes('403') || msg.includes('rate limit') || msg.includes('quota') || msg.includes('unauthorized') || msg.includes('capacity')) {
+        startMistralCooldown(10 * 60 * 1000, 'cota/chave recusada');
+        throw e;
+      }
+      if (isTimeout || msg.includes('503') || msg.includes('timeout')) {
         console.warn(`[Mistral OCR] Tentativa ${attempt}/${MAX_ATTEMPTS} falhou. Aguardando antes de tentar de novo...`);
         await new Promise(r => setTimeout(r, 1500 * attempt));
         continue;
@@ -1684,6 +1692,18 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
   }
 
   throw lastErr || new Error("Mistral OCR: falha após múltiplas tentativas.");
+}
+
+// Pausa global da Mistral: quando a cota acaba ou a chave é recusada (ou ela falha várias
+// páginas seguidas), todas as páginas seguintes pulam direto pro Gemini por alguns minutos.
+let mistralCooldownUntil = 0;
+let consecutiveMistralFailures = 0;
+function startMistralCooldown(ms: number, reason: string): void {
+  mistralCooldownUntil = Date.now() + ms;
+  console.warn(`[Mistral OCR] Em pausa por ${Math.round(ms / 60000)} min (${reason}) — páginas vão direto pro Gemini.`);
+}
+function isMistralInCooldown(): boolean {
+  return Date.now() < mistralCooldownUntil;
 }
 
 // Decide se o texto que a Mistral OCR devolveu pra ESTA página é confiável o bastante, ou
@@ -1786,7 +1806,10 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   }
   if (getSelectedGeminiModel() === MISTRAL_OCR_MODEL && !skipMistral) {
     const fingerprint = await getBlobFingerprint(blob);
-    if (isRecentMistralFailure(fingerprint)) {
+    if (isMistralInCooldown()) {
+      if (onProgress) onProgress(null, "Mistral em pausa (cota/falhas) — usando Gemini direto...");
+      if (outFlags) outFlags.mistralFailed = true;
+    } else if (isRecentMistralFailure(fingerprint)) {
       console.warn("[Híbrido Mistral+Gemini] Esta página já falhou na Mistral há pouco — pulando direto pro Gemini (evita repetir dezenas de vezes se algo de fora insistir em reprocessar a mesma página).");
       if (onProgress) onProgress(null, "Página já sabidamente difícil pra Mistral — usando Gemini direto...");
       if (outFlags) outFlags.mistralFailed = true;
@@ -1802,6 +1825,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
         if (onProgress) onProgress(null, "Página difícil pra Mistral — usando Gemini gratuito como reforço...");
       } catch (e) {
         markMistralFailure(fingerprint);
+        if (++consecutiveMistralFailures >= 3) startMistralCooldown(5 * 60 * 1000, '3 falhas seguidas');
         if (outFlags) outFlags.mistralFailed = true;
         console.warn("[Híbrido Mistral+Gemini] Mistral OCR falhou nesta página — usando Gemini gratuito como reforço:", e);
         if (onProgress) onProgress(null, "Mistral OCR falhou — usando Gemini gratuito como reforço...");
