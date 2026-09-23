@@ -1076,14 +1076,54 @@ function getAvailableGeminiKeys() {
 }
 
 // Reset automático diário das cotas gratuitas do Google (resetam à meia-noite)
+// O Google zera a cota diária à meia-noite do horário do Pacífico (não UTC) — usar UTC zerava
+// o status às 21h de Brasília, com as chaves ainda esgotadas de verdade até ~4-5h da manhã.
+function getQuotaDay(): string {
+  try {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  } catch (e) {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+// A cota diária do Google é POR MODELO dentro de cada projeto/chave: uma chave esgotada no
+// 2.5-flash continua com cota cheia nos Flash-Lite. Por isso a exaustão é registrada por
+// (chave, modelo) e só a chave inteira é marcada esgotada quando TODOS os modelos esgotarem.
+function isDailyQuotaError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return (m.includes("429") || m.includes("quota") || m.includes("exhausted")) &&
+    (m.includes("perday") || m.includes("per day") || m.includes("daily") || m.includes(" day"));
+}
+
+function readModelQuota(): Record<string, Record<string, string>> {
+  try {
+    return JSON.parse(localStorage.getItem('lexscan_key_model_quota') || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function isKeyModelExhausted(hash: string, model: string): boolean {
+  return readModelQuota()[hash]?.[model] === getQuotaDay();
+}
+
+function markKeyModelExhausted(hash: string, model: string): void {
+  try {
+    const all = readModelQuota();
+    all[hash] = { ...(all[hash] || {}), [model]: getQuotaDay() };
+    localStorage.setItem('lexscan_key_model_quota', JSON.stringify(all));
+  } catch (e) {}
+}
+
 function checkDailyReset() {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getQuotaDay();
     const lastDate = localStorage.getItem('lexscan_key_date');
     if (lastDate && lastDate !== today) {
       console.log(`[LexScan] Novo dia detectado (${today} vs ${lastDate}). Resetando status e contadores de cotas das chaves.`);
       localStorage.removeItem('lexscan_key_errors');
       localStorage.removeItem('lexscan_key_usage');
+      localStorage.removeItem('lexscan_key_model_quota');
       localStorage.setItem('lexscan_key_date', today);
       return true;
     }
@@ -1818,6 +1858,10 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
       for (let m = 0; m < modelsToTry.length; m++) {
         const currentModel = modelsToTry[m];
         if (window.lexscan_abort) break;
+        if (isKeyModelExhausted(keyHash, currentModel)) {
+          lastModelErr = new Error(`Cota diária do ${currentModel} esgotada na chave ..${keyHash} (exhausted, per day)`);
+          continue;
+        }
 
         try {
           console.log(`[Gemini Flash] Tentando modelo ${currentModel} na chave ..${keyHash}...`);
@@ -1900,6 +1944,12 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
         } catch (streamFail: any) {
           lastModelErr = streamFail;
           const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
+
+          if (isDailyQuotaError(streamFailMsg)) {
+            markKeyModelExhausted(keyHash, currentModel);
+            console.warn(`[Gemini Flash] Cota diária do ${currentModel} esgotada na chave ..${keyHash} — tentando o próximo modelo na mesma chave (a cota é por modelo).`);
+            continue;
+          }
           
           if (streamFailMsg.includes("503") || streamFailMsg.includes("overloaded") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404") || streamFailMsg.includes("travou")) {
             console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503/travamento. Alternando para próximo modelo na mesma chave...`);
@@ -1956,6 +2006,10 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           } catch (directErr: any) {
             lastModelErr = directErr;
             const dMsg = String(directErr?.message || directErr || "").toLowerCase();
+            if (isDailyQuotaError(dMsg)) {
+              markKeyModelExhausted(keyHash, currentModel);
+              continue;
+            }
             if (dMsg.includes("503") || dMsg.includes("overloaded") || dMsg.includes("high demand") || dMsg.includes("unavailable") || dMsg.includes("not found") || dMsg.includes("404") || dMsg.includes("travou")) {
               console.warn(`[Gemini Flash] Chamada direta ${currentModel} retornou 503/travou. Alternando modelo na mesma chave...`);
               await new Promise(r => setTimeout(r, backoffDelay(m)));
@@ -2030,13 +2084,16 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     const errorStr = (lastError?.message || "").toLowerCase();
     let errorType = 'error';
     if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
-    else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
+    else if (errorStr.includes("api key not valid") || errorStr.includes("api_key_invalid") || errorStr.includes("api key expired")) errorType = 'invalid';
     else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
       // Só marca "esgotada até amanhã de verdade" quando o próprio erro do Google sinaliza
       // cota DIÁRIA (menciona "day"/"daily"). Um 429 genérico agora é sempre tratado como
       // limite POR MINUTO passageiro (rate_limited) — nunca mais trava a chave o dia inteiro
       // por um estouro momentâneo (o throttle proativo de 4/min já evita isso na prática).
-      errorType = (errorStr.includes("day") || errorStr.includes("daily") || errorStr.includes("perday")) ? 'quota_exceeded' : 'rate_limited';
+      const allModelsExhausted = modelsToTry.every(mn => isKeyModelExhausted(keyHash, mn));
+      errorType = isDailyQuotaError(errorStr)
+        ? (allModelsExhausted ? 'quota_exceeded' : 'rate_limited')
+        : 'rate_limited';
     }
     // "truncada"/"degenerada" vêm da nossa própria detecção de loop de repetição — é um problema de conteúdo
     // daquela página específica, não da chave. Classificar como server_error (em vez de 'error' genérico)
@@ -3088,6 +3145,7 @@ REGRAS CRÍTICAS:
 
     for (let m = 0; m < modelsToTry.length; m++) {
       const modelName = modelsToTry[m];
+      if (isKeyModelExhausted(apiKey.slice(-6), modelName)) continue;
       try {
         const ai = new GoogleGenAI({ apiKey });
         const response = await withTimeout(
@@ -3129,7 +3187,9 @@ REGRAS CRÍTICAS:
         // Erro de projeto/chave (403 permissão negada, 429 cota, chave inválida) já
         // condena os OUTROS modelos dessa mesma chave também — não vale a pena testar
         // os 3 restantes, pula direto pra próxima chave.
-        if (!isOverload && (msg.includes("403") || msg.includes("permission") || msg.includes("429") || msg.includes("quota") || msg.includes("api key not valid"))) {
+        if (isDailyQuotaError(msg)) {
+          markKeyModelExhausted(apiKey.slice(-6), modelName);
+        } else if (!isOverload && (msg.includes("403") || msg.includes("permission") || msg.includes("api key not valid"))) {
           break;
         }
       }
@@ -8253,6 +8313,8 @@ export default function ScannerJuridico() {
                   if (confirm("Deseja realmente limpar/resetar o status e contadores de todas as chaves de API?")) {
                     localStorage.removeItem('lexscan_key_errors');
                     localStorage.removeItem('lexscan_key_usage');
+                    localStorage.removeItem('lexscan_key_model_quota');
+                    localStorage.removeItem('lexscan_key_minute_window');
                     setKeyErrors({});
                     setKeyUsage({});
                   }
