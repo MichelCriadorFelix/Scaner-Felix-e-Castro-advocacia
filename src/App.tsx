@@ -948,25 +948,22 @@ const PDFJS_BASE_OPTIONS = {
 // As funções de OCR/refinamento ficam FORA do componente React (são módulo-level), então não
 // têm acesso direto ao estado do React — por isso a escolha do advogado é lida/gravada
 // diretamente do localStorage aqui, e cada chamada ao Gemini pega o modelo mais atual na hora.
-const GEMINI_MODEL_OPTIONS = [
-  { value: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (legado, reforço anti-sobrecarga)" },
-  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (mais novo)" },
-  { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
-];
-// 3.7 continua padrão de propósito: 3.8 é recém-lançado (02/09/2026) e modelo novo tende a
-// ter MAIS demanda/sobrecarga logo depois do lançamento — entra como reforço extra na
-// cascata (mais um pool de capacidade independente pra tentar), não como primeira tentativa.
+// 22-23/09/2026: a linha 3.5/3.6/3.7/3.8 Flash entrou num apagão real e prolongado do
+// próprio Google (503 "high demand" em 100% das chaves, confirmado pelo staff do Google
+// nos fóruns como sobrecarga do lado do servidor, afetando free E pago igualmente, sem
+// data de resolução). Removida da lista por ora — voltam a ser opção quando o Google
+// resolver o incidente, mas até lá só desperdiçam tentativas na cascata.
 //
-// 2.5-flash entra em 2º lugar na cascata (geração anterior, infraestrutura/capacidade
-// separada da linha 3.x que andou tendo apagões inteiros — visto na prática em 22/09/2026,
-// 503 em 100% das chaves nos 4 modelos 3.x ao mesmo tempo) — na prática cai bem menos em
-// alta demanda que a linha nova. Google anuncia desativação não antes de 16/10/2026, com
-// pelo menos 6 meses de aviso quando a data final for travada — dá tempo de sobra pra tirar
-// depois sem pressa. Continua fora do padrão (não vira DEFAULT_GEMINI_MODEL) porque é geração
-// anterior e será desativado; só serve como rede de segurança extra na cascata automática.
-const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
+// 2.5-flash (geração anterior, infraestrutura própria) virou o padrão: na prática não caiu
+// nenhuma vez durante o apagão. Os Flash-Lite (3.1 e 3.5) entram como sucessores — mais
+// baratos, multimodais, mas de uma geração otimizada pra custo/latência em vez de qualidade
+// máxima, por isso ficam depois do 2.5 na cascata, não antes.
+const GEMINI_MODEL_OPTIONS = [
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
+  { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
+];
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
 // Modelo alternativo (provedor diferente, NVIDIA NIM) — fica FORA da cascata de reforço entre
 // os Gemini porque usa uma API completamente diferente (formato OpenAI, chave própria). Só
@@ -1017,11 +1014,11 @@ function getModelFallbackCascade(): string[] {
   return [geminiSelected, ...others];
 }
 
-// A linha 3.x aceita "thinkingLevel" (semântico: "low"/"medium"). O 2.5-flash (geração
-// anterior) NÃO aceita esse parâmetro — a API responde 400 "Thinking level is not
-// supported for this model" e a página inteira falha nesse modelo. O 2.5-flash usa o
-// parâmetro antigo em tokens: 0 desliga o raciocínio (equivalente a "low"), -1 deixa o
-// próprio modelo decidir dinamicamente quanto raciocinar (equivalente ao boost "medium").
+// Os Flash-Lite (3.1/3.5) aceitam "thinkingLevel" (semântico: "low"/"medium"), igual toda
+// a linha 3.x. O 2.5-flash (geração anterior) NÃO aceita esse parâmetro — a API responde 400
+// "Thinking level is not supported for this model" e a página inteira falha nesse modelo.
+// O 2.5-flash usa o parâmetro antigo em tokens: 0 desliga o raciocínio (equivalente a "low"),
+// -1 deixa o próprio modelo decidir dinamicamente quanto raciocinar (equivalente a "medium").
 function getThinkingConfigForModel(model: string, level: "low" | "medium"): Record<string, any> {
   if (model === "gemini-2.5-flash") {
     return { thinkingBudget: level === "medium" ? -1 : 0 };
@@ -1822,7 +1819,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               model: currentModel,
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
               ],
               config: {
                 systemInstruction: prompt,
@@ -1877,7 +1874,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             // Cortou por limite de tokens: NUNCA entrega a página pela metade. Pede continuação na mesma
             // chave/modelo; só desiste (e passa pro próximo modelo/chave) se a continuação também falhar.
             const completed = await completeTruncatedTranscription(
-              ai, currentModel, [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, textOutput, streamFinishReason, keyHash
+              ai, currentModel, [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }], prompt, textOutput, streamFinishReason, keyHash
             );
             if (completed) {
               textOutput = completed;
@@ -1914,7 +1911,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 model: currentModel,
                 contents: [
                   { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                  { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+                  { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
                 ],
                 config: {
                   systemInstruction: prompt,
@@ -1933,7 +1930,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               lastModelErr = new Error("Resposta direta com repetição degenerada.");
             } else if (directText && isTruncatedResponse(directRes)) {
               const completedDirect = await completeTruncatedTranscription(
-                ai, currentModel, [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, directText, 'MAX_TOKENS', keyHash
+                ai, currentModel, [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }], prompt, directText, 'MAX_TOKENS', keyHash
               );
               if (completedDirect) {
                 textOutput = completedDirect;
@@ -1973,7 +1970,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               model: getSafeGeminiModel(),
               contents: [
                 { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
-                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }
+                { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
               ],
               config: {
                 systemInstruction: prompt,
@@ -1987,7 +1984,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               lastModelErr = new Error("Resposta de repescagem com repetição degenerada.");
             } else if (retryText && isTruncatedResponse(retryRes)) {
               const completedRetry = await completeTruncatedTranscription(
-                ai, getSafeGeminiModel(), [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" } }], prompt, retryText, 'MAX_TOKENS', keyHash
+                ai, getSafeGeminiModel(), [{ inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }], prompt, retryText, 'MAX_TOKENS', keyHash
               );
               if (completedRetry) {
                 textOutput = completedRetry;
