@@ -1017,6 +1017,18 @@ function getModelFallbackCascade(): string[] {
   return [geminiSelected, ...others];
 }
 
+// A linha 3.x aceita "thinkingLevel" (semântico: "low"/"medium"). O 2.5-flash (geração
+// anterior) NÃO aceita esse parâmetro — a API responde 400 "Thinking level is not
+// supported for this model" e a página inteira falha nesse modelo. O 2.5-flash usa o
+// parâmetro antigo em tokens: 0 desliga o raciocínio (equivalente a "low"), -1 deixa o
+// próprio modelo decidir dinamicamente quanto raciocinar (equivalente ao boost "medium").
+function getThinkingConfigForModel(model: string, level: "low" | "medium"): Record<string, any> {
+  if (model === "gemini-2.5-flash") {
+    return { thinkingBudget: level === "medium" ? -1 : 0 };
+  }
+  return { thinkingLevel: level };
+}
+
 // ── Banco de API Keys & Auto-Failover ────────────────────────
 function getAvailableGeminiKeys() {
   const rawKeys = [];
@@ -1365,7 +1377,7 @@ ${partialTextSoFar.slice(-2500)}
       systemInstruction: continuationInstruction,
       temperature: 0.1,
       maxOutputTokens: 65536,
-      thinkingConfig: { thinkingLevel: "low" }
+      thinkingConfig: getThinkingConfigForModel(model, "low")
     }
   });
   return { text: res?.text?.trim() || "", finishReason: res?.candidates?.[0]?.finishReason };
@@ -1816,7 +1828,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: boostThinking ? "medium" : "low" },
+                thinkingConfig: getThinkingConfigForModel(currentModel, boostThinking ? "medium" : "low"),
               }
             });
           } catch (initErr: any) {
@@ -1908,7 +1920,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                   systemInstruction: prompt,
                   temperature: 0.1,
                   maxOutputTokens: 65536,
-                  thinkingConfig: { thinkingLevel: boostThinking ? "medium" : "low" },
+                  thinkingConfig: getThinkingConfigForModel(currentModel, boostThinking ? "medium" : "low"),
                 }
               }),
               45000,
@@ -1967,7 +1979,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: boostThinking ? "medium" : "low" },
+                thinkingConfig: getThinkingConfigForModel(getSafeGeminiModel(), boostThinking ? "medium" : "low"),
               }
             });
             const retryText = retryRes?.text?.trim() || "";
@@ -2096,7 +2108,7 @@ REGRAS CRÍTICAS:
               systemInstruction: prompt,
               temperature: 0.1,
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingLevel: "low" }
+              thinkingConfig: getThinkingConfigForModel(activeModel, "low")
             }
           });
         } catch (initErr: any) {
@@ -2111,7 +2123,7 @@ REGRAS CRÍTICAS:
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: { thinkingLevel: "low" }
+                thinkingConfig: getThinkingConfigForModel(activeModel, "low")
               }
             });
           } else {
@@ -2180,7 +2192,7 @@ REGRAS CRÍTICAS:
               systemInstruction: prompt,
               temperature: 0.1,
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingLevel: "low" }
+              thinkingConfig: getThinkingConfigForModel(MODEL_NAME, "low")
             }
           }),
           45000,
@@ -2710,12 +2722,12 @@ REGRAS CRÍTICAS DE REFINAMENTO:
             systemInstruction,
             temperature: 0.1,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingLevel: "low" },
+            thinkingConfig: getThinkingConfigForModel(modelName, "low"),
           }
         });
 
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-        
+
         if (response && response.text) {
           return response.text.trim();
         }
@@ -3235,12 +3247,12 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
             systemInstruction,
             temperature: 0.1,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingLevel: "low" },
+            thinkingConfig: getThinkingConfigForModel(modelName, "low"),
           }
         });
 
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-        
+
         if (response && response.text) {
           return response.text.trim();
         }
