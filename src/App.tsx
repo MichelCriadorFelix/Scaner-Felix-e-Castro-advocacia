@@ -1003,6 +1003,14 @@ function setSelectedGeminiModel(model: string) {
 // existem como modelo dentro da API do Gemini), usa o Gemini padrão em vez disso — protege
 // qualquer chamada direta à API do Gemini de tentar usar "nvidia-..."/"mistral-..." como
 // nome de modelo (o que gera 404 e desperdiça tentativas em cada chave do pool).
+// A Mistral OCR rende bem só com imagem de alta resolução (~300 DPI). A imagem enviada ao
+// Gemini (1600px, ~108 DPI) é pequena demais pra ela e é a principal causa de transcrição errada.
+function isMistralSelected(): boolean {
+  return getSelectedGeminiModel() === MISTRAL_OCR_MODEL;
+}
+const MISTRAL_IMAGE_MAX_DIMENSION = 2600;
+const MISTRAL_IMAGE_JPEG_QUALITY = 0.92;
+
 function getSafeGeminiModel(): string {
   const selected = getSelectedGeminiModel();
   return GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
@@ -1177,9 +1185,9 @@ function recordKeyMinuteCall(apiKey: string): void {
 }
 
 // Aumenta o contraste, nitidez e saturação para PDFs ou imagens de baixa qualidade antes do OCR/IA, sem perder as cores originais importantes para CNH/RG.
-async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
+async function enhanceImageForGemini(imageInput: any, maxDimension: number = 1600, jpegQuality: number = 0.82): Promise<Blob> {
   try {
-    const MAX_DIMENSION = 1600;
+    const MAX_DIMENSION = maxDimension;
 
     // Caminho ultra-rápido: se já for um HTMLCanvasElement, pula toda a conversão de Blob/Image
     if (imageInput instanceof HTMLCanvasElement || (imageInput && imageInput.tagName === "CANVAS")) {
@@ -1205,7 +1213,7 @@ async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
         ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
         ctx.drawImage(srcCanvas, 0, 0, width, height);
       }
-      const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", 0.82));
+      const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", jpegQuality));
       canvas.width = 0; canvas.height = 0;
       return resBlob || new Blob([], { type: "image/jpeg" });
     }
@@ -1241,7 +1249,7 @@ async function enhanceImageForGemini(imageInput: any): Promise<Blob> {
       ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
       ctx.drawImage(img, 0, 0, width, height);
     }
-    const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", 0.82));
+    const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", jpegQuality));
     canvas.width = 0; canvas.height = 0;
     return resBlob || imageInput;
   } catch (e) {
@@ -3585,7 +3593,7 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
             `Pág ${i}/${endIdx}: Renderizando imagem escaneada...`
           );
           
-          let viewport = page.getViewport({ scale: attempt === 1 ? 1.5 : 1.0 });
+          let viewport = page.getViewport({ scale: isMistralSelected() ? (attempt === 1 ? 3.0 : 2.0) : (attempt === 1 ? 1.5 : 1.0) });
           let canvas = document.createElement("canvas");
           canvas.width = Math.floor(viewport.width);
           canvas.height = Math.floor(viewport.height);
@@ -3611,7 +3619,9 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
               Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
               `Pág ${i}/${endIdx}: Transcrevendo manuscrito/scan via IA Jurídica...`
             );
-            const enhancedBlob = await enhanceImageForGemini(finalCanvasToUse);
+            const enhancedBlob = isMistralSelected()
+              ? await enhanceImageForGemini(finalCanvasToUse, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
+              : await enhanceImageForGemini(finalCanvasToUse);
             try {
               const mistralFlags: { mistralFailed?: boolean } = {};
               const aiResult = await extractPageWithGemini(enhancedBlob, onProgress, goldStandard, activeDocumentApiKey, mistralFailedThisPage, mistralFlags);
@@ -3899,7 +3909,9 @@ async function extractImageHybrid(file, onProgress, useAi, forceAi = false, gold
   if (useAi || forceAi) {
       onProgress(20, "Extraindo via IA Jurídica (Gemini Flash)...");
       try {
-          const enhancedForAi = await enhanceImageForGemini(file);
+          const enhancedForAi = isMistralSelected()
+            ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
+            : await enhanceImageForGemini(file);
           const aiResult = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
           const aiText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
@@ -5921,7 +5933,9 @@ export default function ScannerJuridico() {
               continue;
             }
             
-            const enhancedForAi = await enhanceImageForGemini(originalColorBlob as Blob);
+            const enhancedForAi = isMistralSelected()
+              ? await enhanceImageForGemini(originalColorBlob as Blob, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
+              : await enhanceImageForGemini(originalColorBlob as Blob);
             
             setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
             const aiResult = await extractPageWithGemini(enhancedForAi, (p, msg) => {
