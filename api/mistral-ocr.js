@@ -20,7 +20,17 @@ function getMistralApiKeys() {
   return raw.split(',').map((k) => k.trim()).filter(Boolean);
 }
 
-async function callMistralOcr(apiKey, base64, mimeType, signal) {
+// "mistral-ocr-latest" passou a apontar pro OCR 4.x (tier Premier), que contas gratuitas
+// recebem com limite ZERO (429 "Rate limit exceeded" com x-ratelimit-limit-req-minute: 0).
+// O OCR 3 (mistral-ocr-2512) segue disponível no plano gratuito, então vem primeiro; o
+// "latest" fica como reserva. Pode ser sobrescrito por MISTRAL_OCR_MODEL (lista com vírgula).
+function getOcrModels() {
+  const raw = process.env.MISTRAL_OCR_MODEL || '';
+  const custom = raw.split(',').map((m) => m.trim()).filter(Boolean);
+  return custom.length > 0 ? custom : ['mistral-ocr-2512', 'mistral-ocr-latest'];
+}
+
+async function callMistralOcr(apiKey, base64, mimeType, signal, model) {
   const mistralRes = await fetch('https://api.mistral.ai/v1/ocr', {
     method: 'POST',
     headers: {
@@ -29,7 +39,7 @@ async function callMistralOcr(apiKey, base64, mimeType, signal) {
     },
     signal,
     body: JSON.stringify({
-      model: 'mistral-ocr-latest',
+      model,
       document: {
         type: 'image_url',
         image_url: `data:${mimeType || 'image/jpeg'};base64,${base64}`,
@@ -80,21 +90,24 @@ export default async function handler(req, res) {
   const startIdx = apiKeys.length > 1 ? Math.floor(Math.random() * apiKeys.length) : 0;
   const attempts = [];
   let lastError = null;
+  const models = getOcrModels();
+  // Modelo de fora pra dentro: esgota as chaves no 1º modelo antes de cair pro seguinte.
+  const combos = models.flatMap((model) =>
+    apiKeys.map((_, i) => ({ apiKey: apiKeys[(startIdx + i) % apiKeys.length], model }))
+  );
 
   try {
     for (let round = 0; round < 2; round++) {
       if (round > 0) await new Promise((r) => setTimeout(r, 1200));
       let allRateLimited = true;
 
-      for (let i = 0; i < apiKeys.length; i++) {
-        const apiKey = apiKeys[(startIdx + i) % apiKeys.length];
-
+      for (const { apiKey, model } of combos) {
         try {
-          const { ok, status, data } = await callMistralOcr(apiKey, base64, mimeType, upstreamController.signal);
+          const { ok, status, data } = await callMistralOcr(apiKey, base64, mimeType, upstreamController.signal, model);
 
           if (!ok) {
             const message = data?.message || data?.error?.message || `Mistral OCR HTTP ${status}`;
-            attempts.push({ key: '..' + apiKey.slice(-4), status, message: String(message).slice(0, 120) });
+            attempts.push({ key: '..' + apiKey.slice(-4), model, status, message: String(message).slice(0, 120) });
             lastError = { status, message };
             if (status !== 429) allRateLimited = false;
             // Problema da própria requisição (400/413/422): outra chave daria o mesmo erro.
@@ -102,7 +115,7 @@ export default async function handler(req, res) {
               res.status(status).json({ error: message, keysConfigured: apiKeys.length, attempts });
               return;
             }
-            console.warn(`[Mistral OCR] Chave ..${apiKey.slice(-4)} falhou (${status}), tentando próxima...`);
+            console.warn(`[Mistral OCR] ${model} / chave ..${apiKey.slice(-4)} falhou (${status}), tentando próxima combinação...`);
             continue;
           }
 
@@ -125,7 +138,7 @@ export default async function handler(req, res) {
         } catch (innerErr) {
           if (innerErr?.name === 'AbortError') throw innerErr;
           allRateLimited = false;
-          attempts.push({ key: '..' + apiKey.slice(-4), status: 0, message: String(innerErr?.message || innerErr).slice(0, 120) });
+          attempts.push({ key: '..' + apiKey.slice(-4), model, status: 0, message: String(innerErr?.message || innerErr).slice(0, 120) });
           lastError = { status: 502, message: String(innerErr?.message || innerErr) };
         }
       }
