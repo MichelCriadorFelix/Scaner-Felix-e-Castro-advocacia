@@ -1617,12 +1617,23 @@ async function extractPageWithNvidiaNemotron(blob: Blob, onProgress?: (p: number
 // extrai o texto bruto da página, sem aplicar as regras do Padrão Ouro (isso fica pro botão
 // manual "Refinar com IA", se o advogado quiser, já que aqui não tem chamada de raciocínio).
 async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, msg: string) => void): Promise<{ text: string; usedKey: string; confidence?: number | null }> {
-  const base64: string = await new Promise((resolve, reject) => {
+  const toBase64 = (b: Blob): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve((reader.result as string).split(',')[1]);
     reader.onerror = reject;
-    reader.readAsDataURL(blob);
+    reader.readAsDataURL(b);
   });
+  let base64: string = await toBase64(blob);
+
+  // A Vercel recusa (HTTP 413, antes mesmo de chegar na função — por isso nenhuma chave da
+  // Mistral chega a ser tentada) qualquer requisição acima de ~4,5MB. Imagem em alta
+  // resolução de página escaneada densa pode passar disso: reduz aos poucos até caber.
+  const MAX_BASE64_CHARS = 4_000_000;
+  for (const [dim, quality] of [[2200, 0.88], [1900, 0.85], [1600, 0.8]] as [number, number][]) {
+    if (base64.length <= MAX_BASE64_CHARS) break;
+    const smaller = await enhanceImageForGemini(blob, dim, quality);
+    base64 = await toBase64(smaller);
+  }
 
   // OCR dedicada responde em poucos segundos — 2 tentativas de 25s cada (nunca 3x60s como
   // um modelo de raciocínio) pra não segurar o fallback pro Gemini por minutos à toa.

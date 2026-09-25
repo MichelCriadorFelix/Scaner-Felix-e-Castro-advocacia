@@ -81,8 +81,10 @@ export default async function handler(req, res) {
 
         if (!ok) {
           const msg = (data?.message || data?.error?.message || `Mistral OCR HTTP ${status}`).toLowerCase();
-          const isRateLimitOrQuota = status === 429 || status === 401 || status === 403 || msg.includes('rate limit') || msg.includes('quota');
-          if (isRateLimitOrQuota && i < apiKeys.length - 1) {
+          // Só NÃO troca de chave quando o problema é a própria requisição (400/413/422 — outra
+          // chave daria o mesmo erro). Qualquer outra falha (429, 401, 403, 5xx...) tenta a próxima.
+          const isRequestProblem = status === 400 || status === 413 || status === 422;
+          if (!isRequestProblem && i < apiKeys.length - 1) {
             console.warn(`[Mistral OCR] Chave ..${apiKey.slice(-6)} falhou (${status}), tentando próxima chave...`);
             lastError = { status, message: data?.message || data?.error?.message || `Mistral OCR HTTP ${status}` };
             continue;
