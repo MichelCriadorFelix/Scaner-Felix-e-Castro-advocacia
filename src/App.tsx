@@ -1639,6 +1639,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
   // um modelo de raciocínio) pra não segurar o fallback pro Gemini por minutos à toa.
   const MAX_ATTEMPTS = 2;
   let lastErr: any = null;
+  let usedSmallImage = false;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
@@ -1690,6 +1691,16 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
       // Cota/chave da Mistral esgotada ou recusada (todas as chaves do servidor já foram
       // tentadas lá): repetir só gasta tempo. Entra em pausa e as próximas páginas vão direto
       // pro Gemini, em vez de cada uma esperar ~50s pra descobrir a mesma coisa.
+      const isAuthProblem = msg.includes('401') || msg.includes('403') || msg.includes('unauthorized');
+      // 429 em chave NOVA, nas duas contas, logo na 1ª página (visto na prática depois que a
+      // imagem passou a ir em ~300 DPI) aponta pro tamanho da imagem, não pra cota: antes de
+      // desistir, reenvia UMA vez no tamanho antigo (1600px), que já funcionava.
+      if (!isAuthProblem && !usedSmallImage && (msg.includes('429') || msg.includes('rate limit'))) {
+        usedSmallImage = true;
+        console.warn('[Mistral OCR] 429 com a imagem grande — reenviando a página em tamanho menor (1600px) antes de desistir...');
+        base64 = await toBase64(await enhanceImageForGemini(blob, 1600, 0.82));
+        continue;
+      }
       if (msg.includes('429') || msg.includes('401') || msg.includes('403') || msg.includes('rate limit') || msg.includes('quota') || msg.includes('unauthorized') || msg.includes('capacity')) {
         startMistralCooldown(msg.includes('401') || msg.includes('403') || msg.includes('unauthorized') ? 10 * 60 * 1000 : 2 * 60 * 1000, 'cota/chave recusada');
         throw e;
