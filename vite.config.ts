@@ -9,15 +9,21 @@ export default defineConfig(({mode}) => {
   // Combina env do Vite com process.env do Node para garantir que pegamos tudo da Vercel
   const allAvailableEnv = { ...process.env, ...env };
 
-  // Mapeia todas as variáveis de ambiente que tenham "GEMINI" ou seja "API_KEY"
+  // Chaves de OUTROS provedores (Mistral, NVIDIA...) são usadas só no servidor (api/*.js) e
+  // NUNCA podem ir pro bundle do navegador — o filtro "API_KEY" abaixo as pegava por engano,
+  // expondo-as publicamente no JavaScript do site e ainda misturando-as no pool de chaves Gemini.
+  const isGeminiClientKey = (key: string) =>
+    (key.includes('GEMINI') || key.includes('API_KEY')) && !/MISTRAL|NVIDIA|OPENROUTER|OPENAI|ANTHROPIC|GROQ|SUPABASE|SERVICE_ROLE|SECRET/i.test(key);
+
+  // Mapeia as variáveis de ambiente com "GEMINI" ou "API_KEY" (exceto as de outros provedores)
   const geminiKeysList = Object.keys(allAvailableEnv)
-    .filter(key => key.includes('GEMINI') || key.includes('API_KEY'))
+    .filter(isGeminiClientKey)
     .map(key => allAvailableEnv[key])
     .filter(Boolean)
     .join(',');
 
   const geminiEnvVars = Object.keys(allAvailableEnv)
-    .filter(key => key.includes('GEMINI') || key.includes('API_KEY'))
+    .filter(isGeminiClientKey)
     .reduce((acc, key) => {
       acc[`process.env.${key}`] = JSON.stringify(allAvailableEnv[key]);
       return acc;
