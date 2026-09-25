@@ -50,6 +50,31 @@ export default async function handler(req, res) {
   // Diagnóstico rápido (abrir /api/mistral-ocr no navegador): mostra quantas chaves o
   // servidor realmente leu da variável MISTRAL_API_KEY, só com os 4 últimos caracteres.
   if (req.method === 'GET') {
+    // ?probe=1 (TEMPORÁRIO, só pra achar a causa do 429): faz UMA chamada mínima de OCR com
+    // cada chave e devolve status, cabeçalhos de limite e corpo da resposta da Mistral, além
+    // do IP de saída e da região do servidor — sem expor a chave em si.
+    if (req.query && req.query.probe) {
+      const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+      let egressIp = null;
+      try { egressIp = (await (await fetch('https://api.ipify.org?format=json')).json()).ip; } catch (e) {}
+      const results = [];
+      for (const k of apiKeys) {
+        try {
+          const r = await fetch('https://api.mistral.ai/v1/ocr', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: 'mistral-ocr-latest', document: { type: 'image_url', image_url: `data:image/png;base64,${tinyPng}` } }),
+          });
+          const headers = {};
+          r.headers.forEach((v, name) => { if (name !== 'set-cookie') headers[name] = v; });
+          results.push({ key: '..' + k.slice(-4), status: r.status, headers, body: (await r.text()).slice(0, 400) });
+        } catch (e) {
+          results.push({ key: '..' + k.slice(-4), error: String(e?.message || e) });
+        }
+      }
+      res.status(200).json({ egressIp, region: process.env.VERCEL_REGION || null, results });
+      return;
+    }
     res.status(200).json({ keysConfigured: apiKeys.length, keys: apiKeys.map((k) => '..' + k.slice(-4)) });
     return;
   }
