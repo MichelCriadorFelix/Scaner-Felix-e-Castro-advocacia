@@ -1664,6 +1664,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
+        if (data?.attempts) console.warn(`[Mistral OCR] Servidor tem ${data.keysConfigured} chave(s) configurada(s). Tentativas:`, data.attempts);
         throw new Error(data?.error || `Mistral OCR HTTP ${res.status}`);
       }
 
@@ -1690,7 +1691,7 @@ async function extractPageWithMistralOCR(blob: Blob, onProgress?: (p: number, ms
       // tentadas lá): repetir só gasta tempo. Entra em pausa e as próximas páginas vão direto
       // pro Gemini, em vez de cada uma esperar ~50s pra descobrir a mesma coisa.
       if (msg.includes('429') || msg.includes('401') || msg.includes('403') || msg.includes('rate limit') || msg.includes('quota') || msg.includes('unauthorized') || msg.includes('capacity')) {
-        startMistralCooldown(10 * 60 * 1000, 'cota/chave recusada');
+        startMistralCooldown(msg.includes('401') || msg.includes('403') || msg.includes('unauthorized') ? 10 * 60 * 1000 : 2 * 60 * 1000, 'cota/chave recusada');
         throw e;
       }
       if (isTimeout || msg.includes('503') || msg.includes('timeout')) {

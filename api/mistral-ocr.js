@@ -45,12 +45,20 @@ async function callMistralOcr(apiKey, base64, mimeType, signal) {
 }
 
 export default async function handler(req, res) {
+  const apiKeys = getMistralApiKeys();
+
+  // Diagnóstico rápido (abrir /api/mistral-ocr no navegador): mostra quantas chaves o
+  // servidor realmente leu da variável MISTRAL_API_KEY, só com os 4 últimos caracteres.
+  if (req.method === 'GET') {
+    res.status(200).json({ keysConfigured: apiKeys.length, keys: apiKeys.map((k) => '..' + k.slice(-4)) });
+    return;
+  }
+
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Método não permitido.' });
     return;
   }
 
-  const apiKeys = getMistralApiKeys();
   if (apiKeys.length === 0) {
     res.status(500).json({ error: 'Mistral OCR não configurada no servidor (MISTRAL_API_KEY ausente).' });
     return;
@@ -66,69 +74,78 @@ export default async function handler(req, res) {
   const upstreamController = new AbortController();
   const upstreamTimeout = setTimeout(() => upstreamController.abort(), 20000);
 
-  // Começa por uma chave aleatória (espalha carga entre as contas quando há mais de uma) e,
-  // se ela bater limite de taxa/cota, cai pra próxima automaticamente na MESMA requisição —
-  // o cliente nem percebe qual chave respondeu.
+  // Começa por uma chave aleatória (espalha carga entre as contas) e, se ela falhar, cai pra
+  // próxima na MESMA requisição. Se TODAS derem 429 (o plano gratuito da Mistral limita a
+  // ~1 requisição/segundo por conta), espera ~1,2s e faz mais uma rodada antes de desistir.
   const startIdx = apiKeys.length > 1 ? Math.floor(Math.random() * apiKeys.length) : 0;
+  const attempts = [];
   let lastError = null;
 
   try {
-    for (let i = 0; i < apiKeys.length; i++) {
-      const apiKey = apiKeys[(startIdx + i) % apiKeys.length];
+    for (let round = 0; round < 2; round++) {
+      if (round > 0) await new Promise((r) => setTimeout(r, 1200));
+      let allRateLimited = true;
 
-      try {
-        const { ok, status, data } = await callMistralOcr(apiKey, base64, mimeType, upstreamController.signal);
+      for (let i = 0; i < apiKeys.length; i++) {
+        const apiKey = apiKeys[(startIdx + i) % apiKeys.length];
 
-        if (!ok) {
-          const msg = (data?.message || data?.error?.message || `Mistral OCR HTTP ${status}`).toLowerCase();
-          // Só NÃO troca de chave quando o problema é a própria requisição (400/413/422 — outra
-          // chave daria o mesmo erro). Qualquer outra falha (429, 401, 403, 5xx...) tenta a próxima.
-          const isRequestProblem = status === 400 || status === 413 || status === 422;
-          if (!isRequestProblem && i < apiKeys.length - 1) {
-            console.warn(`[Mistral OCR] Chave ..${apiKey.slice(-6)} falhou (${status}), tentando próxima chave...`);
-            lastError = { status, message: data?.message || data?.error?.message || `Mistral OCR HTTP ${status}` };
+        try {
+          const { ok, status, data } = await callMistralOcr(apiKey, base64, mimeType, upstreamController.signal);
+
+          if (!ok) {
+            const message = data?.message || data?.error?.message || `Mistral OCR HTTP ${status}`;
+            attempts.push({ key: '..' + apiKey.slice(-4), status, message: String(message).slice(0, 120) });
+            lastError = { status, message };
+            if (status !== 429) allRateLimited = false;
+            // Problema da própria requisição (400/413/422): outra chave daria o mesmo erro.
+            if (status === 400 || status === 413 || status === 422) {
+              res.status(status).json({ error: message, keysConfigured: apiKeys.length, attempts });
+              return;
+            }
+            console.warn(`[Mistral OCR] Chave ..${apiKey.slice(-4)} falhou (${status}), tentando próxima...`);
             continue;
           }
-          res.status(status).json({ error: data?.message || data?.error?.message || `Mistral OCR HTTP ${status}` });
+
+          const text = (data?.pages || [])
+            .map((p) => p?.markdown || '')
+            .join('\n\n')
+            .trim();
+
+          // Formato exato do campo de confiança ainda não 100% confirmado em produção — tenta
+          // os caminhos plausíveis e cai pra null se nenhum bater, em vez de quebrar.
+          const firstPage = (data?.pages || [])[0];
+          const confidence =
+            firstPage?.confidence_scores?.average_content_confidence_score ??
+            firstPage?.confidence_scores?.average_confidence_score ??
+            firstPage?.confidence?.average_content_confidence_score ??
+            (typeof firstPage?.confidence === 'number' ? firstPage.confidence : null);
+
+          res.status(200).json({ text, confidence });
           return;
+        } catch (innerErr) {
+          if (innerErr?.name === 'AbortError') throw innerErr;
+          allRateLimited = false;
+          attempts.push({ key: '..' + apiKey.slice(-4), status: 0, message: String(innerErr?.message || innerErr).slice(0, 120) });
+          lastError = { status: 502, message: String(innerErr?.message || innerErr) };
         }
-
-        const text = (data?.pages || [])
-          .map((p) => p?.markdown || '')
-          .join('\n\n')
-          .trim();
-
-        // Formato exato do campo de confiança ainda não 100% confirmado em produção — tenta
-        // os caminhos plausíveis e cai pra null (o cliente usa a heurística de texto como
-        // reforço) se nenhum bater, em vez de quebrar.
-        const firstPage = (data?.pages || [])[0];
-        const confidence =
-          firstPage?.confidence_scores?.average_content_confidence_score ??
-          firstPage?.confidence_scores?.average_confidence_score ??
-          firstPage?.confidence?.average_content_confidence_score ??
-          (typeof firstPage?.confidence === 'number' ? firstPage.confidence : null);
-
-        res.status(200).json({ text, confidence });
-        return;
-      } catch (innerErr) {
-        // Erro de rede/parse numa chave específica: tenta a próxima antes de desistir.
-        lastError = innerErr;
-        if (i < apiKeys.length - 1) {
-          console.warn(`[Mistral OCR] Erro com chave ..${apiKey.slice(-6)}, tentando próxima:`, innerErr?.message || innerErr);
-          continue;
-        }
-        throw innerErr;
       }
+
+      if (!allRateLimited) break;
     }
 
-    // Todas as chaves falharam por rate limit/cota.
-    res.status(lastError?.status || 502).json({ error: lastError?.message || 'Todas as chaves da Mistral falharam.' });
+    res.status(lastError?.status || 502).json({
+      error: lastError?.message || 'Todas as chaves da Mistral falharam.',
+      keysConfigured: apiKeys.length,
+      attempts,
+    });
   } catch (e) {
     const isTimeout = e?.name === 'AbortError';
     res.status(isTimeout ? 504 : 502).json({
       error: isTimeout
         ? 'timeout: a Mistral OCR demorou demais pra responder (20s) — isso é incomum pra uma página só.'
         : String(e?.message || e),
+      keysConfigured: apiKeys.length,
+      attempts,
     });
   } finally {
     clearTimeout(upstreamTimeout);
