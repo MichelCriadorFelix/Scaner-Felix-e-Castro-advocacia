@@ -8087,7 +8087,7 @@ export default function ScannerJuridico() {
                  style={{background: G.bg, border: `1px solid ${G.border}`, outline: 'none', padding: '12px', color: G.text, borderRadius: '8px', width: '100%', fontSize: '14px', cursor: 'pointer'}}
                >
                  <option value="unassigned">Geral (Sem Pasta Específica)</option>
-                 {clients.map(c => <option key={c.id} value={c.id}>{c.parentId ? '↳ ' : ''}{c.name}</option>)}
+                 {clients.filter(c => !isFolderArchived(c) || c.id === selectedClient).map(c => <option key={c.id} value={c.id}>{isFolderArchived(c) ? '📦 ' : ''}{c.parentId ? '↳ ' : ''}{c.name}{isFolderArchived(c) ? ' (arquivada)' : ''}</option>)}
                </select>
             </div>
 
@@ -8758,8 +8758,8 @@ export default function ScannerJuridico() {
                       }}
                     >
                       <option value="">Geral (Sem Pasta Específica)</option>
-                      {clients.map(c => (
-                        <option key={c.id} value={c.id}>{c.parentId ? '↳ ' : ''}{c.name}</option>
+                      {clients.filter(c => !isFolderArchived(c) || c.id === selectedClient).map(c => (
+                        <option key={c.id} value={c.id}>{isFolderArchived(c) ? '📦 ' : ''}{c.parentId ? '↳ ' : ''}{c.name}{isFolderArchived(c) ? ' (arquivada)' : ''}</option>
                       ))}
                     </select>
                   </div>
