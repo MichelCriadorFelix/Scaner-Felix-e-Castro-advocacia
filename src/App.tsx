@@ -4256,7 +4256,7 @@ export default function ScannerJuridico() {
   // Novas variáveis de estado para busca de clientes e documentos (para fácil navegação com o crescimento do app)
   const [moveSearch, setMoveSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
-  const [showArchivedFolders, setShowArchivedFolders] = useState(false);
+  const [folderTab, setFolderTab] = useState<'active' | 'archived'>('active');
   const [docSearch, setDocSearch] = useState("");
 
   // Estados para Modal de Progresso da Compilação
@@ -7279,6 +7279,12 @@ export default function ScannerJuridico() {
     }
   };
 
+  // Subpasta acompanha a pasta principal: está "arquivada" quando a pasta-mãe está.
+  const isFolderArchived = (c) => !!(c.archived || (c.parentId && clients.find(p => p.id === c.parentId)?.archived));
+  // Sem nenhuma arquivada não existem abas: evita ficar preso na aba "Arquivadas" vazia
+  // depois de desarquivar a última pasta.
+  const effectiveFolderTab: 'active' | 'archived' = clients.some(c => !c.parentId && c.archived) ? folderTab : 'active';
+
   const toggleArchiveClient = async (client) => {
     if (!supabase) {
       showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
@@ -9154,14 +9160,6 @@ export default function ScannerJuridico() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Pastas de Clientes</h3>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    {clients.some(c => !c.parentId && c.archived) && (
-                      <button
-                        onClick={() => setShowArchivedFolders(v => !v)}
-                        style={{ background: showArchivedFolders ? G.card : 'transparent', color: G.muted, border: `1px solid ${G.border}`, padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
-                      >
-                        {showArchivedFolders ? 'Ocultar arquivadas' : `📦 Ver arquivadas (${clients.filter(c => !c.parentId && c.archived).length})`}
-                      </button>
-                    )}
                     <button 
                       onClick={() => setIsCreatingClient(true)}
                       style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
@@ -9210,8 +9208,36 @@ export default function ScannerJuridico() {
                     />
                   </div>
 
+                  {(() => {
+                    const archivedTotal = clients.filter(c => !c.parentId && c.archived).length;
+                    if (archivedTotal === 0) return null;
+                    const activeTotal = clients.filter(c => !c.parentId && !c.archived).length;
+                    const tabStyle = (on: boolean) => ({
+                      flex: 1, padding: '10px 14px', borderRadius: '10px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 as const,
+                      border: `1px solid ${on ? G.accent : G.border}`,
+                      background: on ? 'rgba(212, 175, 55, 0.12)' : G.card,
+                      color: on ? G.accent : G.muted,
+                    });
+                    return (
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                        <button onClick={() => setFolderTab('active')} style={tabStyle(effectiveFolderTab === 'active')}>📂 Ativas ({activeTotal})</button>
+                        <button onClick={() => setFolderTab('archived')} style={tabStyle(effectiveFolderTab === 'archived')}>📦 Arquivadas ({archivedTotal})</button>
+                      </div>
+                    );
+                  })()}
+
+                  {clientSearch.trim() !== "" && (() => {
+                    const q = clientSearch.toLowerCase();
+                    const inOtherTab = clients.filter(c => c.name.toLowerCase().includes(q) && isFolderArchived(c) !== (effectiveFolderTab === 'archived')).length;
+                    return inOtherTab > 0 ? (
+                      <div style={{ fontSize: '12px', color: G.muted, marginBottom: '12px' }}>
+                        {inOtherTab} resultado(s) na aba {effectiveFolderTab === 'archived' ? 'Ativas' : 'Arquivadas'}.
+                      </div>
+                    ) : null;
+                  })()}
+
                   <div className="folders-grid">
-                    {clientSearch.trim() === "" && (
+                    {clientSearch.trim() === "" && effectiveFolderTab === 'active' && (
                       <div 
                         className="folder-card"
                         onClick={() => setViewingClient('unassigned')}
@@ -9227,8 +9253,8 @@ export default function ScannerJuridico() {
                     )}
 
                     {(clientSearch.trim() === "" 
-                      ? clients.filter(c => !c.parentId && (showArchivedFolders || !c.archived))
-                      : clients.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
+                      ? clients.filter(c => !c.parentId && isFolderArchived(c) === (effectiveFolderTab === 'archived'))
+                      : clients.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase()) && isFolderArchived(c) === (effectiveFolderTab === 'archived'))
                     ).map(c => {
                       const docsCount = history.filter(h => h.clientId === c.id).length;
                       const subfoldersCount = clients.filter(sub => sub.parentId === c.id).length;
@@ -9238,7 +9264,7 @@ export default function ScannerJuridico() {
                           key={c.id}
                           className="folder-card"
                           onClick={() => setViewingClient(c.id)}
-                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s', opacity: c.archived ? 0.6 : 1 }}
+                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
                         >
                           <div style={{ fontSize: '24px' }}>{c.archived ? '📦' : '📂'}</div>
                           <div style={{ flex: 1 }}>
@@ -9268,9 +9294,6 @@ export default function ScannerJuridico() {
                                   title="Renomear Pasta"
                                 >✏️</button>
                               </div>
-                            )}
-                            {c.archived && (
-                              <div style={{ fontSize: '11px', color: G.muted, marginTop: '2px' }}>📦 Arquivada</div>
                             )}
                             {parent && (
                               <div style={{ fontSize: '11px', color: G.accent, marginTop: '2px' }}>
