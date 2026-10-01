@@ -5050,8 +5050,29 @@ export default function ScannerJuridico() {
           }));
         }
         
-        const { data: dData } = await supabase.from('lexscan_documents').select('id, client_id, name, file_type, file_url, confidence, chars_count, words_count, created_at, has_failed_pages').order('created_at', { ascending: false });
-        if (dData) {
+        // O Supabase devolve no máximo 1000 linhas por consulta: sem paginar, só os 1000
+        // documentos mais recentes apareciam e as pastas dos mais antigos pareciam vazias
+        // (o banco já passava de 1400). Busca em páginas de 1000 até acabar; o desempate por
+        // id mantém a ordem estável entre as páginas, sem repetir nem pular documentos.
+        const PAGE_SIZE = 1000;
+        const dData: any[] = [];
+        let loadedAll = true;
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const { data: page, error: pageError } = await supabase
+            .from('lexscan_documents')
+            .select('id, client_id, name, file_type, file_url, confidence, chars_count, words_count, created_at, has_failed_pages')
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true })
+            .range(from, from + PAGE_SIZE - 1);
+          if (pageError || !page) {
+            console.error('Erro ao carregar documentos (página a partir de ' + from + '):', pageError);
+            loadedAll = false;
+            break;
+          }
+          dData.push(...page);
+          if (page.length < PAGE_SIZE) break;
+        }
+        if (loadedAll) {
           setHistory(dData.map(d => ({
             id: d.id,
             clientId: d.client_id || 'unassigned',
