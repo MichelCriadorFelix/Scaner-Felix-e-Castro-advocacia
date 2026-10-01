@@ -4256,6 +4256,7 @@ export default function ScannerJuridico() {
   // Novas variáveis de estado para busca de clientes e documentos (para fácil navegação com o crescimento do app)
   const [moveSearch, setMoveSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
+  const [showArchivedFolders, setShowArchivedFolders] = useState(false);
   const [docSearch, setDocSearch] = useState("");
 
   // Estados para Modal de Progresso da Compilação
@@ -5045,7 +5046,7 @@ export default function ScannerJuridico() {
                 parentId = parts[0];
                 name = parts.slice(1).join('::');
              }
-             return { id: c.id, name, parentId, ts: c.created_at, originalName: c.name };
+             return { id: c.id, name, parentId, ts: c.created_at, originalName: c.name, archived: !!c.archived };
           }));
         }
         
@@ -7244,7 +7245,7 @@ export default function ScannerJuridico() {
              parentId = parts[0];
              name = parts.slice(1).join('::');
           }
-          const nc = { id: data[0].id, name, parentId, ts: data[0].created_at, originalName: data[0].name };
+          const nc = { id: data[0].id, name, parentId, ts: data[0].created_at, originalName: data[0].name, archived: false };
           if (!parentId) {
             setSelectedClient(nc.id); // select it in drop down if it's a main folder
           }
@@ -7255,6 +7256,22 @@ export default function ScannerJuridico() {
     } else {
       showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
     }
+  };
+
+  const toggleArchiveClient = async (client) => {
+    if (!supabase) {
+      showToast("Supabase obrigatório! Erro na conexão do BD.", "error");
+      return;
+    }
+    const nextArchived = !client.archived;
+    const { error } = await supabase.from('lexscan_clients').update({ archived: nextArchived }).eq('id', client.id);
+    if (error) {
+      console.error("Supabase Error:", error);
+      showToast("Erro ao " + (nextArchived ? "arquivar" : "desarquivar") + " pasta: " + error.message, "error");
+      return;
+    }
+    setClients(prev => prev.map(c => c.id === client.id ? { ...c, archived: nextArchived } : c));
+    showToast(nextArchived ? `Pasta "${client.name}" arquivada.` : `Pasta "${client.name}" voltou para a lista principal.`);
   };
 
   const handleRenameClient = async () => {
@@ -9115,12 +9132,22 @@ export default function ScannerJuridico() {
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>Pastas de Clientes</h3>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {clients.some(c => !c.parentId && c.archived) && (
+                      <button
+                        onClick={() => setShowArchivedFolders(v => !v)}
+                        style={{ background: showArchivedFolders ? G.card : 'transparent', color: G.muted, border: `1px solid ${G.border}`, padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
+                      >
+                        {showArchivedFolders ? 'Ocultar arquivadas' : `📦 Ver arquivadas (${clients.filter(c => !c.parentId && c.archived).length})`}
+                      </button>
+                    )}
                     <button 
                       onClick={() => setIsCreatingClient(true)}
                       style={{ background: G.accent, color: '#000', border: 'none', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '12px' }}
                     >
                       + Nova Pasta
                     </button>
+                    </div>
                   </div>
 
                   {isCreatingClient && (
@@ -9179,7 +9206,7 @@ export default function ScannerJuridico() {
                     )}
 
                     {(clientSearch.trim() === "" 
-                      ? clients.filter(c => !c.parentId)
+                      ? clients.filter(c => !c.parentId && (showArchivedFolders || !c.archived))
                       : clients.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
                     ).map(c => {
                       const docsCount = history.filter(h => h.clientId === c.id).length;
@@ -9190,9 +9217,9 @@ export default function ScannerJuridico() {
                           key={c.id}
                           className="folder-card"
                           onClick={() => setViewingClient(c.id)}
-                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s' }}
+                          style={{ background: G.card, padding: '16px', borderRadius: '12px', border: `1px solid ${G.border}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'all .2s', opacity: c.archived ? 0.6 : 1 }}
                         >
-                          <div style={{ fontSize: '24px' }}>📂</div>
+                          <div style={{ fontSize: '24px' }}>{c.archived ? '📦' : '📂'}</div>
                           <div style={{ flex: 1 }}>
                             {renamingClient?.id === c.id ? (
                               <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
@@ -9221,6 +9248,9 @@ export default function ScannerJuridico() {
                                 >✏️</button>
                               </div>
                             )}
+                            {c.archived && (
+                              <div style={{ fontSize: '11px', color: G.muted, marginTop: '2px' }}>📦 Arquivada</div>
+                            )}
                             {parent && (
                               <div style={{ fontSize: '11px', color: G.accent, marginTop: '2px' }}>
                                 ↳ Subpasta de: {parent.name}
@@ -9230,6 +9260,13 @@ export default function ScannerJuridico() {
                               {docsCount} documentos {subfoldersCount > 0 ? `• ${subfoldersCount} subpasta${subfoldersCount>1?'s':''}` : ''}
                             </div>
                           </div>
+                          {!c.parentId && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleArchiveClient(c); }}
+                              style={{ background: 'none', border: 'none', color: G.muted, cursor: 'pointer', padding: '4px', fontSize: '16px' }}
+                              title={c.archived ? "Desarquivar Pasta" : "Arquivar Pasta"}
+                            >{c.archived ? '♻️' : '📦'}</button>
+                          )}
                           <button 
                             onClick={(e) => { e.stopPropagation(); deleteClientHandler(c.id, c.name); }}
                             style={{ background: 'none', border: 'none', color: G.error, cursor: 'pointer', padding: '4px', fontSize: '16px' }}
