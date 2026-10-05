@@ -1224,9 +1224,9 @@ function getModelFallbackCascade(hard: boolean = false): string[] {
   const geminiSelected = getSafeGeminiModel();
   const all = GEMINI_MODEL_OPTIONS.map(m => m.value);
   if (hard) {
-    // Manuscrito difícil (checkbox ou releitura automática): os modelos que leram melhor vêm
-    // primeiro, independentemente do seletor — o app decide sozinho, sem depender de o advogado
-    // saber qual escolher. O seletor continua mandando nas páginas normais.
+    // Releitura automática de página difícil: os modelos que leram melhor vêm primeiro,
+    // independentemente do seletor — o app decide sozinho, sem depender de o advogado saber qual
+    // escolher. O seletor continua mandando nas páginas normais e quando o checkbox é marcado à mão.
     const best = ["gemini-3.8-flash", "gemini-3.5-flash"].filter(m => all.includes(m));
     const ordered = [...best, geminiSelected, ...all];
     return ordered.filter((m, i) => ordered.indexOf(m) === i);
@@ -2110,7 +2110,10 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   
   const prompt = hardMode ? getHardHandwritingSystemPrompt() : getPadraoOuroPrompt();
 
-  const modelsToTry = getModelFallbackCascade(hardMode);
+  // "Melhor modelo primeiro" só vale pra releitura AUTOMÁTICA (forceHard sem o checkbox). Se o
+  // advogado marcou o checkbox à mão, o modelo que ele escolheu no seletor manda — ele pode estar
+  // testando justamente aquele modelo.
+  const modelsToTry = getModelFallbackCascade(forceHard && !isHardHandwritingEnabled());
 
   // Modo "Manuscrito difícil": quem escolhe um modelo bom pra ler letra ruim (ex.: 3.8) não quer
   // cair pro 2.5 no primeiro 503. O 503 é intermitente (atinge parte das requisições), então
