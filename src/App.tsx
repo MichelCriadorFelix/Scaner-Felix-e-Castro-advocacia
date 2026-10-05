@@ -1029,6 +1029,84 @@ function wantsHighResImage(): boolean {
   return isMistralSelected() || hardHandwritingRuntime;
 }
 
+// Nome da pasta do cliente do documento em processamento (definido nos pontos de entrada da
+// extração). Serve de DICA pro modo "Manuscrito difícil" conferir nomes de letra ruim — sem ela,
+// cada página é lida isolada e o modelo inventa um nome plausível (visto: "Floraci…Paiva" no
+// lugar de "Maria de Fátima Dutra Pires").
+let ocrContextClientName = "";
+function setOcrContextClientName(name: string): void {
+  ocrContextClientName = (name || "").trim();
+}
+
+function buildClientNameHint(): string {
+  if (!ocrContextClientName) return "";
+  return `\n- Dica de contexto: a pasta deste documento se chama "${ocrContextClientName}". Use isso APENAS pra conferir se um nome manuscrito parecido é o dela (se as letras forem compatíveis, escreva o nome completo da dica). Se o nome escrito no papel for claramente outro, transcreva o que está no papel. NUNCA escreva um nome que não esteja no papel.`;
+}
+
+const BASE_TRANSCRIPTION_TEXT = "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema.";
+
+const HARD_HANDWRITING_RULES = `
+MODO MANUSCRITO DIFÍCIL — regras extras (têm prioridade sobre a ideia de "parecer completo"):
+- Leia palavra por palavra, comparando o formato das letras. Use o contexto clínico e o que está IMPRESSO no papel (papel timbrado, nome da clínica, nome e especialidade do médico) pra decifrar.
+- Se você NÃO tiver razoável certeza de uma palavra, NÃO complete com algo só porque é plausível: escreva a melhor leitura seguida de [?] (ex.: "Discais[?]"). Se nada puder ser lido, use [ILEGÍVEL]. Marcar a dúvida é MAIS importante do que entregar o texto aparentemente completo.
+- Números de CRM, CPF, datas, doses e códigos CID: só escreva o que você consegue ler com clareza; dígito duvidoso vira [?]. NUNCA invente dígitos.
+- Carimbo borrado ou desbotado: transcreva só as partes legíveis, o resto como [ILEGÍVEL].`;
+
+function buildTranscriptionUserText(): string {
+  if (!hardHandwritingRuntime) return BASE_TRANSCRIPTION_TEXT;
+  return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildClientNameHint();
+}
+
+// Segunda passada do modo "Manuscrito difícil": o modelo relê a imagem com a 1ª transcrição
+// na mão e corrige só o que a imagem contradiz (palavras inventadas por plausibilidade). Qualquer
+// falha, resposta suspeita ou tamanho muito diferente descarta a conferência e mantém a 1ª leitura.
+async function verifyHardHandwriting(ai: any, model: string, imagePart: any, firstText: string, keyHash: string): Promise<string | null> {
+  const systemInstruction = `Você é um REVISOR de transcrições de manuscritos médicos/jurídicos do escritório Félix & Castro Advocacia. Receberá a IMAGEM de uma página e uma transcrição feita por outro leitor. Sua tarefa: reler a imagem com muita atenção, palavra por palavra, e devolver a transcrição CORRIGIDA.
+REGRAS:
+1. Mantenha EXATAMENTE o mesmo formato da transcrição recebida (metadados TÍTULO/TIPO/ÁREA/OBS, linha divisória, estrutura e tudo que já está certo). Não resuma, não reordene, não remova trechos corretos.
+2. Corrija somente onde a imagem mostrar algo diferente. Desconfie de palavras e nomes que o outro leitor possa ter completado só por parecerem plausíveis: confira cada uma contra o formato das letras.
+3. Use o contexto clínico e o que está impresso no papel (timbre, clínica, nome e especialidade do médico) pra decifrar.
+4. Se continuar sem certeza, mantenha a melhor leitura com [?] ou use [ILEGÍVEL]. NUNCA invente nomes, dígitos de CRM/CPF, datas ou doses.
+5. Responda SOMENTE com a transcrição corrigida completa, sem comentários e sem blocos de código.${buildClientNameHint()}`;
+  try {
+    const res: any = await withTimeout(
+      ai.models.generateContent({
+        model,
+        contents: [
+          { text: `TRANSCRIÇÃO A CONFERIR (feita por outro leitor):\n<<<\n${firstText}\n>>>\n\nReleia a imagem e devolva a transcrição corrigida.` },
+          imagePart,
+        ],
+        config: {
+          systemInstruction,
+          temperature: 0.1,
+          maxOutputTokens: 65536,
+          thinkingConfig: getThinkingConfigForModel(model, "high"),
+        },
+      }),
+      90000,
+      `Conferência do manuscrito travou (sem resposta em 90s)`
+    );
+    let verified: string = (res?.text || "").trim();
+    verified = verified.replace(/^```[a-z]*\n/i, "").replace(/\n```$/, "").trim();
+    const sane =
+      verified.length >= firstText.length * 0.5 &&
+      verified.length <= firstText.length * 1.8 &&
+      !/[一-鿿぀-ヿ가-힯]/.test(verified) &&
+      !containsDegenerateRepetition(verified);
+    if (!sane) {
+      console.warn(`[Manuscrito difícil] Conferência descartada (resposta suspeita: ${verified.length} chars vs ${firstText.length}). Mantendo a 1ª leitura.`);
+      return null;
+    }
+    const before = new Set(firstText.toLowerCase().split(/\s+/));
+    const changed = verified.toLowerCase().split(/\s+/).filter(w => !before.has(w)).length;
+    console.log(`[Manuscrito difícil] Conferência aplicada na chave ..${keyHash}: ~${changed} palavras diferentes da 1ª leitura.`);
+    return verified;
+  } catch (e: any) {
+    console.warn("[Manuscrito difícil] Conferência falhou — mantendo a 1ª leitura:", e?.message || e);
+    return null;
+  }
+}
+
 function getSafeGeminiModel(): string {
   const selected = getSelectedGeminiModel();
   return GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
@@ -1926,6 +2004,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     try {
       let textOutput = "";
       let modelSuccess = false;
+      let successModel = "";
       let lastModelErr: any = null;
 
       for (let m = 0; m < modelsToTry.length; m++) {
@@ -1943,7 +2022,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             responseStream = await ai.models.generateContentStream({
               model: currentModel,
               contents: [
-                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { text: buildTranscriptionUserText() },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
               ],
               config: {
@@ -2003,7 +2082,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             );
             if (completed) {
               textOutput = completed;
-              modelSuccess = true;
+              modelSuccess = true; successModel = currentModel;
               break;
             } else {
               console.warn(`[Gemini Flash] Modelo ${currentModel} não conseguiu completar a página mesmo com continuação na chave ..${keyHash}. Tentando próximo modelo...`);
@@ -2011,7 +2090,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               lastModelErr = new Error("Página não completada após continuação.");
             }
           } else if (textOutput) {
-            modelSuccess = true;
+            modelSuccess = true; successModel = currentModel;
             break;
           }
         } catch (streamFail: any) {
@@ -2041,7 +2120,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               ai.models.generateContent({
                 model: currentModel,
                 contents: [
-                  { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                  { text: buildTranscriptionUserText() },
                   { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
                 ],
                 config: {
@@ -2065,7 +2144,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               );
               if (completedDirect) {
                 textOutput = completedDirect;
-                modelSuccess = true;
+                modelSuccess = true; successModel = currentModel;
                 break;
               } else {
                 console.warn(`[Gemini Flash] Chamada direta ${currentModel} não completou a página mesmo com continuação. Tentando próximo modelo...`);
@@ -2073,7 +2152,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               }
             } else if (directText) {
               textOutput = directText;
-              modelSuccess = true;
+              modelSuccess = true; successModel = currentModel;
               break;
             }
           } catch (directErr: any) {
@@ -2104,7 +2183,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             const retryRes = await ai.models.generateContent({
               model: getSafeGeminiModel(),
               contents: [
-                { text: "Leia a imagem e realize a transcrição literal, verbatim, 100% integral sob a orientação do Transcritor de Elite configurado no sistema." },
+                { text: buildTranscriptionUserText() },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
               ],
               config: {
@@ -2123,13 +2202,13 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               );
               if (completedRetry) {
                 textOutput = completedRetry;
-                modelSuccess = true;
+                modelSuccess = true; successModel = getSafeGeminiModel();
               } else {
                 lastModelErr = new Error("Página não completada após continuação (repescagem).");
               }
             } else if (retryText) {
               textOutput = retryText;
-              modelSuccess = true;
+              modelSuccess = true; successModel = getSafeGeminiModel();
             }
           } catch (retryErr: any) {
             lastModelErr = retryErr;
@@ -2143,6 +2222,23 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           .replace(/-{5,}/g, '---')
           .replace(/(\n[ \t]*\n){3,}/g, '\n\n')
           .trim();
+        if (isHardHandwritingEnabled() && !window.lexscan_abort) {
+          if (onProgress) onProgress(null, "Manuscrito difícil: conferindo a leitura (2ª passada)...");
+          const verified = await verifyHardHandwriting(
+            ai,
+            successModel || getSafeGeminiModel(),
+            { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } },
+            textOutput,
+            keyHash
+          );
+          if (verified) {
+            textOutput = verified
+              .replace(/_{5,}/g, '___')
+              .replace(/-{5,}/g, '---')
+              .replace(/(\n[ \t]*\n){3,}/g, '\n\n')
+              .trim();
+          }
+        }
         if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
         if (window.setKeyError) window.setKeyError(keyHash, 'ok');
         return { text: textOutput, usedKey: apiKey };
@@ -5497,6 +5593,7 @@ export default function ScannerJuridico() {
           setProgressMsg(`[${current}/${total}] ${msg || "Extraindo..."}`); 
         };
 
+        setOcrContextClientName(clientNameForOcr(selectedClient));
         if (f.type === "application/pdf") {
           extracted = await extractPDFHybrid(f, onProgress, aiMode, startPage, forceRefresh, goldStandard);
         } else {
@@ -5617,6 +5714,7 @@ export default function ScannerJuridico() {
 
         window.lexscan_abort = false;
 
+        setOcrContextClientName(clientNameForOcr(selectedClient));
         if (file.type === "application/pdf") {
           extracted = await extractPDFHybrid(file, onProgress, aiMode, startPage, forceRefresh, goldStandard);
         } else {
@@ -6749,6 +6847,7 @@ export default function ScannerJuridico() {
 
         window.lexscan_abort = false;
 
+        setOcrContextClientName(clientNameForOcr(item.clientId));
         if (fileToProcess.type === "application/pdf") {
           extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, forceRefresh, goldStandard);
         } else {
@@ -6925,6 +7024,7 @@ export default function ScannerJuridico() {
                setProgressMsg(`[${i + 1}/${docs.length}] ${msg || ""}`);
             };
 
+            setOcrContextClientName(clientNameForOcr(item.clientId));
             if (fileToProcess.type === "application/pdf") {
               extracted = await extractPDFHybrid(fileToProcess, onProgress, aiMode, startPage, false, goldStandard);
             } else {
@@ -7311,6 +7411,11 @@ export default function ScannerJuridico() {
   // Sem nenhuma arquivada não existem abas: evita ficar preso na aba "Arquivadas" vazia
   // depois de desarquivar a última pasta.
   const effectiveFolderTab: 'active' | 'archived' = clients.some(c => !c.parentId && c.archived) ? folderTab : 'active';
+
+  const clientNameForOcr = (clientId) => {
+    if (!clientId || clientId === 'unassigned') return '';
+    return clients.find(c => c.id === clientId)?.name || '';
+  };
 
   const toggleArchiveClient = async (client) => {
     if (!supabase) {
