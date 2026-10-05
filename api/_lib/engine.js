@@ -89,6 +89,7 @@ export class OcrEngine {
             const finish = res?.candidates?.[0]?.finishReason;
             if (!text) throw Object.assign(new Error('resposta vazia'), { soft: true });
             if (core.containsDegenerateRepetition(text)) throw Object.assign(new Error('resposta com repetição degenerada'), { soft: true });
+            if (finish === 'MAX_TOKENS' && !imageParts) throw Object.assign(new Error('resposta cortada por limite de tokens'), { soft: true });
             if (finish === 'MAX_TOKENS') {
               text = await this.complete(key, model, imageParts, systemPrompt, text);
               if (!text) throw Object.assign(new Error('página não completada após continuação'), { soft: true });

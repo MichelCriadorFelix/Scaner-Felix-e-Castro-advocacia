@@ -5,9 +5,10 @@
 // ── Modelos ──────────────────────────────────────────────────────────────────────────────
 export const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
+  { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite" },
   { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
+  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
   { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (manuscritos difíceis)" },
 ];
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
@@ -35,7 +36,7 @@ export function temperatureConfigFor(model, desired) {
 // "Thinking level is not supported for this model"): usa thinkingBudget em tokens.
 // "low" (páginas normais) = 1024; "medium" = dinâmico (-1); "high" = 12288 (teto do 2.5 é 24576).
 export function getThinkingConfigForModel(model, level) {
-  if (model === "gemini-2.5-flash") {
+  if (/^gemini-2\.5/.test(model)) {
     return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 1024 };
   }
   return { thinkingLevel: level };

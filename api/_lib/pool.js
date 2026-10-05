@@ -36,7 +36,11 @@ export function loadServerKeys({ includePaid = false } = {}) {
       (isPaidVar ? paid : free).push({ key, hash: hashKey(key), paid: isPaidVar });
     }
   }
-  return includePaid ? [...paid, ...free] : free;
+  // Trava de segurança: o Google vê com maus olhos muitas chaves/projetos somando cota. Teto de chaves
+  // gratuitas em uso (GEMINI_MAX_KEYS na Vercel; padrão 20 = sem corte até a lista ser enxugada). A chave paga não conta nesse limite.
+  const cap = Math.max(1, Number(process.env.GEMINI_MAX_KEYS) || 20);
+  const limitedFree = free.slice(0, cap);
+  return includePaid ? [...paid, ...limitedFree] : limitedFree;
 }
 
 export class KeyPool {

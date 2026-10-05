@@ -23,7 +23,10 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const keys = loadServerKeys({ includePaid: true });
     const pool = new KeyPool(auth.db, keys);
-    const models = GEMINI_MODEL_OPTIONS.map((m) => m.value);
+    let models = GEMINI_MODEL_OPTIONS.map((m) => m.value);
+    // ?models=a,b testa só esses (ex.: um modelo novo que ainda não está na lista do app)
+    const asked = String(req.query?.models || '').split(',').map((m) => m.trim()).filter((m) => /^gemini-[\w.-]+$/.test(m));
+    if (asked.length) models = asked;
     // ?probe=1: testa cada chave em cada modelo com uma chamada mínima (usa um pedido de cota por par).
     if (String(req.query?.probe || '') === '1') {
       const matrix = await probeKeys(pool, models);
