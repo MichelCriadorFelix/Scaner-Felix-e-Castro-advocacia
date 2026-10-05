@@ -1078,8 +1078,8 @@ FORMATO DE SAÍDA:
 - Assinatura visível: [Assinatura Manuscrita: Nome]. Tabelas: reconstrua em tabela Markdown. Nunca repita traços, sublinhados ou espaços pra desenhar linhas ou formulários.`;
 }
 
-function buildTranscriptionUserText(): string {
-  if (!hardHandwritingRuntime) return BASE_TRANSCRIPTION_TEXT;
+function buildTranscriptionUserText(hard: boolean = hardHandwritingRuntime): string {
+  if (!hard) return BASE_TRANSCRIPTION_TEXT;
   return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildClientNameHint();
 }
 
@@ -1109,7 +1109,7 @@ async function readSecondOpinion(ai: any, firstModel: string, candidateModels: s
       const res: any = await withTimeout(
         ai.models.generateContent({
           model,
-          contents: [{ text: buildTranscriptionUserText() }, imagePart],
+          contents: [{ text: buildTranscriptionUserText(true) }, imagePart],
           config: {
             systemInstruction: systemPrompt,
             temperature,
@@ -1131,6 +1131,34 @@ async function readSecondOpinion(ai: any, firstModel: string, candidateModels: s
     }
   }
   return null;
+}
+
+// Releitura AUTOMÁTICA: a primeira leitura de uma página que vem com vários [ILEGÍVEL] é o sinal
+// mais barato de "isto é manuscrito difícil". Em vez de depender do advogado marcar o checkbox,
+// o app relê só aquela página no modo difícil e fica com a versão que tiver menos trechos
+// ilegíveis. (Não pega erro CONFIANTE — nome plausível errado —, que continua pedindo o checkbox.)
+const AUTO_HARD_ILLEGIBLE_THRESHOLD = 3;
+function countIllegibleMarks(text: string): number {
+  return (text.match(/\[ILEG[ÍI]VEL\]/gi) || []).length;
+}
+
+// Renderiza a página do PDF a 3x e prepara a imagem sem filtro, pra releitura em modo difícil.
+async function renderPdfPageForHardRead(page: any): Promise<Blob | null> {
+  try {
+    const viewport = page.getViewport({ scale: 3.0 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 60000, "Render em alta resolução travou");
+    const blob = await enhanceImageForGemini(canvas, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, false);
+    canvas.width = 0; canvas.height = 0;
+    return blob;
+  } catch (e: any) {
+    console.warn("[Releitura automática] Falha ao renderizar a página em alta resolução:", e?.message || e);
+    return null;
+  }
 }
 
 // JUIZ do modo "Manuscrito difícil": recebe a imagem + a(s) leitura(s) e devolve a transcrição
@@ -2006,7 +2034,10 @@ function backoffDelay(attempt: number, baseMs: number = 1200, maxMs: number = 10
   return Math.round(exp * 0.7 + Math.random() * exp * 0.3);
 }
 
-async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null, skipMistral: boolean = false, outFlags?: { mistralFailed?: boolean }) {
+async function extractPageWithGemini(blob, onProgress, goldStandard = true, preferredApiKey: string | null = null, skipMistral: boolean = false, outFlags?: { mistralFailed?: boolean }, forceHard: boolean = false) {
+  // forceHard liga o modo "Manuscrito difícil" SÓ pra esta página (releitura automática de página
+  // com muitos [ILEGÍVEL]), sem depender do checkbox global — que o advogado pode nem ter marcado.
+  const hardMode = forceHard || isHardHandwritingEnabled();
   if (getSelectedGeminiModel() === NVIDIA_NEMOTRON_MODEL) {
     return await extractPageWithNvidiaNemotron(blob, onProgress);
   }
@@ -2045,7 +2076,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   // de "low" pra "medium" só pra ESTA chamada, dando ao Gemini mais raciocínio pra decifrar
   // letra manuscrita/formulário denso. Fora desse cenário, continua em "low" (rápido, barato).
   const boostThinking = outFlags?.mistralFailed === true;
-  const pageThinkingLevel: "low" | "medium" | "high" = isHardHandwritingEnabled() ? "high" : (boostThinking ? "medium" : "low");
+  const pageThinkingLevel: "low" | "medium" | "high" = hardMode ? "high" : (boostThinking ? "medium" : "low");
 
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
   let lastError = null;
@@ -2060,7 +2091,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     reader.readAsDataURL(blob);
   });
   
-  const prompt = isHardHandwritingEnabled() ? getHardHandwritingSystemPrompt() : getPadraoOuroPrompt();
+  const prompt = hardMode ? getHardHandwritingSystemPrompt() : getPadraoOuroPrompt();
 
   const modelsToTry = getModelFallbackCascade();
 
@@ -2069,7 +2100,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   // insiste no modelo escolhido algumas vezes, com espera crescente, antes de descer na cascata.
   // O contador é da página inteira (não por chave) pra um apagão total não multiplicar a espera.
   const PRIMARY_RETRY_MAX = 4;
-  let primaryRetriesLeft = isHardHandwritingEnabled() ? PRIMARY_RETRY_MAX : 0;
+  let primaryRetriesLeft = hardMode ? PRIMARY_RETRY_MAX : 0;
   const retryPrimaryModel = async (modelIndex: number, model: string, msg: string): Promise<boolean> => {
     const overloaded = msg.includes("503") || msg.includes("overloaded") || msg.includes("high demand") || msg.includes("unavailable");
     if (!overloaded || modelIndex !== 0 || primaryRetriesLeft <= 0 || window.lexscan_abort) return false;
@@ -2119,7 +2150,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             responseStream = await ai.models.generateContentStream({
               model: currentModel,
               contents: [
-                { text: buildTranscriptionUserText() },
+                { text: buildTranscriptionUserText(hardMode) },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
               ],
               config: {
@@ -2220,7 +2251,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               ai.models.generateContent({
                 model: currentModel,
                 contents: [
-                  { text: buildTranscriptionUserText() },
+                  { text: buildTranscriptionUserText(hardMode) },
                   { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
                 ],
                 config: {
@@ -2283,7 +2314,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             const retryRes = await ai.models.generateContent({
               model: getSafeGeminiModel(),
               contents: [
-                { text: buildTranscriptionUserText() },
+                { text: buildTranscriptionUserText(hardMode) },
                 { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } }
               ],
               config: {
@@ -2322,7 +2353,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           .replace(/-{5,}/g, '---')
           .replace(/(\n[ \t]*\n){3,}/g, '\n\n')
           .trim();
-        if (isHardHandwritingEnabled() && !window.lexscan_abort) {
+        if (hardMode && !window.lexscan_abort) {
           const hardImagePart = { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } };
           const firstReadModel = successModel || getSafeGeminiModel();
           if (onProgress) onProgress(null, "Manuscrito difícil: 2ª leitura independente...");
@@ -3953,9 +3984,29 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
               const mistralFlags: { mistralFailed?: boolean } = {};
               const aiResult = await extractPageWithGemini(enhancedBlob, onProgress, goldStandard, activeDocumentApiKey, mistralFailedThisPage, mistralFlags);
               if (mistralFlags.mistralFailed) mistralFailedThisPage = true;
-              const extractedText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
+              let extractedText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
               if (typeof aiResult === 'object' && aiResult?.usedKey) {
                 activeDocumentApiKey = aiResult.usedKey; // Mantém a chave fixa enquanto responder com sucesso!
+              }
+              if (!isHardHandwritingEnabled() && !window.lexscan_abort && countIllegibleMarks(extractedText) >= AUTO_HARD_ILLEGIBLE_THRESHOLD) {
+                onProgress(
+                  Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
+                  `Pág ${i}/${endIdx}: muitas partes ilegíveis — reanalisando em modo manuscrito difícil...`
+                );
+                try {
+                  const hardBlob = await renderPdfPageForHardRead(page);
+                  if (hardBlob) {
+                    const hardResult = await extractPageWithGemini(hardBlob, onProgress, goldStandard, activeDocumentApiKey, true, undefined, true);
+                    const hardText = typeof hardResult === 'object' && hardResult?.text ? hardResult.text : String(hardResult || '');
+                    if (hardText && countIllegibleMarks(hardText) < countIllegibleMarks(extractedText)) {
+                      console.log(`[Releitura automática] Pág ${i}: ${countIllegibleMarks(extractedText)} → ${countIllegibleMarks(hardText)} trechos [ILEGÍVEL] com o modo manuscrito difícil. Usando a releitura.`);
+                      extractedText = hardText;
+                    }
+                  }
+                } catch (hardErr) {
+                  console.warn(`[Releitura automática] Pág ${i}: releitura falhou, mantendo a 1ª leitura:`, hardErr);
+                  if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
+                }
               }
               fullText += `[PÁGINA ${i} - RECUPERADO VIA IA JURÍDICA]\n` + extractedText + "\n\n══════════════════════════════════════════════════\n\n";
               confidenceTotal += 99;
@@ -4240,7 +4291,21 @@ async function extractImageHybrid(file, onProgress, useAi, forceAi = false, gold
             ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
             : await enhanceImageForGemini(file);
           const aiResult = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
-          const aiText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
+          let aiText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
+          if (!isHardHandwritingEnabled() && !window.lexscan_abort && countIllegibleMarks(aiText) >= AUTO_HARD_ILLEGIBLE_THRESHOLD) {
+            onProgress(60, "Muitas partes ilegíveis — reanalisando em modo manuscrito difícil...");
+            try {
+              const hardBlob = await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, false);
+              const hardResult = await extractPageWithGemini(hardBlob, onProgress, goldStandard, null, true, undefined, true);
+              const hardText = typeof hardResult === 'object' && hardResult?.text ? hardResult.text : String(hardResult || '');
+              if (hardText && countIllegibleMarks(hardText) < countIllegibleMarks(aiText)) {
+                console.log(`[Releitura automática] ${countIllegibleMarks(aiText)} → ${countIllegibleMarks(hardText)} trechos [ILEGÍVEL] com o modo manuscrito difícil. Usando a releitura.`);
+                aiText = hardText;
+              }
+            } catch (hardErr) {
+              console.warn("[Releitura automática] Releitura falhou, mantendo a 1ª leitura:", hardErr);
+            }
+          }
           return { text: `[RECUPERADO VIA IA JURÍDICA]\n` + aiText, confidence: 99 };
       } catch(e: any) {
           let errMsg = e?.message || "Erro desconhecido";
