@@ -28,16 +28,10 @@ export function getAvailableGeminiKeys() {
 
   // 2. Busca nativa VITE (import.meta.env)
   try {
-    if (typeof import.meta !== 'undefined' && import.meta.env) {
+    if (typeof import.meta !== 'undefined') {
       if (import.meta.env.VITE_API_KEY) addKey(import.meta.env.VITE_API_KEY);
-      // Variáveis VITE_* são expostas ao navegador pelo próprio Vite. Chaves de outros
-      // provedores (Mistral/NVIDIA...) nunca entram no pool Gemini, mesmo que estejam aqui.
-      const otherProvider = /MISTRAL|NVIDIA|OPENROUTER|OPENAI|ANTHROPIC|GROQ|SUPABASE|SERVICE_ROLE|SECRET/i;
-      Object.keys(import.meta.env).forEach(k => {
-        if (otherProvider.test(k)) return;
-        if (k.includes('GEMINI')) addKey(import.meta.env[k]);
-        if (k.includes('API_KEY')) addKey(import.meta.env[k]);
-      });
+      // NÃO varrer Object.keys(import.meta.env): isso faz o Vite embutir TODAS as variáveis VITE_* no bundle público
+      // (foi assim que VITE_NVIDIA_NIM_KEY vazou). As chaves Gemini já chegam por process.env.ALL_GEMINI_KEYS (vite.config).
     }
   } catch (e) {}
 
