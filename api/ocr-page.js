@@ -3,7 +3,7 @@
 // Segue o padrão das outras rotas do projeto: Node clássico (req, res), nunca "edge".
 import { authenticate } from './_lib/auth.js';
 import { KeyPool, loadServerKeys } from './_lib/pool.js';
-import { readPage } from './_lib/engine.js';
+import { readPage, probeKeys } from './_lib/engine.js';
 import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL } from '../shared/ocrCore.js';
 
 export const config = {
@@ -24,6 +24,12 @@ export default async function handler(req, res) {
     const keys = loadServerKeys({ includePaid: true });
     const pool = new KeyPool(auth.db, keys);
     const models = GEMINI_MODEL_OPTIONS.map((m) => m.value);
+    // ?probe=1: testa cada chave em cada modelo com uma chamada mínima (usa um pedido de cota por par).
+    if (String(req.query?.probe || '') === '1') {
+      const matrix = await probeKeys(pool, models);
+      await pool.flush();
+      return res.status(200).json({ ok: true, probe: matrix, ms: Date.now() - started });
+    }
     await pool.load(models);
     return res.status(200).json({ ok: true, keysConfigured: keys.length, paidKeys: keys.filter((k) => k.paid).length, models, keys: pool.snapshot(models) });
   }

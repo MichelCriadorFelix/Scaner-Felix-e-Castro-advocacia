@@ -262,3 +262,33 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     attempts: engine.attempts,
   };
 }
+
+// Testador: faz uma chamada MÍNIMA (texto, ~5 tokens) por chave × modelo e devolve o resultado de cada uma.
+// Também grava no estado compartilhado o que descobrir (modelo indisponível, cota do dia, chave inválida).
+export async function probeKeys(pool, models, timeoutMs = 25000) {
+  await pool.load(models);
+  const engine = new OcrEngine({ pool, deadline: Date.now() + 120000 });
+  const out = {};
+  await Promise.all(pool.keys.flatMap((key, i) => models.map(async (model) => {
+    const t0 = Date.now();
+    let result;
+    try {
+      await engine.callOnce(key, model, {
+        contents: [{ text: 'Responda apenas: ok' }],
+        config: { maxOutputTokens: 64, ...core.temperatureConfigFor(model, 0.1), thinkingConfig: core.getThinkingConfigForModel(model, 'low') },
+      }, timeoutMs);
+      pool.markSuccess(key.hash, model);
+      result = { s: 'ok', ms: Date.now() - t0 };
+    } catch (e) {
+      const c = classifyError(e);
+      if (c.kind === 'invalid') pool.markInvalid(key.hash, c.msg.slice(0, 80));
+      else if (c.kind === 'daily') pool.markDailyExhausted(key.hash, model);
+      else if (c.kind === 'minute') pool.markRateLimited(key.hash, model);
+      else if (c.kind === 'unavailable') pool.markUnavailable(key.hash, model, 6, c.msg);
+      else pool.markOverloaded(key.hash, model);
+      result = { s: c.kind, ms: Date.now() - t0, err: c.msg.replace(/\s+/g, ' ').slice(0, 140) };
+    }
+    (out[i + 1] ||= { n: i + 1, id: key.hash.slice(0, 6), paid: key.paid, models: {} }).models[model] = result;
+  })));
+  return Object.values(out).sort((a, b) => a.n - b.n);
+}
