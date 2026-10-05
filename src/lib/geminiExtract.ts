@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { GoogleGenAI } from "@google/genai";
+import { isServerEngineEnabled, extractPageViaServer } from './serverOcr';
 import { buildContinuationInstruction } from '../../shared/ocrCore.js';
 import { temperatureConfigFor, getThinkingConfigForModel, getSelectedGeminiModel, NVIDIA_NEMOTRON_MODEL, MISTRAL_OCR_MODEL, getModelFallbackCascade, getSafeGeminiModel } from './geminiModels';
 import { containsDegenerateRepetition, getRealConfidence, isTruncatedResponse } from './textQuality';
@@ -386,6 +387,13 @@ export async function extractPageWithGemini(blob, onProgress, goldStandard = tru
     }
     // Não retornou acima: cai pro fluxo normal do Gemini logo abaixo, só pra ESTA página.
     // A próxima página volta a tentar a Mistral normalmente (a decisão é por página, não global).
+  }
+
+  // Motor novo (servidor): chaves e cascata no backend, estado de cota compartilhado. Se não estiver ligado
+  // ou falhar por qualquer motivo, segue pro motor local logo abaixo, como sempre foi.
+  if (isServerEngineEnabled()) {
+    const viaServer = await extractPageViaServer(blob, { hard: hardMode, bestFirst: forceHard && !isHardHandwritingEnabled(), onProgress });
+    if (viaServer) return viaServer;
   }
 
   // Página já sabidamente difícil (a Mistral falhou ou veio suspeita nela) — sobe o thinking
