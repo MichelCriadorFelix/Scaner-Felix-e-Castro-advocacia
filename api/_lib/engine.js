@@ -34,6 +34,13 @@ export function classifyError(e) {
   return { kind: 'other', msg };
 }
 
+// Quanto tempo uma chave fica sem ser chamada num modelo que ela NÃO aceita: 404 ("não disponível pra novos usuários")
+// raramente muda (3 dias); 403 (projeto negado) pode ser corrigido na conta (1 dia). Depois disso é testada de novo.
+export function unavailableHoursFor(msg) {
+  const m = String(msg || '').toLowerCase();
+  return (m.includes('403') || m.includes('denied') || m.includes('permission') || m.includes('forbidden')) ? 24 : 72;
+}
+
 export class OcrEngine {
   constructor({ pool, deadline, log }) {
     this.pool = pool;
@@ -54,6 +61,32 @@ export class OcrEngine {
     return withTimeout(ai.models.generateContent({ model, contents, config }), budget, `Chamada ao ${model} travou (sem resposta em ${Math.round(budget / 1000)}s)`);
   }
 
+  // Descobre, ANTES de ler de verdade, quais chaves aceitam este modelo: uma chamada mínima (texto, ~5 tokens) por
+  // chave ainda não verificada, em paralelo. O resultado fica guardado (Supabase) por dias, então isso acontece uma
+  // vez por chave+modelo — depois a leitura nunca mais gasta tentativa numa chave que não aceita o modelo.
+  async discover(model) {
+    const stale = this.pool.staleKeys(model);
+    if (!stale.length || this.remaining() < 60000) return;
+    this.note(`Verificando quais chaves aceitam ${model} (${stale.length})...`);
+    await Promise.all(stale.map(async (key) => {
+      try {
+        await this.callOnce(key, model, {
+          contents: [{ text: 'Responda apenas: ok' }],
+          config: { maxOutputTokens: 64, ...core.temperatureConfigFor(model, 0.1), thinkingConfig: core.getThinkingConfigForModel(model, 'low') },
+        }, 20000);
+        this.pool.markCapable(key.hash, model);
+      } catch (e) {
+        const c = classifyError(e);
+        if (c.kind === 'invalid') this.pool.markInvalid(key.hash, c.msg.slice(0, 80));
+        else if (c.kind === 'unavailable') this.pool.markUnavailable(key.hash, model, unavailableHoursFor(c.msg), c.msg);
+        else if (c.kind === 'daily') { this.pool.markCapable(key.hash, model); this.pool.markDailyExhausted(key.hash, model); }
+        else if (c.kind === 'minute') { this.pool.markCapable(key.hash, model); this.pool.markRateLimited(key.hash, model); }
+        else if (c.kind === 'overload') this.pool.markCapable(key.hash, model); // 503: o modelo existe pra essa chave
+        // 'bad'/'other': sem conclusão — a leitura real decide.
+      }
+    }));
+  }
+
   // Tenta os modelos em ordem; em cada modelo, as chaves disponíveis. Devolve { text, model, keyHash }.
   //  - sameModelOnly: não cai pra outros modelos (usado na 2ª leitura/juiz, que precisam do MESMO modelo da 1ª).
   //  - primaryRetries: quantas vezes INSISTIR no primeiro modelo (com espera crescente) antes de descer, quando dá 503.
@@ -66,6 +99,7 @@ export class OcrEngine {
       const model = models[mi];
       let overloadHits = 0;
       let badModel = false;
+      await this.discover(model);
       let triedKeys = new Set();
 
       // laço do modelo: repete quando insistimos no primário
@@ -105,7 +139,7 @@ export class OcrEngine {
             if (c.kind === 'invalid') this.pool.markInvalid(key.hash, c.msg.slice(0, 80));
             else if (c.kind === 'daily') this.pool.markDailyExhausted(key.hash, model);
             else if (c.kind === 'minute') this.pool.markRateLimited(key.hash, model);
-            else if (c.kind === 'unavailable') this.pool.markUnavailable(key.hash, model, 6, c.msg);
+            else if (c.kind === 'unavailable') this.pool.markUnavailable(key.hash, model, unavailableHoursFor(c.msg), c.msg);
             else if (c.kind === 'bad') { badModel = true; this.note(`${label}: ${model} recusou o pedido (400: ${c.msg.slice(0, 100)}) — próximo modelo.`); break; }
             else if (c.kind === 'overload' || c.kind === 'other') { this.pool.markOverloaded(key.hash, model); overloadHits++; }
             if (overloadHits >= 2) break;
@@ -285,7 +319,7 @@ export async function probeKeys(pool, models, timeoutMs = 25000) {
       if (c.kind === 'invalid') pool.markInvalid(key.hash, c.msg.slice(0, 80));
       else if (c.kind === 'daily') pool.markDailyExhausted(key.hash, model);
       else if (c.kind === 'minute') pool.markRateLimited(key.hash, model);
-      else if (c.kind === 'unavailable') pool.markUnavailable(key.hash, model, 6, c.msg);
+      else if (c.kind === 'unavailable') pool.markUnavailable(key.hash, model, unavailableHoursFor(c.msg), c.msg);
       else pool.markOverloaded(key.hash, model);
       result = { s: c.kind, ms: Date.now() - t0, err: c.msg.replace(/\s+/g, ' ').slice(0, 140) };
     }
