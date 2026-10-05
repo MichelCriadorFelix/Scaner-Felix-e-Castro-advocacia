@@ -2064,6 +2064,23 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
 
   const modelsToTry = getModelFallbackCascade();
 
+  // Modo "Manuscrito difícil": quem escolhe um modelo bom pra ler letra ruim (ex.: 3.8) não quer
+  // cair pro 2.5 no primeiro 503. O 503 é intermitente (atinge parte das requisições), então
+  // insiste no modelo escolhido algumas vezes, com espera crescente, antes de descer na cascata.
+  // O contador é da página inteira (não por chave) pra um apagão total não multiplicar a espera.
+  const PRIMARY_RETRY_MAX = 4;
+  let primaryRetriesLeft = isHardHandwritingEnabled() ? PRIMARY_RETRY_MAX : 0;
+  const retryPrimaryModel = async (modelIndex: number, model: string, msg: string): Promise<boolean> => {
+    const overloaded = msg.includes("503") || msg.includes("overloaded") || msg.includes("high demand") || msg.includes("unavailable");
+    if (!overloaded || modelIndex !== 0 || primaryRetriesLeft <= 0 || window.lexscan_abort) return false;
+    const used = PRIMARY_RETRY_MAX - primaryRetriesLeft;
+    primaryRetriesLeft--;
+    const wait = backoffDelay(used);
+    console.warn(`[Gemini Flash] Manuscrito difícil: insistindo no ${model} (retentativa ${used + 1}/${PRIMARY_RETRY_MAX}, espera ~${Math.round(wait / 1000)}s) antes de cair pro próximo modelo...`);
+    await new Promise(r => setTimeout(r, wait));
+    return true;
+  };
+
   for (let i = 0; i < finalSortedKeys.length; i++) {
     if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
     const apiKey = finalSortedKeys[i];
@@ -2115,6 +2132,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           } catch (initErr: any) {
             lastModelErr = initErr;
             const initMsg = String(initErr?.message || initErr || "").toLowerCase();
+            if (await retryPrimaryModel(m, currentModel, initMsg)) { m--; continue; }
             if (initMsg.includes("503") || initMsg.includes("overloaded") || initMsg.includes("high demand") || initMsg.includes("unavailable") || initMsg.includes("not found") || initMsg.includes("404")) {
               console.warn(`[Gemini Flash] Modelo ${currentModel} retornou sobrecarga/indisponível (${initMsg.slice(0, 50)}). Alternando para próximo modelo na mesma chave...`);
               await new Promise(r => setTimeout(r, backoffDelay(m)));
@@ -2183,6 +2201,8 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
             continue;
           }
           
+          if (await retryPrimaryModel(m, currentModel, streamFailMsg)) { m--; continue; }
+
           if (streamFailMsg.includes("503") || streamFailMsg.includes("overloaded") || streamFailMsg.includes("high demand") || streamFailMsg.includes("unavailable") || streamFailMsg.includes("not found") || streamFailMsg.includes("404") || streamFailMsg.includes("travou")) {
             console.warn(`[Gemini Flash] Modelo ${currentModel} falhou por sobrecarga/503/travamento. Alternando para próximo modelo na mesma chave...`);
             await new Promise(r => setTimeout(r, backoffDelay(m)));
