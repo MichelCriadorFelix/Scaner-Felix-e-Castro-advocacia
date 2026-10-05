@@ -962,6 +962,10 @@ const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
+  // 3.5 Flash (cheio): opção pra manuscrito muito difícil, escolhida à mão no seletor. Fica por
+  // último de propósito: a linha 3.x ainda pode dar 503 de alta demanda, então só entra na
+  // cascata automática depois dos que já provaram estabilidade (e vai primeiro se for escolhido).
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (manuscritos difíceis)" },
 ];
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
