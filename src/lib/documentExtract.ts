@@ -2,7 +2,7 @@
 import { loadPDFJS, PDFJS_BASE_OPTIONS, loadTesseract } from './loaders';
 import { withTimeout } from './async';
 import { extractStructuredTextFromPDFPage, isGenuineDigitalText, isCanvasBlank } from './textQuality';
-import { wantsHighResImage, isHardHandwritingEnabled, countIllegibleMarks, AUTO_HARD_ILLEGIBLE_THRESHOLD, renderPdfPageForHardRead } from './handwritingMode';
+import { wantsHighResImage, imageFilterEnabled, isHardHandwritingEnabled, countIllegibleMarks, AUTO_HARD_ILLEGIBLE_THRESHOLD, renderPdfPageForHardRead } from './handwritingMode';
 import { enhanceImageForGemini } from './image';
 import { MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY } from './geminiModels';
 import { extractPageWithGemini } from './geminiExtract';
@@ -153,7 +153,7 @@ export async function extractPDFHybrid(file: File | Blob, onProgress: (percent: 
               `Pág ${i}/${endIdx}: Transcrevendo manuscrito/scan via IA Jurídica...`
             );
             const enhancedBlob = wantsHighResImage()
-              ? await enhanceImageForGemini(finalCanvasToUse, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
+              ? await enhanceImageForGemini(finalCanvasToUse, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, imageFilterEnabled())
               : await enhanceImageForGemini(finalCanvasToUse);
             try {
               const mistralFlags: { mistralFailed?: boolean } = {};
@@ -315,7 +315,7 @@ export async function extractImageHybrid(file, onProgress, useAi, forceAi = fals
       onProgress(20, "Extraindo via IA Jurídica (Gemini Flash)...");
       try {
           const enhancedForAi = wantsHighResImage()
-            ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
+            ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, imageFilterEnabled())
             : await enhanceImageForGemini(file);
           const aiResult = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
           let aiText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');

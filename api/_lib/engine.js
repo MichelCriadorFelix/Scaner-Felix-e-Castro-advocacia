@@ -186,8 +186,16 @@ export class OcrEngine {
   }
 }
 
+// A própria IA escreve no cabeçalho (TIPO/OBS) quando a página tem letra à mão — sinal barato pra escalar sozinho.
+const HANDWRITING_RE = /manuscrit|caligrafia|letra\s+(de\s+m[ée]dico|cursiva|manual)|escrit[oa]\s+[àa]\s+m[ãa]o/i;
+export function looksHandwritten(text) {
+  // "assinatura manuscrita" é comum em documento DIGITADO (só a assinatura é à mão): não conta.
+  const head = String(text || '').split('═')[0].slice(0, 800).replace(/assinaturas?\s+(e\s+carimbos?\s+)?manuscrit\w*/gi, '');
+  return HANDWRITING_RE.test(head);
+}
+
 // Lê UMA página. Retorna { text, model, hard, quality, steps, attempts }.
-export async function readPage({ pool, imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, deadline, log }) {
+export async function readPage({ pool, imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, deadline, log, skipEscalation = false }) {
   const engine = new OcrEngine({ pool, deadline, log });
   const imagePart = { inlineData: { data: imageBase64, mimeType: mimeType || 'image/jpeg' }, mediaResolution: { level: 'MEDIA_RESOLUTION_HIGH' } };
   const systemPrompt = hard ? core.getHardHandwritingSystemPrompt() : core.getPadraoOuroPrompt();
@@ -224,6 +232,26 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
 
   let text = core.cleanTranscription(first.text);
   let finalModel = first.model;
+
+  // Página normal que a própria IA descreve como MANUSCRITA: leitura simples erra (medido: inventou "Pretensão à
+  // Aposentadoria", trocou sobrenome e ano). Escala sozinha pro modo difícil (2 leituras + conferência, melhor modelo
+  // primeiro). Se o modo difícil falhar, mantém a leitura simples — nunca piora o que já tinha.
+  if (!hard && !skipEscalation && looksHandwritten(text) && engine.remaining() > 90000) {
+    engine.note('Página manuscrita detectada — relendo em modo difícil (2 leituras + conferência).');
+    try {
+      const deep = await readPage({ pool, imageBase64, mimeType, hard: true, clientName, bestFirst: true, preferredModel, deadline, log, skipEscalation: true });
+      if (deep?.text) {
+        return {
+          ...deep,
+          escalated: true,
+          steps: [...engine.steps, ...deep.steps],
+          attempts: [...engine.attempts, ...deep.attempts],
+        };
+      }
+    } catch (e) {
+      engine.note('Releitura em modo difícil falhou — mantendo a leitura simples: ' + String(e?.message || e).slice(0, 100));
+    }
+  }
 
   if (hard) {
     // 2ª leitura independente, no MESMO modelo da 1ª (temperatura alta, pra errar diferente).

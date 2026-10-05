@@ -15,8 +15,15 @@ export function isHardHandwritingEnabled(): boolean {
 export function setHardHandwritingEnabled(enabled: boolean): void {
   hardHandwritingRuntime = enabled;
 }
+// Imagem em alta resolução SEMPRE: medido com laudos reais, a imagem pequena (~900x1260, com filtro) perdia carimbos
+// e letra miúda que a de 1785x2525 lia certo. O custo é só um upload maior.
 export function wantsHighResImage(): boolean {
-  return isMistralSelected() || hardHandwritingRuntime;
+  return true;
+}
+
+// O filtro de contraste só ajuda a Mistral OCR em modo normal; pro Gemini a imagem vai sem filtro (como nos testes).
+export function imageFilterEnabled(): boolean {
+  return isMistralSelected() && !hardHandwritingRuntime;
 }
 
 // Nome da pasta do cliente do documento em processamento (definido nos pontos de entrada da

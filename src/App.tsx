@@ -11,7 +11,7 @@ import { get, set, del } from 'idb-keyval';
 import { checkDailyReset, setForcePaidKeyEnabled } from './lib/apiKeys';
 import { fetchServerKeyStatus } from './lib/serverOcr';
 import { getSelectedGeminiModel, setSelectedGeminiModel, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY } from './lib/geminiModels';
-import { setHardHandwritingEnabled, setOcrContextClientName, wantsHighResImage, isHardHandwritingEnabled } from './lib/handwritingMode';
+import { setHardHandwritingEnabled, setOcrContextClientName, wantsHighResImage, imageFilterEnabled, isHardHandwritingEnabled } from './lib/handwritingMode';
 import { IdentityDivergence, generateFolderPrePetitionAudit, generateAiConsistencyAudit, pickConfidentWinner, applyValueCorrection, pickDominantValue, buildAuditFormattedReport } from './lib/audit';
 import { supabase } from './lib/supabaseClient';
 import { G, css } from './lib/theme';
@@ -1916,7 +1916,7 @@ export default function ScannerJuridico() {
             }
             
             const enhancedForAi = wantsHighResImage()
-              ? await enhanceImageForGemini(originalColorBlob as Blob, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
+              ? await enhanceImageForGemini(originalColorBlob as Blob, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, imageFilterEnabled())
               : await enhanceImageForGemini(originalColorBlob as Blob);
             
             setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
