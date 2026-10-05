@@ -87,38 +87,40 @@ export class OcrEngine {
     }));
   }
 
-  // Tenta os modelos em ordem; em cada modelo, as chaves disponíveis. Devolve { text, model, keyHash }.
-  //  - sameModelOnly: não cai pra outros modelos (usado na 2ª leitura/juiz, que precisam do MESMO modelo da 1ª).
-  //  - primaryRetries: quantas vezes INSISTIR no primeiro modelo (com espera crescente) antes de descer, quando dá 503.
-  async generate({ models, build, timeoutMs, accept, primaryRetries = 0, imageParts, systemPrompt, label, maxKeysPerModel = 3 }) {
+  // Lê com o MODELO ESCOLHIDO e só desiste dele depois de esgotar as chaves.
+  // Em cada modelo: rodadas ("passes") que percorrem TODAS as chaves que aceitam o modelo (as menos usadas primeiro).
+  // Sobrecarga (503) numa chave não condena o modelo: o Google atende umas chaves e recusa outras no mesmo instante,
+  // então a próxima chave é tentada. Se a rodada inteira falhar por sobrecarga, espera um pouco e faz outra rodada.
+  // Só depois de gastar as rodadas ou o orçamento de tempo do modelo é que cai pro próximo da lista.
+  //  - passes: quantas rodadas por modelo. budgetMs: tempo máximo no 1º modelo (os demais têm teto próprio).
+  async generate({ models, build, timeoutMs, accept, imageParts, systemPrompt, label, passes = 3, budgetMs = 100000 }) {
     await this.pool.load(models);
     let lastErr = null;
-    let retriesLeft = primaryRetries;
 
     for (let mi = 0; mi < models.length; mi++) {
       const model = models[mi];
-      let overloadHits = 0;
-      let badModel = false;
       await this.discover(model);
-      let triedKeys = new Set();
+      const phaseEnd = Math.min(this.deadline - 15000, Date.now() + (mi === 0 ? budgetMs : Math.min(budgetMs, 90000)));
+      let badModel = false;
 
-      // laço do modelo: repete quando insistimos no primário
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
-        const cands = this.pool.candidates(model).filter((k) => !triedKeys.has(k.hash));
+      for (let pass = 0; pass < passes && !badModel; pass++) {
+        if (Date.now() > phaseEnd) break;
+        const cands = this.pool.candidates(model);
         if (!cands.length) {
-          if (!triedKeys.size) this.note(`${label}: ${model} sem chave disponível (cota/espera/indisponível) — pulando.`);
+          if (pass === 0) this.note(`${label}: ${model} sem chave disponível (cota/espera/indisponível) — pulando.`);
           break;
         }
-        let restart = false;
+        let sawOverload = false;
+        let overloadedKeys = 0;
+
         for (const key of cands) {
-          if (triedKeys.size >= maxKeysPerModel) break;
-          triedKeys.add(key.hash);
+          if (Date.now() > phaseEnd) break;
+          if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
           const t0 = Date.now();
           try {
             const req = build(model);
-            const res = await this.callOnce(key, model, req, timeoutMs);
+            const callTimeout = Math.max(15000, Math.min(timeoutMs, phaseEnd - Date.now() + 10000));
+            const res = await this.callOnce(key, model, req, callTimeout);
             let text = (res?.text || '').trim();
             const finish = res?.candidates?.[0]?.finishReason;
             if (!text) throw Object.assign(new Error('resposta vazia'), { soft: true });
@@ -141,24 +143,19 @@ export class OcrEngine {
             else if (c.kind === 'minute') this.pool.markRateLimited(key.hash, model);
             else if (c.kind === 'unavailable') this.pool.markUnavailable(key.hash, model, unavailableHoursFor(c.msg), c.msg);
             else if (c.kind === 'bad') { badModel = true; this.note(`${label}: ${model} recusou o pedido (400: ${c.msg.slice(0, 100)}) — próximo modelo.`); break; }
-            else if (c.kind === 'overload' || c.kind === 'other') { this.pool.markOverloaded(key.hash, model); overloadHits++; }
-            if (overloadHits >= 2) break;
+            else { this.pool.markOverloaded(key.hash, model); sawOverload = true; overloadedKeys++; }
           }
         }
-        // Chaves/tentativas acabaram neste modelo. Insiste no primário se ainda há retentativas e foi sobrecarga.
-        if (mi === 0 && retriesLeft > 0 && overloadHits > 0 && !badModel) {
-          const wait = backoffDelay(primaryRetries - retriesLeft);
-          retriesLeft--;
-          this.note(`${label}: ${model} sobrecarregado — insistindo (espera ~${Math.round(wait / 1000)}s, restam ${retriesLeft}).`);
-          if (this.remaining() < wait + 20000) break;
+
+        if (badModel || !sawOverload) break; // nada que valha repetir (cota, chave inválida...)
+        if (pass < passes - 1) {
+          const wait = backoffDelay(pass, 2000, 8000);
+          if (Date.now() + wait > phaseEnd) break;
+          this.note(`${label}: ${model} sobrecarregado em ${overloadedKeys} chave(s) — nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
           await sleep(wait);
-          triedKeys = new Set();
-          overloadHits = 0;
-          restart = true;
         }
-        if (!restart) break;
       }
-      if (models.length > mi + 1) this.note(`${label}: ${model} não respondeu — próximo modelo.`);
+      if (models.length > mi + 1) this.note(`${label}: ${model} não respondeu com nenhuma chave — próximo modelo.`);
     }
     throw lastErr || new Error('nenhum modelo/chave disponível');
   }
@@ -204,7 +201,8 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     label: 'Leitura',
     models,
     timeoutMs: hard ? 90000 : 80000,
-    primaryRetries: hard ? 3 : 0,
+    passes: hard ? 4 : 3,
+    budgetMs: hard ? 120000 : 90000,
     imageParts: [imagePart],
     systemPrompt,
     build: (model) => ({
@@ -229,7 +227,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   if (hard) {
     // 2ª leitura independente, no MESMO modelo da 1ª (temperatura alta, pra errar diferente).
     let second = null;
-    if (engine.remaining() > 110000) {
+    if (engine.remaining() > 75000) {
       try {
         const r = await engine.generate({
           label: '2ª leitura',
@@ -237,7 +235,8 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
           timeoutMs: 75000,
           imageParts: [imagePart],
           systemPrompt,
-          maxKeysPerModel: 2,
+          passes: 2,
+          budgetMs: 45000,
           accept: (t) => core.isHardHandwritingTextSane(t, text, 1.8),
           build: (model) => ({
             contents: [{ text: userText }, imagePart],
@@ -256,7 +255,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
       }
     } else engine.note('Sem tempo pra 2ª leitura nesta chamada.');
 
-    if (engine.remaining() > 100000) {
+    if (engine.remaining() > 75000) {
       try {
         const hoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
         const judgeSystem = core.buildJudgeSystemInstruction(second, clientName, hoje);
@@ -267,7 +266,8 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
           timeoutMs: 90000,
           imageParts: [imagePart],
           systemPrompt: judgeSystem,
-          maxKeysPerModel: 2,
+          passes: 2,
+          budgetMs: 45000,
           accept: (t) => core.isHardHandwritingTextSane(t, text, 2.2),
           build: (model) => ({
             contents: [{ text: judgeUser }, imagePart],
