@@ -1719,7 +1719,7 @@ export default function ScannerJuridico() {
         let ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) continue;
         
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
         const imgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
         if (imgBlob) {
           const fileObj = new File([imgBlob as Blob], `${targetResult.name.replace(/\.[^.]+$/, "")}_pag_${i}.jpg`, { type: "image/jpeg" });
@@ -1904,7 +1904,7 @@ export default function ScannerJuridico() {
               continue;
             }
             
-            await page.render({ canvasContext: ctx, viewport }).promise;
+            await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
             
             const originalColorBlob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.95));
             if (!originalColorBlob) {

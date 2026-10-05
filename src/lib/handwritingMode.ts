@@ -62,7 +62,7 @@ export async function renderPdfPageForHardRead(page: any): Promise<Blob | null> 
     canvas.height = Math.floor(viewport.height);
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 60000, "Render em alta resolução travou");
+    await withTimeout(page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise, 60000, "Render em alta resolução travou");
     const blob = await enhanceImageForGemini(canvas, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, false);
     canvas.width = 0; canvas.height = 0;
     return blob;

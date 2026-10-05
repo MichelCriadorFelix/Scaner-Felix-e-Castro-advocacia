@@ -132,7 +132,7 @@ export async function extractPDFHybrid(file: File | Blob, onProgress: (percent: 
           canvas.height = Math.floor(viewport.height);
           let ctx = canvas.getContext("2d");
           if (ctx) {
-            let renderTask = page.render({ canvasContext: ctx, viewport });
+            let renderTask = page.render({ canvasContext: ctx, viewport, intent: 'print' });
             await withTimeout(renderTask.promise, 60000, `Render timeout pág ${i}`);
           }
           
