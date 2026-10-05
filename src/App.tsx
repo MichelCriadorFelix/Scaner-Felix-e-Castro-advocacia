@@ -960,6 +960,11 @@ const PDFJS_BASE_OPTIONS = {
 // máxima, por isso ficam depois do 2.5 na cascata, não antes.
 const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  // 3.8 Flash: o AI Studio leu os laudos manuscritos difíceis com ele (06/10/2026) onde o 2.5
+  // errava. Tinha saído da lista no apagão de setembro; volta em 2º na cascata (se ainda der
+  // 503, a falha é rápida e o fluxo segue pro próximo modelo). Escolha-o no seletor pra
+  // manuscritos difíceis — aí ele é o primeiro leitor.
+  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
   { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
   // 3.5 Flash (cheio): opção pra manuscrito muito difícil, escolhida à mão no seletor. Fica por
@@ -1051,6 +1056,27 @@ MODO MANUSCRITO DIFÍCIL — regras extras (têm prioridade sobre a ideia de "pa
 - Se você NÃO tiver razoável certeza de uma palavra, NÃO complete com algo só porque é plausível: escreva a melhor leitura seguida de [?] (ex.: "Discais[?]"). Se nada puder ser lido, use [ILEGÍVEL]. Marcar a dúvida é MAIS importante do que entregar o texto aparentemente completo.
 - Números de CRM, CPF, datas, doses e códigos CID: só escreva o que você consegue ler com clareza; dígito duvidoso vira [?]. NUNCA invente dígitos.
 - Carimbo borrado ou desbotado: transcreva só as partes legíveis, o resto como [ILEGÍVEL].`;
+
+// Prompt de sistema ENXUTO do modo "Manuscrito difícil". O AI Studio leu os mesmos laudos com um
+// pedido de uma linha; o prompt "Padrão Ouro" (dezenas de regras de tabelas, anti-loop, Diário
+// Oficial...) compete com a atenção do modelo na hora de decifrar letra. Aqui ficam só a tarefa,
+// o jeito de ler manuscrito e o formato de saída que o resto do app espera.
+function getHardHandwritingSystemPrompt(): string {
+  return `Você é um transcritor de documentos médicos e jurídicos do escritório Félix & Castro Advocacia, especialista em LETRA MANUSCRITA DIFÍCIL (letra de médico).
+
+TAREFA: transcrever TODO o texto visível na imagem — impresso e manuscrito — na ordem em que aparece, de cima para baixo, sem resumir e sem omitir nada (timbre, cabeçalho, carimbos, assinaturas, datas, rodapé).
+
+COMO LER MANUSCRITO:
+- Leia palavra por palavra e use o contexto: o tipo de documento, o que está impresso no timbre (clínica, médico, especialidade), o vocabulário clínico e as abreviações médicas habituais.
+- Use a coerência do conteúdo pra decidir entre leituras parecidas (diagnósticos, códigos CID e datas devem combinar entre si).
+- Nomes de pessoas: transcreva completos, nunca abreviados nem inventados.
+
+FORMATO DE SAÍDA:
+- Comece com os metadados: TÍTULO: [título principal], TIPO: [classificação do documento], ÁREA: [Previdenciário / Trabalhista / Consumidor / Cível / Múltiplas], OBS: [observação, se houver].
+- Depois a linha divisória: ══════════════════════════════════════════════════
+- Depois a transcrição literal e integral.
+- Assinatura visível: [Assinatura Manuscrita: Nome]. Tabelas: reconstrua em tabela Markdown. Nunca repita traços, sublinhados ou espaços pra desenhar linhas ou formulários.`;
+}
 
 function buildTranscriptionUserText(): string {
   if (!hardHandwritingRuntime) return BASE_TRANSCRIPTION_TEXT;
@@ -1382,7 +1408,7 @@ function recordKeyMinuteCall(apiKey: string): void {
 }
 
 // Aumenta o contraste, nitidez e saturação para PDFs ou imagens de baixa qualidade antes do OCR/IA, sem perder as cores originais importantes para CNH/RG.
-async function enhanceImageForGemini(imageInput: any, maxDimension: number = 1600, jpegQuality: number = 0.82): Promise<Blob> {
+async function enhanceImageForGemini(imageInput: any, maxDimension: number = 1600, jpegQuality: number = 0.82, applyFilter: boolean = true): Promise<Blob> {
   try {
     const MAX_DIMENSION = maxDimension;
 
@@ -1407,7 +1433,7 @@ async function enhanceImageForGemini(imageInput: any, maxDimension: number = 160
       canvas.height = height;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
-        ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
+        if (applyFilter) ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
         ctx.drawImage(srcCanvas, 0, 0, width, height);
       }
       const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", jpegQuality));
@@ -1443,7 +1469,7 @@ async function enhanceImageForGemini(imageInput: any, maxDimension: number = 160
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (ctx) {
       // Filtro profissional inteligente
-      ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
+      if (applyFilter) ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
       ctx.drawImage(img, 0, 0, width, height);
     }
     const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", jpegQuality));
@@ -2034,7 +2060,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
     reader.readAsDataURL(blob);
   });
   
-  const prompt = getPadraoOuroPrompt();
+  const prompt = isHardHandwritingEnabled() ? getHardHandwritingSystemPrompt() : getPadraoOuroPrompt();
 
   const modelsToTry = getModelFallbackCascade();
 
@@ -3901,7 +3927,7 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
               `Pág ${i}/${endIdx}: Transcrevendo manuscrito/scan via IA Jurídica...`
             );
             const enhancedBlob = wantsHighResImage()
-              ? await enhanceImageForGemini(finalCanvasToUse, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
+              ? await enhanceImageForGemini(finalCanvasToUse, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
               : await enhanceImageForGemini(finalCanvasToUse);
             try {
               const mistralFlags: { mistralFailed?: boolean } = {};
@@ -4191,7 +4217,7 @@ async function extractImageHybrid(file, onProgress, useAi, forceAi = false, gold
       onProgress(20, "Extraindo via IA Jurídica (Gemini Flash)...");
       try {
           const enhancedForAi = wantsHighResImage()
-            ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
+            ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
             : await enhanceImageForGemini(file);
           const aiResult = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
           const aiText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
@@ -6244,7 +6270,7 @@ export default function ScannerJuridico() {
             }
             
             const enhancedForAi = wantsHighResImage()
-              ? await enhanceImageForGemini(originalColorBlob as Blob, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
+              ? await enhanceImageForGemini(originalColorBlob as Blob, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY, !isHardHandwritingEnabled())
               : await enhanceImageForGemini(originalColorBlob as Blob);
             
             setProgressMsg(`[Pág ${pageNum}] Consultando IA Jurídica...`);
