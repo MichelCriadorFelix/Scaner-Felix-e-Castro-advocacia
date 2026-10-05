@@ -191,7 +191,8 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   const engine = new OcrEngine({ pool, deadline, log });
   const imagePart = { inlineData: { data: imageBase64, mimeType: mimeType || 'image/jpeg' }, mediaResolution: { level: 'MEDIA_RESOLUTION_HIGH' } };
   const systemPrompt = hard ? core.getHardHandwritingSystemPrompt() : core.getPadraoOuroPrompt();
-  const userText = core.buildTranscriptionUserText(!!hard, clientName);
+  const hojeBr = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  const userText = core.buildTranscriptionUserText(!!hard, clientName, hojeBr);
   const models = core.buildModelCascade(preferredModel, !!(hard && bestFirst));
   const level = hard ? 'high' : 'low';
 

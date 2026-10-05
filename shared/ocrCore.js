@@ -146,7 +146,7 @@ MODO MANUSCRITO DIFÍCIL — regras extras (têm prioridade sobre a ideia de "pa
 - Leia palavra por palavra, comparando o formato das letras. Primeiro identifique que TIPO de documento é (laudo médico, cartão de ponto, recibo, certidão, contrato, mandado, ordem de serviço...) e use o que está IMPRESSO no papel (timbre, cabeçalho, formulário, carimbo) e o vocabulário habitual DESSE tipo de documento pra decifrar.
 - Se você NÃO tiver razoável certeza de uma palavra, NÃO complete com algo só porque é plausível: escreva a melhor leitura seguida de [?] (ex.: "Discais[?]"). Se nada puder ser lido, use [ILEGÍVEL]. Marcar a dúvida é MAIS importante do que entregar o texto aparentemente completo.
 - Números de registro profissional (CRM, OAB, CREA...), CPF, CNPJ, número de processo, valores em reais, horários, datas, doses e códigos: só escreva o que você consegue ler com clareza; dígito duvidoso vira [?]. NUNCA invente dígitos.
-- Carimbo borrado ou desbotado: transcreva só as partes legíveis, o resto como [ILEGÍVEL].`;
+- Carimbo (mesmo borrado ou sobreposto a outro texto): tente ler linha por linha o NOME, a ESPECIALIDADE e o NÚMERO do conselho (CRM/OAB...); transcreva só as partes legíveis e marque o resto como [ILEGÍVEL].`;
 
 export function getHardHandwritingSystemPrompt() {
   return `Você é um transcritor de documentos do escritório Félix & Castro Advocacia (previdenciário, trabalhista, cível, consumidor), especialista em LETRA MANUSCRITA DIFÍCIL (letra de médico, cartões de ponto, recibos, certidões antigas, anotações à mão em geral).
@@ -166,9 +166,15 @@ FORMATO DE SAÍDA:
 }
 
 
-export function buildTranscriptionUserText(hard, clientName) {
-  if (!hard) return BASE_TRANSCRIPTION_TEXT;
-  return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildClientNameHint(clientName);
+// Datas manuscritas: o erro mais perigoso é o ANO (0 lido no lugar de 6 etc.), que parece plausível e ninguém estranha.
+export function buildDateHint(hoje) {
+  if (!hoje) return "";
+  return `\n- Datas manuscritas: leia o ANO dígito por dígito (confusões típicas: 0/6, 1/7, 3/5/8). Hoje é ${hoje}; documentos de um cliente costumam ser recentes. Se o ano lido deixar a data muito distante de hoje (mais de 3 anos) e o dígito for ambíguo, reconfira o desenho do dígito; persistindo a dúvida, escreva as duas leituras assim: [?: 13/05/2026 | 13/05/2020]. Nunca troque o ano só porque "parece melhor": o que está escrito no papel manda.`;
+}
+
+export function buildTranscriptionUserText(hard, clientName, hoje) {
+  if (!hard) return BASE_TRANSCRIPTION_TEXT + buildDateHint(hoje);
+  return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildDateHint(hoje) + buildClientNameHint(clientName);
 }
 
 // Instrução do JUIZ do modo difícil (compara as leituras e confere pela coerência do conteúdo).
