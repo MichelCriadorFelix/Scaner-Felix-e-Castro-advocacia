@@ -391,10 +391,8 @@ export function collectReadingDoubts(fullDocs: { name?: string; text?: string }[
       let page: number | null = null;
       for (const p of pages) { if (p.idx <= at) page = p.page; else break; }
       // contexto só da MESMA linha (não atravessa marcador de página)
-      const before = (text.slice(Math.max(0, at - 70), at).split('
-').pop() || '').replace(/\s+/g, ' ');
-      const after = (text.slice(at + m[0].length, at + m[0].length + 50).split('
-')[0] || '').replace(/\s+/g, ' ');
+      const before = (text.slice(Math.max(0, at - 70), at).split('\n').pop() || '').replace(/\s+/g, ' ');
+      const after = (text.slice(at + m[0].length, at + m[0].length + 50).split('\n')[0] || '').replace(/\s+/g, ' ');
       out.push({
         docIndex: di + 1,
         docName: doc.name || `Documento ${di + 1}`,
