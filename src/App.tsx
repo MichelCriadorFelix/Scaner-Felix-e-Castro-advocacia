@@ -12,7 +12,7 @@ import { checkDailyReset, setForcePaidKeyEnabled } from './lib/apiKeys';
 import { fetchServerKeyStatus } from './lib/serverOcr';
 import { getSelectedGeminiModel, setSelectedGeminiModel, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY } from './lib/geminiModels';
 import { setHardHandwritingEnabled, setOcrContextClientName, wantsHighResImage, imageFilterEnabled, isHardHandwritingEnabled } from './lib/handwritingMode';
-import { IdentityDivergence, generateFolderPrePetitionAudit, generateAiConsistencyAudit, pickConfidentWinner, applyValueCorrection, pickDominantValue, buildAuditFormattedReport } from './lib/audit';
+import { IdentityDivergence, generateFolderPrePetitionAudit, generateAiConsistencyAudit, pickConfidentWinner, applyValueCorrection, pickDominantValue, buildAuditFormattedReport, collectReadingDoubts, buildReadingDoubtsBlock } from './lib/audit';
 import { supabase } from './lib/supabaseClient';
 import { G, css } from './lib/theme';
 import { compressImage, compressPDF } from './lib/pdfCompress';
@@ -3251,6 +3251,18 @@ export default function ScannerJuridico() {
 
     const clientName = viewingClient === 'unassigned' ? '' : folderName;
 
+    // Dúvidas de leitura ([?: a | b], [?], [ILEGÍVEL]) de todos os documentos: coletadas ANTES da harmonização por IA
+    // e listadas no topo do compilado, pra o advogado conferir no papel.
+    const readingDoubts = collectReadingDoubts(fullDocs);
+    if (readingDoubts.length > 0) {
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🔎 ${readingDoubts.length} ponto(s) de leitura marcado(s) pela IA como DÚVIDA/ILEGÍVEL — vão listados no topo do compilado para conferência no papel:`,
+        ...readingDoubts.slice(0, 12).map(d => `[${new Date().toLocaleTimeString()}] ↳ Doc. ${d.docIndex}${d.page ? `, pág. ${d.page}` : ''}: ${d.snippet}`),
+        ...(readingDoubts.length > 12 ? [`[${new Date().toLocaleTimeString()}] ↳ … e mais ${readingDoubts.length - 12} (todos no relatório do compilado).`] : [])
+      ]);
+    }
+
     // Etapa 1: Auditoria Pré-Petição e Cruzamento de Dados
     setCompilationProgress(35);
     setCompilationTotal(1);
@@ -3496,6 +3508,23 @@ export default function ScannerJuridico() {
         `[${new Date().toLocaleTimeString()}] ⚠️ Falha na otimização de IA: ${err.message || err}`,
         `[${new Date().toLocaleTimeString()}] ℹ️ Mantendo o compilado curado original de segurança.`
       ]);
+    }
+
+    // As marcas de dúvida têm de sobreviver à harmonização por IA. Se alguma sumiu, avisa; a lista do topo (inserida
+    // DEPOIS da IA, portanto intocada) continua com todas.
+    if (readingDoubts.length > 0) {
+      const countMarks = (t: string) => (t.match(/\[\?[^\]\n]{0,160}\]|\[ILEG[ÍI]VEL\]/gi) || []).length;
+      const before = readingDoubts.length;
+      const after = countMarks(finalCompiledText);
+      if (after < before) {
+        setCompilationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ A harmonização por IA removeu ${before - after} marca(s) de dúvida do corpo do texto. Todas continuam listadas no topo do compilado — confira por lá.`]);
+      }
+      const doubtsBlock = buildReadingDoubtsBlock(readingDoubts);
+      const anchor = "======================================================\n\n";
+      const at = finalCompiledText.indexOf(anchor);
+      finalCompiledText = at >= 0
+        ? finalCompiledText.slice(0, at + anchor.length) + doubtsBlock + finalCompiledText.slice(at + anchor.length)
+        : doubtsBlock + finalCompiledText;
     }
 
     setCompilationProgress(100);

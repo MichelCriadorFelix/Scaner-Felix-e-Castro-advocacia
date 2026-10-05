@@ -22,7 +22,9 @@ REGRAS CRÍTICAS DE REFINAMENTO:
    - É ESTRITAMENTE PROIBIDO abreviar ou resumir os nomes das pessoas. O nome completo de todos os indivíduos deve ser mantido de forma estendida, idêntica ao original.
    - Preserve o conteúdo original inteiro. NÃO RESUMA, NÃO COMENTE E NÃO EXPLIQUE. Sua resposta deve conter APENAS o texto reconstruído e nada mais.
 
-4. MANTER MARCADORES DE PÁGINA:
+4. MARCAS DE DÚVIDA DA LEITURA (INTOCÁVEIS): preserve EXATAMENTE toda marca do tipo [?], [?: opção A | opção B] e [ILEGÍVEL]. Nunca escolha uma opção, nunca complete um [ILEGÍVEL], nunca apague a marca.
+
+5. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
   const refined = await generateTextViaServer({
@@ -114,7 +116,9 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
    - Todos os números de documentos (CPF, RG, NIT, CNPJ), números de processos, datas, valores monetários, telefones e endereços devem ser mantidos IDÊNTICOS aos originais.
    - Mantenha intactos os marcadores estruturais do compilado, como divisórias (ex: "------------------"), títulos de documentos (ex: "DOCUMENTO X: ...") e tags de página (ex: "[PÁGINA X - TEXTO DIGITAL NATIVO]").
 
-4. RETORNO LIMPO:
+4. MARCAS DE DÚVIDA DA LEITURA (INTOCÁVEIS): preserve EXATAMENTE, caractere por caractere, toda marca do tipo [?], [?: opção A | opção B] e [ILEGÍVEL]. NUNCA escolha uma das opções por conta própria, NUNCA complete um [ILEGÍVEL] e NUNCA apague a marca: ela sinaliza que um humano precisa conferir o papel.
+
+5. RETORNO LIMPO:
    - Retorne APENAS o texto revisado final correspondente ao trecho fornecido, sem qualquer comentário explicativo, introdução ou conclusão.`;
 
   const refinedChunk = await generateTextViaServer({

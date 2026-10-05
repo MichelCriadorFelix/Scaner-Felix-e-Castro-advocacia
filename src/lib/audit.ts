@@ -359,3 +359,62 @@ ${headerExcerpts}`,
     return [];
   }
 }
+
+
+// ── Pontos de leitura para conferência ───────────────────────────────────────────────────────
+// Marcas que a leitura por IA deixa quando NÃO tem certeza: "[?: 2026 | 2020]" (duas leituras plausíveis),
+// "[?]" (palavra duvidosa) e "[ILEGÍVEL]". O advogado precisa vê-las juntas, com documento e página,
+// pra conferir no papel — sem caçar documento por documento.
+export interface ReadingDoubt {
+  docIndex: number;
+  docName: string;
+  page: number | null;
+  kind: 'duvida' | 'ilegivel';
+  snippet: string;
+}
+
+export function collectReadingDoubts(fullDocs: { name?: string; text?: string }[]): ReadingDoubt[] {
+  const out: ReadingDoubt[] = [];
+  const markerRe = /\[\?[^\]\n]{0,160}\]|\[ILEG[ÍI]VEL\]/gi;
+  const pageRe = /\[P[ÁA]GINA\s+(\d+)\b[^\]]*\]/gi;
+  fullDocs.forEach((doc, di) => {
+    const text = doc.text || '';
+    if (!text) return;
+    const pages: { idx: number; page: number }[] = [];
+    let pm: RegExpExecArray | null;
+    pageRe.lastIndex = 0;
+    while ((pm = pageRe.exec(text)) !== null) pages.push({ idx: pm.index, page: Number(pm[1]) });
+    let m: RegExpExecArray | null;
+    markerRe.lastIndex = 0;
+    while ((m = markerRe.exec(text)) !== null) {
+      const at = m.index;
+      let page: number | null = null;
+      for (const p of pages) { if (p.idx <= at) page = p.page; else break; }
+      // contexto só da MESMA linha (não atravessa marcador de página)
+      const before = (text.slice(Math.max(0, at - 70), at).split('
+').pop() || '').replace(/\s+/g, ' ');
+      const after = (text.slice(at + m[0].length, at + m[0].length + 50).split('
+')[0] || '').replace(/\s+/g, ' ');
+      out.push({
+        docIndex: di + 1,
+        docName: doc.name || `Documento ${di + 1}`,
+        page,
+        kind: /ILEG/i.test(m[0]) ? 'ilegivel' : 'duvida',
+        snippet: `…${before}${m[0]}${after}…`.trim(),
+      });
+    }
+  });
+  return out;
+}
+
+export function buildReadingDoubtsBlock(doubts: ReadingDoubt[], maxItems: number = 80): string {
+  if (doubts.length === 0) return '';
+  const sep = '══════════════════════════════════════════════════════════════════════════════';
+  let block = `${sep}\n🔎 PONTOS DE LEITURA PARA CONFERÊNCIA NO PAPEL (${doubts.length}) — a IA marcou dúvida; NÃO foram resolvidos por palpite:\n${sep}\n`;
+  doubts.slice(0, maxItems).forEach(d => {
+    const where = `Doc. ${d.docIndex}${d.page ? `, pág. ${d.page}` : ''} (${d.docName})`;
+    block += `• ${where} — ${d.kind === 'ilegivel' ? 'ILEGÍVEL' : 'DÚVIDA'}: ${d.snippet}\n`;
+  });
+  if (doubts.length > maxItems) block += `• … e mais ${doubts.length - maxItems} ponto(s); procure por "[?" e "[ILEGÍVEL]" no texto.\n`;
+  return block + '\n';
+}
