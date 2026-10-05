@@ -2034,10 +2034,11 @@ function markMistralFailure(fingerprint: string): void {
 // sempre por algo que travou (ex: stream do Gemini que manda alguns fragmentos e trava no
 // meio, sem erro nenhum — o SDK não avisa, só fica parado).
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(errorMsg)), ms)),
-  ]);
+  let timer: any;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(errorMsg)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 
 // Backoff exponencial com jitter pra retentativas de 503/sobrecarga — em vez de esperar
@@ -2422,212 +2423,6 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   }
 
   throw new Error("❌ Esgotamento Total: " + (lastError?.message || "Servidores do Google indisponíveis ou todas as cotas excedidas."));
-}
-
-// ── Ingestão em Lotes via Imagens (Canvas) ──────────
-async function extractBatchOfImagesWithGemini(images, onProgress, goldStandard = true, preferredApiKey = null) {
-  const finalSortedKeys = getSortedApiKeys(preferredApiKey);
-  let lastError = null;
-
-  if (finalSortedKeys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI configurada.");
-  }
-
-  const prompt = `VOCÊ É O TRANSCRITOR JURÍDICO DE ELITE.
-Sua missão é transcrever perfeitamente as imagens fornecidas, que correspondem a um lote de páginas de um documento.
-REGRAS CRÍTICAS:
-1. Para cada imagem/página do lote, inicie a transcrição da respectiva página com o cabeçalho exato: [PÁGINA X - RECUPERADO VIA IA JURÍDICA] (substitua X pelo número exato da página).
-2. Transcreva todo o conteúdo de forma literal, integral e fiel (verbatim). Não omita, não resuma e não invente nada.
-3. Ao final da transcrição de cada página, insira obrigatoriamente a linha divisória: ══════════════════════════════════════════════════`;
-
-  const MODEL_NAME = getSafeGeminiModel();
-
-  const parts: any[] = [
-    { text: "Leia todas as imagens do lote em sequência e realize a transcrição integral e literal de cada página conforme as regras fornecidas." }
-  ];
-  for (const img of images) {
-    parts.push({ text: `--- PÁGINA ${img.pageNum} ---` });
-    parts.push({
-      inlineData: {
-        data: img.base64,
-        mimeType: img.blob?.type || "image/jpeg"
-      }
-    });
-  }
-
-  for (let i = 0; i < finalSortedKeys.length; i++) {
-    if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
-    
-    const apiKey = finalSortedKeys[i];
-    const keyHash = apiKey.slice(-6);
-
-    if (isKeyThrottled(apiKey)) {
-      const waitMs = getKeyCooldownRemainingMs(apiKey);
-      if (waitMs > 0) {
-        console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
-        await new Promise(r => setTimeout(r, waitMs));
-      }
-    }
-    recordKeyMinuteCall(apiKey);
-
-    console.log(`[Gemini Flash - Batch] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Processando lote de ${images.length} páginas...`);
-    const ai = new GoogleGenAI({ apiKey });
-    
-    try {
-      let textOutput = "";
-      let activeModel = MODEL_NAME;
-      try {
-        let responseStream;
-        try {
-          responseStream = await ai.models.generateContentStream({
-            model: activeModel,
-            contents: parts,
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.1,
-              maxOutputTokens: 65536,
-              thinkingConfig: getThinkingConfigForModel(activeModel, "low")
-            }
-          });
-        } catch (initErr: any) {
-          const initMsg = String(initErr?.message || initErr || "").toLowerCase();
-          if (initMsg.includes("503") || initMsg.includes("overloaded") || initMsg.includes("high demand") || initMsg.includes("unavailable")) {
-            console.warn(`[Gemini Batch] Modelo ${activeModel} com sobrecarga, tentando novamente...`);
-            await new Promise(r => setTimeout(r, backoffDelay(1)));
-            responseStream = await ai.models.generateContentStream({
-              model: activeModel,
-              contents: parts,
-              config: {
-                systemInstruction: prompt,
-                temperature: 0.1,
-                maxOutputTokens: 65536,
-                thinkingConfig: getThinkingConfigForModel(activeModel, "low")
-              }
-            });
-          } else {
-            throw initErr;
-          }
-        }
-
-        let fullText = "";
-        let chunksCount = 0;
-        let batchFinishReason: string | undefined;
-        // Mesma proteção contra stream travado que extractPageWithGemini tem — sem isso, o
-        // lote fica esperando pra sempre se o Google aceitar a conexão e travar no meio.
-        const batchStreamIterator = responseStream[Symbol.asyncIterator]();
-        while (true) {
-          const { value: chunk, done } = await withTimeout(
-            batchStreamIterator.next(),
-            30000,
-            `Stream do lote travou (sem novo fragmento em 30s)`
-          );
-          if (done) break;
-          if (window.lexscan_abort) break;
-          if (chunk?.candidates?.[0]?.finishReason) batchFinishReason = chunk.candidates[0].finishReason;
-          if (chunk && chunk.text) {
-            fullText += chunk.text;
-            chunksCount++;
-            if (onProgress) {
-              onProgress(
-                null,
-                `Recebendo lote de ${images.length} págs via IA (${chunksCount} partes)...`
-              );
-            }
-          }
-        }
-        textOutput = fullText.trim();
-        if (textOutput && containsDegenerateRepetition(textOutput)) {
-          console.warn(`[Gemini Batch] Resposta em loop de repetição na chave ..${keyHash}. Descartando.`);
-          textOutput = "";
-          throw new Error("Resposta com repetição degenerada no lote.");
-        } else if (textOutput && batchFinishReason === 'MAX_TOKENS') {
-          // Nunca entrega o lote pela metade: pede continuação na mesma chave/modelo antes de desistir.
-          const completedBatch = await completeTruncatedTranscription(
-            ai, activeModel, parts, prompt, textOutput, batchFinishReason, keyHash
-          );
-          if (completedBatch) {
-            textOutput = completedBatch;
-          } else {
-            textOutput = "";
-            throw new Error("Lote não completado após continuação (limite de tokens).");
-          }
-        }
-      } catch (streamFail: any) {
-        const streamFailMsg = String(streamFail?.message || streamFail || "").toLowerCase();
-        
-        // Se for erro real de cota ou bloqueio
-        if (streamFailMsg.includes("503") || streamFailMsg.includes("429") || streamFailMsg.includes("quota") || streamFailMsg.includes("403")) {
-          throw streamFail;
-        }
-
-        console.warn(`[Gemini 3.5 Flash Batch] Streaming falhou, tentando chamada direta:`, streamFailMsg);
-        
-        const directRes = await withTimeout(
-          ai.models.generateContent({
-            model: MODEL_NAME,
-            contents: parts,
-            config: {
-              systemInstruction: prompt,
-              temperature: 0.1,
-              maxOutputTokens: 65536,
-              thinkingConfig: getThinkingConfigForModel(MODEL_NAME, "low")
-            }
-          }),
-          45000,
-          `Chamada direta do lote travou (sem resposta em 45s)`
-        );
-
-        textOutput = directRes?.text?.trim() || "";
-        if (!textOutput) {
-          throw new Error("Resposta vazia da IA no lote direto.");
-        }
-        if (containsDegenerateRepetition(textOutput)) {
-          textOutput = "";
-          throw new Error("Resposta com repetição degenerada no lote direto.");
-        } else if (isTruncatedResponse(directRes)) {
-          const completedDirectBatch = await completeTruncatedTranscription(
-            ai, MODEL_NAME, parts, prompt, textOutput, 'MAX_TOKENS', keyHash
-          );
-          if (completedDirectBatch) {
-            textOutput = completedDirectBatch;
-          } else {
-            textOutput = "";
-            throw new Error("Lote direto não completado após continuação (limite de tokens).");
-          }
-        }
-      }
-
-      if (textOutput) {
-        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-        if (window.setKeyError) window.setKeyError(keyHash, 'ok');
-        return { text: textOutput, usedKey: apiKey };
-      } else {
-        throw new Error("Resposta vazia da IA no lote.");
-      }
-    } catch (modelErr: any) {
-      lastError = modelErr;
-      console.warn(`[Gemini 3.5 Flash Batch] Erro com chave ..${keyHash}:`, modelErr?.message || modelErr);
-    }
-
-    const errorStr = (lastError?.message || "").toLowerCase();
-    let errorType = 'error';
-    if (errorStr.includes("403") || errorStr.includes("denied") || errorStr.includes("forbidden")) errorType = 'blocked';
-    else if (errorStr.includes("invalid") || errorStr.includes("not valid")) errorType = 'invalid';
-    else if (errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("exhausted") || errorStr.includes("rate limit")) {
-      // Só marca "esgotada até amanhã de verdade" quando o próprio erro do Google sinaliza
-      // cota DIÁRIA (menciona "day"/"daily"). Um 429 genérico agora é sempre tratado como
-      // limite POR MINUTO passageiro (rate_limited) — nunca mais trava a chave o dia inteiro
-      // por um estouro momentâneo (o throttle proativo de 4/min já evita isso na prática).
-      errorType = (errorStr.includes("day") || errorStr.includes("daily") || errorStr.includes("perday")) ? 'quota_exceeded' : 'rate_limited';
-    }
-    else if (errorStr.includes("503") || errorStr.includes("500") || errorStr.includes("timeout") || errorStr.includes("truncada") || errorStr.includes("degenerada")) errorType = 'server_error';
-
-    console.warn(`[Batch Failover] Chave ..${keyHash} falhou (${errorType}). Avançando imediatamente para a próxima chave...`);
-    if (window.setKeyError) window.setKeyError(keyHash, errorType);
-    await new Promise(r => setTimeout(r, 50));
-  }
-
-  throw lastError || new Error("Falha na extração do lote de imagens.");
 }
 
 // Auxiliar para verificar se o canvas da página renderizada é totalmente em branco (ex: verso de certidão, folha vazia)
@@ -3419,8 +3214,8 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
   });
 
   // Divergência de identidade (RG/CPF) por PAPEL genérico — funciona pra qualquer cliente, sem nome/número fixo.
-  // Nunca corrige automaticamente: só sinaliza pro advogado decidir qual número está correto (aparece nos
-  // Alertas Estratégicos, que exigem revisão manual antes de entrar no compilado final).
+  // Aqui só DETECTA e agrupa as variações. Quem tem vencedor claro é corrigido sozinho no compilado
+  // (pickConfidentWinner); o que for ambíguo vira alerta pro advogado decidir qual número está correto.
   const titularRoleRegex = /(?:Requerente|Autor|Titular|Paciente|Segurad[oa]|Interessad[oa])[^\n]{0,90}?(?:CPF|RG|Identidade)[\s:nºo.]*([\d.\-\/]{7,18})/gi;
   const representanteRoleRegex = /(?:Genitora|Genitor|M[ãa]e|Pai|Representante\s+Legal|Respons[áa]vel)[^\n]{0,90}?(?:CPF|RG|Identidade)[\s:nºo.]*([\d.\-\/]{7,18})/gi;
 
@@ -3442,7 +3237,7 @@ function generateFolderPrePetitionAudit(fullDocs: any[], clientName: string): Pr
     identityDivergences.push({ label: "Identidade do Representante/Genitor(a)", candidates: Array.from(representanteNumbers.keys()) });
   }
 
-  // Divergência de CRM médico por médico (nome extraído do próprio documento, não fixo) — mesma lógica: só sinaliza.
+  // Divergência de CRM médico por médico (nome extraído do próprio documento, não fixo) — mesma lógica de detecção.
   // Guarda também documento + página de cada ocorrência, pra o advogado conferir no original.
   const crmByDoctor = new Map<string, Map<string, IdentifierLocation[]>>();
   const crmPattern = /Dr[a]?\.?\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4})[\s\S]{0,120}?CRM[\s\/:\-]*([A-Z]{0,2}\s?[\d.\-]{4,10})|CRM[\s\/:\-]*([A-Z]{0,2}\s?[\d.\-]{4,10})[\s\S]{0,120}?Dr[a]?\.?\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){1,4})/g;
@@ -3789,7 +3584,7 @@ Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio 
       for (let m = 0; m < modelsToTry.length; m++) {
         const modelName = modelsToTry[m];
         try {
-          console.log(`[Compilador IA - Gemini 3.5 Flash] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Chamando auditoria e harmonização cadastral...`);
+          console.log(`[Compilador IA] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Chamando auditoria e harmonização cadastral...`);
           const ai = new GoogleGenAI({ apiKey });
           
           const response = await ai.models.generateContent({
@@ -3943,14 +3738,6 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
 
   let tesseractWorker: any = null;
   const Tesseract = await loadTesseract();
-
-  const withTimeout = (promise: Promise<any>, ms: number, errorMsg: string) => {
-    let timer: any;
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(errorMsg)), ms);
-    });
-    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
-  };
 
   let startIdx = parseInt(String(startPage)) || 1;
   const endIdx = pdf.numPages;
@@ -7020,7 +6807,6 @@ export default function ScannerJuridico() {
     } else {
       setHistory(prev => [newItem, ...prev]);
     }
-    if (!supabase) addToHistory(newItem);
 
     setCameraPages([]);
     clearCloudBatchSession(); // documento já finalizado e salvo — não precisa mais do rascunho na nuvem
@@ -7141,10 +6927,6 @@ export default function ScannerJuridico() {
       };
 
       setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
-      if(!supabase) {
-         let localH = getHistory().map(h => h.id === item.id ? updatedItem : h);
-         localStorage.setItem("lexscan_history", JSON.stringify(localH));
-      }
       setResult(updatedItem);
       showToast(extracted.fromCache ? "⚡ OCR carregado do cache instantâneo!" : "✓ OCR processado com sucesso!");
     } catch(err) {
@@ -7205,7 +6987,7 @@ export default function ScannerJuridico() {
       const confirmReExtract = window.confirm(
         `Todos os ${folderItems.length} documentos da pasta já possuem textos extraídos no banco de dados.\n\n` +
         `• Se você deseja apenas o arquivo final com o relatório de auditoria, clique em CANCELAR e use o botão 'Baixar Textos (TXT)'.\n\n` +
-        `• Deseja FORÇAR a re-extração completa de todos os ${folderItems.length} documentos via IA Jurídica (Gemini 3.5 Flash)?`
+        `• Deseja FORÇAR a re-extração completa de todos os ${folderItems.length} documentos via IA Jurídica?`
       );
       if (!confirmReExtract) {
         showToast("Você já pode clicar em 'Baixar Textos (TXT)' para gerar o compilado auditado!", "success");
@@ -7316,10 +7098,6 @@ export default function ScannerJuridico() {
             };
       
             setHistory(prev => prev.map(h => h.id === item.id ? updatedItem : h));
-            if(!supabase) {
-               let localH = getHistory().map(h => h.id === item.id ? updatedItem : h);
-               localStorage.setItem("lexscan_history", JSON.stringify(localH));
-            }
             processedCount++;
           }
         } catch (fileErr) {
@@ -7371,9 +7149,6 @@ export default function ScannerJuridico() {
             has_failed_pages: editedHasFailedPages,
           })
           .eq("id", result.id);
-      } else {
-        const localH = getHistory().map((h) => (h.id === result.id ? updatedItem : h));
-        localStorage.setItem("lexscan_history", JSON.stringify(localH));
       }
 
       showToast("Texto atualizado com sucesso!", "success");
@@ -7427,9 +7202,6 @@ export default function ScannerJuridico() {
             has_failed_pages: refinedHasFailedPages,
           })
           .eq("id", result.id);
-      } else {
-        const localH = getHistory().map((h) => (h.id === result.id ? updatedItem : h));
-        localStorage.setItem("lexscan_history", JSON.stringify(localH));
       }
 
       showToast("Texto refinado e otimizado com IA Jurídica com sucesso!", "success");
@@ -7995,7 +7767,7 @@ export default function ScannerJuridico() {
     rawCompiledText += finalHeaderReport;
     rawCompiledText += docsBodyText;
 
-    // Etapa 3: Harmonização Global com IA (Gemini 3.5 Flash)
+    // Etapa 3: Harmonização Global com IA
     setCompilationProgress(60);
     setCompilationStatusText("Consultando IA para harmonização global de grafias e nomes...");
 
@@ -9237,7 +9009,7 @@ export default function ScannerJuridico() {
                         <span style={{ fontWeight: 600, color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '4px' }}>
                           ✨ Transcrição Padrão GOD / Ouro (Fidelidade Máxima)
                         </span>
-                        <span style={{ fontSize: '11px', color: G.muted }}>Ignora completamente o OCR local de baixo desempenho, processa na nuvem via Gemini 3.5 Flash de forma prioritária, preservando colunas de diários oficiais, assinaturas e tabelas com exatidão máxima de 100%.</span>
+                        <span style={{ fontSize: '11px', color: G.muted }}>Ignora completamente o OCR local de baixo desempenho, processa na nuvem via Gemini de forma prioritária, preservando colunas de diários oficiais, assinaturas e tabelas com exatidão máxima de 100%.</span>
                       </label>
                     </div>
                   )}
