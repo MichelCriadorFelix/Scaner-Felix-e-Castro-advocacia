@@ -6,13 +6,12 @@ import { ocrContextClientName } from './handwritingMode';
 
 // ── Motor de leitura no servidor (/api/ocr-page) ────────────────────────────────────────────
 // As chaves Gemini ficam no servidor e o estado de cota/espera de cada uma é compartilhado entre
-// abas e sócios. Ligado/desligado por localStorage.lexscan_engine ('server' liga; padrão: desligado
-// nesta fase de testes). Qualquer falha aqui devolve null e o motor local de sempre assume.
+// abas e sócios. Ligado por padrão; localStorage.lexscan_engine='local' desliga (volta ao motor do navegador). Qualquer falha aqui devolve null e o motor local de sempre assume.
 export function isServerEngineEnabled(): boolean {
   try {
-    return localStorage.getItem('lexscan_engine') === 'server';
+    return localStorage.getItem('lexscan_engine') !== 'local';
   } catch (e) {
-    return false;
+    return true;
   }
 }
 
