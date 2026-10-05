@@ -1094,15 +1094,13 @@ function isHardHandwritingTextSane(text: string, reference: string, maxFactor: n
   );
 }
 
-// 2ª LEITURA INDEPENDENTE do modo "Manuscrito difícil": lê a mesma imagem de novo, de preferência
-// com OUTRO modelo da cascata (erros de modelos diferentes tendem a não coincidir). Onde as duas
-// leituras discordam está justamente a dúvida real — sinal que uma leitura só nunca dá.
-// Falha ou resposta suspeita devolve null (segue só com a 1ª leitura).
-async function readSecondOpinion(ai: any, firstModel: string, candidateModels: string[], imagePart: any, systemPrompt: string, firstText: string, keyHash: string): Promise<string | null> {
-  const altModel = candidateModels.find(m => m !== firstModel && !isKeyModelExhausted(keyHash, m));
-  const attempts: { model: string; temperature: number }[] = [];
-  if (altModel) attempts.push({ model: altModel, temperature: 0.4 });
-  attempts.push({ model: firstModel, temperature: 0.8 });
+// 2ª LEITURA INDEPENDENTE do modo "Manuscrito difícil": lê a mesma imagem de novo com o MESMO
+// modelo da 1ª leitura (o advogado escolheu esse modelo; nenhuma etapa pode chamar outro por
+// conta própria), com amostragem diferente — onde as duas leituras discordam está justamente a
+// dúvida real, sinal que uma leitura só nunca dá. Falha ou resposta suspeita devolve null
+// (segue só com a 1ª leitura).
+async function readSecondOpinion(ai: any, firstModel: string, imagePart: any, systemPrompt: string, firstText: string, keyHash: string): Promise<string | null> {
+  const attempts: { model: string; temperature: number }[] = [{ model: firstModel, temperature: 0.8 }];
   for (const { model, temperature } of attempts) {
     if (window.lexscan_abort) return null;
     try {
@@ -2377,7 +2375,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           const hardImagePart = { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } };
           const firstReadModel = successModel || getSafeGeminiModel();
           if (onProgress) onProgress(null, "Manuscrito difícil: 2ª leitura independente...");
-          const secondReading = await readSecondOpinion(ai, firstReadModel, modelsToTry, hardImagePart, prompt, textOutput, keyHash);
+          const secondReading = await readSecondOpinion(ai, firstReadModel, hardImagePart, prompt, textOutput, keyHash);
           if (onProgress) onProgress(null, "Manuscrito difícil: comparando as leituras e conferindo pelo contexto do documento...");
           const verified = await verifyHardHandwriting(ai, firstReadModel, hardImagePart, textOutput, secondReading, keyHash);
           if (verified) {
