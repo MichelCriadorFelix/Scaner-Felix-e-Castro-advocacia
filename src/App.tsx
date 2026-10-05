@@ -1057,25 +1057,83 @@ function buildTranscriptionUserText(): string {
   return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildClientNameHint();
 }
 
-// Segunda passada do modo "Manuscrito difícil": o modelo relê a imagem com a 1ª transcrição
-// na mão e corrige só o que a imagem contradiz (palavras inventadas por plausibilidade). Qualquer
-// falha, resposta suspeita ou tamanho muito diferente descarta a conferência e mantém a 1ª leitura.
-async function verifyHardHandwriting(ai: any, model: string, imagePart: any, firstText: string, keyHash: string): Promise<string | null> {
-  const systemInstruction = `Você é um REVISOR de transcrições de manuscritos médicos/jurídicos do escritório Félix & Castro Advocacia. Receberá a IMAGEM de uma página e uma transcrição feita por outro leitor. Sua tarefa: reler a imagem com muita atenção, palavra por palavra, e devolver a transcrição CORRIGIDA.
-REGRAS:
-1. Mantenha EXATAMENTE o mesmo formato da transcrição recebida (metadados TÍTULO/TIPO/ÁREA/OBS, linha divisória, estrutura e tudo que já está certo). Não resuma, não reordene, não remova trechos corretos.
-2. Corrija somente onde a imagem mostrar algo diferente. Desconfie de palavras e nomes que o outro leitor possa ter completado só por parecerem plausíveis: confira cada uma contra o formato das letras.
-3. Use o contexto clínico e o que está impresso no papel (timbre, clínica, nome e especialidade do médico) pra decifrar.
-4. Se continuar sem certeza, mantenha a melhor leitura com [?] ou use [ILEGÍVEL]. NUNCA invente nomes, dígitos de CRM/CPF, datas ou doses.
-5. Responda SOMENTE com a transcrição corrigida completa, sem comentários e sem blocos de código.${buildClientNameHint()}`;
+// Verificação de sanidade comum às respostas extras do modo "Manuscrito difícil" (2ª leitura e juiz):
+// descarta resposta vazia, de tamanho muito diferente, com ideograma estranho ou em loop.
+function isHardHandwritingTextSane(text: string, reference: string, maxFactor: number): boolean {
+  return (
+    text.length >= reference.length * 0.5 &&
+    text.length <= reference.length * maxFactor &&
+    !/[一-鿿぀-ヿ가-힯]/.test(text) &&
+    !containsDegenerateRepetition(text)
+  );
+}
+
+// 2ª LEITURA INDEPENDENTE do modo "Manuscrito difícil": lê a mesma imagem de novo, de preferência
+// com OUTRO modelo da cascata (erros de modelos diferentes tendem a não coincidir). Onde as duas
+// leituras discordam está justamente a dúvida real — sinal que uma leitura só nunca dá.
+// Falha ou resposta suspeita devolve null (segue só com a 1ª leitura).
+async function readSecondOpinion(ai: any, firstModel: string, candidateModels: string[], imagePart: any, systemPrompt: string, firstText: string, keyHash: string): Promise<string | null> {
+  const altModel = candidateModels.find(m => m !== firstModel && !isKeyModelExhausted(keyHash, m));
+  const attempts: { model: string; temperature: number }[] = [];
+  if (altModel) attempts.push({ model: altModel, temperature: 0.4 });
+  attempts.push({ model: firstModel, temperature: 0.8 });
+  for (const { model, temperature } of attempts) {
+    if (window.lexscan_abort) return null;
+    try {
+      const res: any = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents: [{ text: buildTranscriptionUserText() }, imagePart],
+          config: {
+            systemInstruction: systemPrompt,
+            temperature,
+            maxOutputTokens: 65536,
+            thinkingConfig: getThinkingConfigForModel(model, "high"),
+          },
+        }),
+        75000,
+        `2ª leitura (${model}) travou (sem resposta em 75s)`
+      );
+      const text: string = (res?.text || "").trim();
+      if (text && isHardHandwritingTextSane(text, firstText, 1.8)) {
+        console.log(`[Manuscrito difícil] 2ª leitura feita com ${model} (temp ${temperature}).`);
+        return text;
+      }
+      console.warn(`[Manuscrito difícil] 2ª leitura com ${model} descartada (resposta vazia/suspeita).`);
+    } catch (e: any) {
+      console.warn(`[Manuscrito difícil] 2ª leitura com ${model} falhou:`, e?.message || e);
+    }
+  }
+  return null;
+}
+
+// JUIZ do modo "Manuscrito difícil": recebe a imagem + a(s) leitura(s) e devolve a transcrição
+// final. Compara as leituras, confere cada dúvida contra a imagem e contra a COERÊNCIA CLÍNICA
+// (é aqui que entra o "entender", não só enxergar: um CID "H54" num laudo de coluna e punho é
+// quase certamente um "M54" mal escrito). Onde não decidir, mostra as DUAS opções em vez de
+// escolher uma ou inventar. Qualquer falha ou resposta suspeita mantém a 1ª leitura.
+async function verifyHardHandwriting(ai: any, model: string, imagePart: any, firstText: string, secondText: string | null, keyHash: string): Promise<string | null> {
+  const hoje = new Date().toLocaleDateString('pt-BR');
+  const systemInstruction = `Você é o REVISOR-JUIZ de transcrições de manuscritos médicos/jurídicos do escritório Félix & Castro Advocacia. Receberá a IMAGEM de uma página e ${secondText ? 'DUAS transcrições independentes (Leitura A e Leitura B)' : 'uma transcrição (Leitura A)'}. Devolva a transcrição FINAL.
+COMO TRABALHAR:
+1. Mantenha o formato da Leitura A (metadados TÍTULO/TIPO/ÁREA/OBS, linha divisória, estrutura). Não resuma, não reordene, não remova o que já está certo.
+2. ${secondText ? 'Compare as duas leituras palavra por palavra. Onde concordam e a imagem confirma, mantenha. Onde DISCORDAM, olhe a imagem de novo, forma por forma de letra, e decida.' : 'Confira palavra por palavra contra a imagem, desconfiando do que parece completado só por ser plausível.'}
+3. COERÊNCIA CLÍNICA E DOCUMENTAL — raciocine como um leitor experiente, não só letra por letra:
+   - Confusões típicas de letra manuscrita: H/M, 1/7, 4/9, 5/S, 0/6, a/o, u/n, rr/n. Se um código CID, sigla ou termo não combina com os diagnósticos escritos no mesmo documento (ex.: CID de visão num laudo de coluna e punho), considere a leitura compatível com o contexto, e SINALIZE a troca (regra 4).
+   - Nomes de médico, clínica e especialidade IMPRESSOS no timbre/carimbo valem como pista pra decifrar o resto.
+   - Datas: hoje é ${hoje}; uma data no futuro ou incompatível com as outras datas do documento merece dúvida.
+   - Abreviações médicas (ATB, STC, MMSS, DM, HD...) devem ser lidas no sentido clínico correto.
+4. Onde, mesmo assim, houver mais de uma leitura plausível, NÃO escolha em silêncio e NÃO invente: escreva as duas assim: [?: opção1 | opção2]. Dígito/letra sem nenhuma leitura possível: [ILEGÍVEL].
+5. NUNCA invente nomes, dígitos de CRM/CPF, datas ou doses que não estejam no papel.
+6. Responda SOMENTE com a transcrição final completa, sem comentários e sem blocos de código.${buildClientNameHint()}`;
+  const userText = secondText
+    ? `LEITURA A:\n<<<\n${firstText}\n>>>\n\nLEITURA B:\n<<<\n${secondText}\n>>>\n\nRelia a imagem, compare as duas leituras e devolva a transcrição final.`
+    : `LEITURA A:\n<<<\n${firstText}\n>>>\n\nRelia a imagem e devolva a transcrição final.`;
   try {
     const res: any = await withTimeout(
       ai.models.generateContent({
         model,
-        contents: [
-          { text: `TRANSCRIÇÃO A CONFERIR (feita por outro leitor):\n<<<\n${firstText}\n>>>\n\nReleia a imagem e devolva a transcrição corrigida.` },
-          imagePart,
-        ],
+        contents: [{ text: userText }, imagePart],
         config: {
           systemInstruction,
           temperature: 0.1,
@@ -1088,18 +1146,14 @@ REGRAS:
     );
     let verified: string = (res?.text || "").trim();
     verified = verified.replace(/^```[a-z]*\n/i, "").replace(/\n```$/, "").trim();
-    const sane =
-      verified.length >= firstText.length * 0.5 &&
-      verified.length <= firstText.length * 1.8 &&
-      !/[一-鿿぀-ヿ가-힯]/.test(verified) &&
-      !containsDegenerateRepetition(verified);
-    if (!sane) {
+    if (!isHardHandwritingTextSane(verified, firstText, 2.2)) {
       console.warn(`[Manuscrito difícil] Conferência descartada (resposta suspeita: ${verified.length} chars vs ${firstText.length}). Mantendo a 1ª leitura.`);
       return null;
     }
     const before = new Set(firstText.toLowerCase().split(/\s+/));
     const changed = verified.toLowerCase().split(/\s+/).filter(w => !before.has(w)).length;
-    console.log(`[Manuscrito difícil] Conferência aplicada na chave ..${keyHash}: ~${changed} palavras diferentes da 1ª leitura.`);
+    const doubts = (verified.match(/\[\?/g) || []).length;
+    console.log(`[Manuscrito difícil] Conferência aplicada na chave ..${keyHash}: ~${changed} palavras diferentes da 1ª leitura, ${doubts} dúvida(s) sinalizada(s).`);
     return verified;
   } catch (e: any) {
     console.warn("[Manuscrito difícil] Conferência falhou — mantendo a 1ª leitura:", e?.message || e);
@@ -2223,14 +2277,12 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
           .replace(/(\n[ \t]*\n){3,}/g, '\n\n')
           .trim();
         if (isHardHandwritingEnabled() && !window.lexscan_abort) {
-          if (onProgress) onProgress(null, "Manuscrito difícil: conferindo a leitura (2ª passada)...");
-          const verified = await verifyHardHandwriting(
-            ai,
-            successModel || getSafeGeminiModel(),
-            { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } },
-            textOutput,
-            keyHash
-          );
+          const hardImagePart = { inlineData: { data: base64, mimeType: blob.type || "image/jpeg" }, mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" } };
+          const firstReadModel = successModel || getSafeGeminiModel();
+          if (onProgress) onProgress(null, "Manuscrito difícil: 2ª leitura independente...");
+          const secondReading = await readSecondOpinion(ai, firstReadModel, modelsToTry, hardImagePart, prompt, textOutput, keyHash);
+          if (onProgress) onProgress(null, "Manuscrito difícil: comparando as leituras e conferindo pelo contexto clínico...");
+          const verified = await verifyHardHandwriting(ai, firstReadModel, hardImagePart, textOutput, secondReading, keyHash);
           if (verified) {
             textOutput = verified
               .replace(/_{5,}/g, '___')
