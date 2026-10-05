@@ -1759,6 +1759,8 @@ export default function ScannerJuridico() {
     // Encontra todas as páginas verdadeiramente falhas ou puladas
     const pagesToProcess = detectFailedPages(currentText);
     console.log("[Recuperar páginas] Páginas detectadas para reparo:", pagesToProcess);
+    // Mesma dica de pasta que os outros fluxos de leitura usam (ajuda a não trocar sobrenome de manuscrito parecido).
+    setOcrContextClientName(clientNameForOcr(targetResult.clientId));
     
     if (pagesToProcess.length === 0) {
       showToast("Nenhuma página com falha ou erro crítico foi encontrada neste documento!", "info");
