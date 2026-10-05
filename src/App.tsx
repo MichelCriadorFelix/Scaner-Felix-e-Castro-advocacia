@@ -1015,6 +1015,20 @@ function isMistralSelected(): boolean {
 const MISTRAL_IMAGE_MAX_DIMENSION = 2600;
 const MISTRAL_IMAGE_JPEG_QUALITY = 0.92;
 
+// Modo "Manuscrito difícil" (checkbox na tela, nasce DESMARCADO a cada carregamento — mais
+// raciocínio e mais pixels custam mais tokens, então só se liga pros laudos de letra ruim).
+// Sobe o raciocínio do Gemini ao máximo e manda a imagem em alta resolução.
+let hardHandwritingRuntime = false;
+function isHardHandwritingEnabled(): boolean {
+  return hardHandwritingRuntime;
+}
+function setHardHandwritingEnabled(enabled: boolean): void {
+  hardHandwritingRuntime = enabled;
+}
+function wantsHighResImage(): boolean {
+  return isMistralSelected() || hardHandwritingRuntime;
+}
+
 function getSafeGeminiModel(): string {
   const selected = getSelectedGeminiModel();
   return GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
@@ -1031,9 +1045,12 @@ function getModelFallbackCascade(): string[] {
 // "Thinking level is not supported for this model" e a página inteira falha nesse modelo.
 // O 2.5-flash usa o parâmetro antigo em tokens: 0 desliga o raciocínio (equivalente a "low"),
 // -1 deixa o próprio modelo decidir dinamicamente quanto raciocinar (equivalente a "medium").
-function getThinkingConfigForModel(model: string, level: "low" | "medium"): Record<string, any> {
+function getThinkingConfigForModel(model: string, level: "low" | "medium" | "high"): Record<string, any> {
   if (model === "gemini-2.5-flash") {
-    return { thinkingBudget: level === "medium" ? -1 : 0 };
+    // "high" = orçamento FIXO de 12288 tokens de raciocínio (o teto do 2.5-flash é 24576):
+    // o suficiente pra ele cruzar o contexto médico/jurídico e decifrar letra ruim, sem o
+    // custo de deixar o modelo decidir sozinho (-1) nem desligar o raciocínio (0).
+    return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 0 };
   }
   return { thinkingLevel: level };
 }
@@ -1870,6 +1887,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   // de "low" pra "medium" só pra ESTA chamada, dando ao Gemini mais raciocínio pra decifrar
   // letra manuscrita/formulário denso. Fora desse cenário, continua em "low" (rápido, barato).
   const boostThinking = outFlags?.mistralFailed === true;
+  const pageThinkingLevel: "low" | "medium" | "high" = isHardHandwritingEnabled() ? "high" : (boostThinking ? "medium" : "low");
 
   const finalSortedKeys = getSortedApiKeys(preferredApiKey);
   let lastError = null;
@@ -1932,7 +1950,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: getThinkingConfigForModel(currentModel, boostThinking ? "medium" : "low"),
+                thinkingConfig: getThinkingConfigForModel(currentModel, pageThinkingLevel),
               }
             });
           } catch (initErr: any) {
@@ -2030,7 +2048,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                   systemInstruction: prompt,
                   temperature: 0.1,
                   maxOutputTokens: 65536,
-                  thinkingConfig: getThinkingConfigForModel(currentModel, boostThinking ? "medium" : "low"),
+                  thinkingConfig: getThinkingConfigForModel(currentModel, pageThinkingLevel),
                 }
               }),
               45000,
@@ -2093,7 +2111,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 systemInstruction: prompt,
                 temperature: 0.1,
                 maxOutputTokens: 65536,
-                thinkingConfig: getThinkingConfigForModel(getSafeGeminiModel(), boostThinking ? "medium" : "low"),
+                thinkingConfig: getThinkingConfigForModel(getSafeGeminiModel(), pageThinkingLevel),
               }
             });
             const retryText = retryRes?.text?.trim() || "";
@@ -3708,7 +3726,7 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
             `Pág ${i}/${endIdx}: Renderizando imagem escaneada...`
           );
           
-          let viewport = page.getViewport({ scale: isMistralSelected() ? (attempt === 1 ? 3.0 : 2.0) : (attempt === 1 ? 1.5 : 1.0) });
+          let viewport = page.getViewport({ scale: wantsHighResImage() ? (attempt === 1 ? 3.0 : 2.0) : (attempt === 1 ? 1.5 : 1.0) });
           let canvas = document.createElement("canvas");
           canvas.width = Math.floor(viewport.width);
           canvas.height = Math.floor(viewport.height);
@@ -3734,7 +3752,7 @@ async function extractPDFHybrid(file: File | Blob, onProgress: (percent: number,
               Math.round(((i - startIdx + 1) / (endIdx - startIdx + 1)) * 100),
               `Pág ${i}/${endIdx}: Transcrevendo manuscrito/scan via IA Jurídica...`
             );
-            const enhancedBlob = isMistralSelected()
+            const enhancedBlob = wantsHighResImage()
               ? await enhanceImageForGemini(finalCanvasToUse, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
               : await enhanceImageForGemini(finalCanvasToUse);
             try {
@@ -4024,7 +4042,7 @@ async function extractImageHybrid(file, onProgress, useAi, forceAi = false, gold
   if (useAi || forceAi) {
       onProgress(20, "Extraindo via IA Jurídica (Gemini Flash)...");
       try {
-          const enhancedForAi = isMistralSelected()
+          const enhancedForAi = wantsHighResImage()
             ? await enhanceImageForGemini(file, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
             : await enhanceImageForGemini(file);
           const aiResult = await extractPageWithGemini(enhancedForAi, onProgress, goldStandard);
@@ -4225,6 +4243,11 @@ export default function ScannerJuridico() {
   // ao abrir/atualizar o app (nunca persiste em localStorage de propósito) — a chave paga
   // só é usada quando o advogado marca isso explicitamente na sessão atual.
   const [forcePaidKey, setForcePaidKey] = useState(false);
+  const [hardHandwriting, setHardHandwriting] = useState(false);
+  const handleHardHandwritingChange = (checked: boolean) => {
+    setHardHandwriting(checked);
+    setHardHandwritingEnabled(checked);
+  };
   const handleForcePaidKeyChange = (checked: boolean) => {
     setForcePaidKey(checked);
     setForcePaidKeyEnabled(checked);
@@ -6070,7 +6093,7 @@ export default function ScannerJuridico() {
               continue;
             }
             
-            const enhancedForAi = isMistralSelected()
+            const enhancedForAi = wantsHighResImage()
               ? await enhanceImageForGemini(originalColorBlob as Blob, MISTRAL_IMAGE_MAX_DIMENSION, MISTRAL_IMAGE_JPEG_QUALITY)
               : await enhanceImageForGemini(originalColorBlob as Blob);
             
@@ -8440,7 +8463,7 @@ export default function ScannerJuridico() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
             <label style={{ fontSize: '10px', color: G.muted, fontWeight: 600, letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>MODELO GEMINI:</label>
             <select
               value={selectedModel}
@@ -8475,6 +8498,18 @@ export default function ScannerJuridico() {
                 style={{ cursor: 'pointer' }}
               />
               💰 Forçar chave paga
+            </label>
+            <label
+              title="Para laudos manuscritos de letra difícil: sobe o raciocínio do modelo ao máximo (2.5 Flash: 12.288 tokens de raciocínio) e envia a imagem em resolução maior. Gasta mais tokens por página — ligue só nesses documentos, depois reprocesse (🔄). Desmarca sozinho ao recarregar a página."
+              style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: hardHandwriting ? '#7dd3fc' : G.muted, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            >
+              <input
+                type="checkbox"
+                checked={hardHandwriting}
+                onChange={(e) => handleHardHandwritingChange(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              ✍️ Manuscrito difícil
             </label>
           </div>
           <div style={{ display: showApiKeyDetails ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
