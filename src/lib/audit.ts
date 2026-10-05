@@ -1,9 +1,6 @@
 // @ts-nocheck
-import { GoogleGenAI } from "@google/genai";
 import { getRealConfidence } from './textQuality';
-import { getSortedApiKeys, isKeyModelExhausted, isDailyQuotaError, markKeyModelExhausted } from './apiKeys';
-import { getModelFallbackCascade } from './geminiModels';
-import { withTimeout } from './async';
+import { generateTextViaServer } from './serverOcr';
 
 export interface CurationRule {
   title: string;
@@ -320,9 +317,6 @@ export async function generateAiConsistencyAudit(fullDocs: any[], clientName: st
   const headerExcerpts = extractDocumentHeaderExcerpts(fullDocs);
   if (!headerExcerpts.trim()) return [];
 
-  const finalSortedKeys = getSortedApiKeys();
-  if (finalSortedKeys.length === 0) return [];
-
   const systemInstruction = `Você é um auditor jurídico sênior do escritório Félix & Castro Advocacia, especialista em detectar inconsistências factuais entre documentos de um mesmo processo previdenciário.
 
 Sua ÚNICA tarefa: ler os trechos iniciais (dados de identificação) de vários documentos abaixo, todos relativos ao mesmo cliente${clientName ? ` ("${clientName}")` : ''}, e apontar qualquer dado que DEVERIA ser idêntico entre documentos (por se referir à mesma pessoa, mesmo processo, mesmo evento) mas aparece com valores DIFERENTES em documentos diferentes — por exemplo: data de nascimento, CPF, RG, número de benefício (NB), endereço, nome de familiar, número de processo, CID, lateralidade (direito/esquerdo), data de um mesmo evento citado em mais de um lugar, etc. NÃO se limite a essa lista — aponte qualquer inconsistência factual real que encontrar.
@@ -334,86 +328,34 @@ REGRAS CRÍTICAS:
 4. Em "candidatos", liste cada valor divergente encontrado EXATAMENTE como aparece no texto original, caractere por caractere (incluindo pontuação, maiúsculas/minúsculas) — isso será usado pra substituição automática no texto, então precisa ser uma cópia literal e exata do trecho, nunca parafraseado ou corrigido por você.
 5. Retorne APENAS um JSON válido, no formato: {"divergencias": [{"alerta": "texto autoexplicativo citando documentos e valores", "candidatos": ["valor exato 1", "valor exato 2"]}]}.`;
 
-  const modelsToTry = getModelFallbackCascade();
+  // O servidor cuida de chaves, modelos e do desistir cedo quando o Google está sobrecarregado.
+  try {
+    const out = await generateTextViaServer({
+      text: `Trechos de identificação dos documentos:
 
-  // Circuit breaker: se 2 chaves seguidas falharem em TODOS os modelos por sobrecarga
-  // (503/overloaded), é sinal de apagão global do Google (mesma infraestrutura
-  // compartilhada por todas as chaves/projetos) — insistir nas outras 14 chaves não
-  // resolve e só faz o advogado esperar minutos à toa por um reforço opcional. Nesse
-  // caso desiste cedo; qualquer erro de chave específica (403/429/inválida) NÃO conta
-  // pra esse contador, porque aí sim outra chave pode genuinamente ser diferente.
-  let consecutiveOverloadedKeys = 0;
-
-  for (let i = 0; i < finalSortedKeys.length; i++) {
-    const apiKey = finalSortedKeys[i];
-    let modelsAttemptedOnThisKey = 0;
-    let overloadFailuresOnThisKey = 0;
-
-    for (let m = 0; m < modelsToTry.length; m++) {
-      const modelName = modelsToTry[m];
-      if (isKeyModelExhausted(apiKey.slice(-6), modelName)) continue;
-      try {
-        const ai = new GoogleGenAI({ apiKey });
-        const response = await withTimeout(
-          ai.models.generateContent({
-            model: modelName,
-            contents: [{ text: `Trechos de identificação dos documentos:\n\n${headerExcerpts}` }],
-            config: {
-              systemInstruction,
-              temperature: 0.1,
-              responseMimeType: "application/json",
-            }
-          }),
-          15000,
-          `Auditoria geral de consistência travou (sem resposta em 15s)`
-        );
-
-        if (response && response.text) {
-          let parsed: any = null;
-          try {
-            parsed = JSON.parse(response.text.trim());
-          } catch (jsonErr) {
-            const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-            if (jsonMatch) parsed = JSON.parse(jsonMatch[0].trim());
-          }
-          const divergencias = Array.isArray(parsed?.divergencias) ? parsed.divergencias : [];
-          return divergencias
-            .filter((d: any) => d && typeof d.alerta === 'string' && d.alerta.trim())
-            .map((d: any) => ({
-              alert: `• DIVERGÊNCIA (Auditoria Geral IA): ${d.alerta}`,
-              candidates: Array.isArray(d.candidatos) ? d.candidatos.filter((c: any) => typeof c === 'string' && c.trim()) : [],
-            }));
-        }
-      } catch (err: any) {
-        modelsAttemptedOnThisKey++;
-        const msg = String(err?.message || err || "").toLowerCase();
-        const isOverload = msg.includes("503") || msg.includes("overloaded") || msg.includes("high demand") || msg.includes("unavailable") || msg.includes("travou");
-        if (isOverload) overloadFailuresOnThisKey++;
-        console.warn(`[Auditoria Geral IA] Falha com modelo ${modelName}:`, err);
-        // Erro de projeto/chave (403 permissão negada, 429 cota, chave inválida) já
-        // condena os OUTROS modelos dessa mesma chave também — não vale a pena testar
-        // os 3 restantes, pula direto pra próxima chave.
-        if (isDailyQuotaError(msg)) {
-          markKeyModelExhausted(apiKey.slice(-6), modelName);
-        } else if (!isOverload && (msg.includes("403") || msg.includes("permission") || msg.includes("api key not valid"))) {
-          break;
-        }
-      }
+${headerExcerpts}`,
+      systemInstruction,
+      temperature: 0.1,
+      json: true,
+      timeoutMs: 45000,
+    });
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(out.trim());
+    } catch (jsonErr) {
+      const jsonMatch = out.match(/\{[\s\S]*\}/);
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0].trim());
     }
-
-    if (modelsAttemptedOnThisKey > 0 && overloadFailuresOnThisKey === modelsAttemptedOnThisKey) {
-      consecutiveOverloadedKeys++;
-      if (consecutiveOverloadedKeys >= 2) {
-        console.warn(`[Auditoria Geral IA] ${consecutiveOverloadedKeys} chaves seguidas com sobrecarga (503) em todos os modelos — provável apagão global do Google. Desistindo cedo em vez de testar as demais ${finalSortedKeys.length - i - 1} chaves.`);
-        break;
-      }
-    } else {
-      consecutiveOverloadedKeys = 0;
-    }
+    const divergencias = Array.isArray(parsed?.divergencias) ? parsed.divergencias : [];
+    return divergencias
+      .filter((d: any) => d && typeof d.alerta === 'string' && d.alerta.trim())
+      .map((d: any) => ({
+        alert: `• DIVERGÊNCIA (Auditoria Geral IA): ${d.alerta}`,
+        candidates: Array.isArray(d.candidatos) ? d.candidatos.filter((c: any) => typeof c === 'string' && c.trim()) : [],
+      }));
+  } catch (err) {
+    // Falhou: não bloqueia a compilação, só não traz esse reforço extra — as checagens de CPF/RG/CRM seguem normais.
+    console.warn("[Auditoria Geral IA] Não foi possível completar a auditoria geral — seguindo só com as checagens específicas.", err);
+    return [];
   }
-
-  // Falhou (ou desistiu cedo por apagão global): não bloqueia a compilação, só não
-  // traz esse reforço extra — as checagens de CPF/RG/CRM continuam funcionando normalmente.
-  console.warn("[Auditoria Geral IA] Não foi possível completar a auditoria geral — seguindo só com as checagens específicas.");
-  return [];
 }

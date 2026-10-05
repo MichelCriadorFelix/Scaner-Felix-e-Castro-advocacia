@@ -2,10 +2,9 @@
 import { useApp } from '../AppContext';
 import { G } from '../lib/theme';
 import { MODEL_OPTIONS } from '../lib/geminiModels';
-import { getAvailableGeminiKeys, getPriorityApiKey } from '../lib/apiKeys';
 
 export default function ApiStatusPanel() {
-  const { forcePaidKey, handleForcePaidKeyChange, handleHardHandwritingChange, handleModelChange, hardHandwriting, keyErrors, keyUsage, selectedModel, setKeyErrors, setKeyUsage, setShowApiKeyDetails, showApiKeyDetails } = useApp();
+  const { serverKeys, forcePaidKey, handleForcePaidKeyChange, handleHardHandwritingChange, handleModelChange, hardHandwriting, keyErrors, keyUsage, selectedModel, setKeyErrors, setKeyUsage, setShowApiKeyDetails, showApiKeyDetails } = useApp();
   return (
     <>
 <div style={{ padding: '12px 20px', background: G.bg, borderBottom: `1px solid ${G.border}` }}>
@@ -96,70 +95,43 @@ export default function ApiStatusPanel() {
             </label>
           </div>
           <div style={{ display: showApiKeyDetails ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
-            {getAvailableGeminiKeys().map((key, idx) => {
-              const hash = key.slice(-6);
-              const usageCount = keyUsage[hash] || 0;
-              const errorStatus = keyErrors[hash] || 'ok';
-              const isPriorityKey = key === getPriorityApiKey();
+            {serverKeys.length === 0 && (
+              <div style={{ fontSize: '10px', color: G.muted }}>Consultando o estado das chaves no servidor...</div>
+            )}
+            {serverKeys.map((k, idx) => {
+              // Estado como o SERVIDOR enxerga (igual pra todas as abas e sócios). Cada modelo: ok / em espera / sem cota hoje / indisponível.
+              const entries = Object.entries(k.models || {}) as [string, string][];
+              const short = (m: string) => m.replace('gemini-', '');
+              const okModels = entries.filter(([, v]) => v === 'ok').map(([m]) => short(m));
+              const bad = entries.filter(([, v]) => v !== 'ok');
+              const allDown = okModels.length === 0;
+              const hasDaily = bad.some(([, v]) => v === 'sem cota hoje');
+              const hasWait = bad.some(([, v]) => v === 'em espera');
 
-              const isOk = errorStatus === 'ok' || errorStatus === 'active' || errorStatus === 'server_error' || errorStatus === 'rate_limited';
-
-              let badgeText = `${usageCount} ${usageCount === 1 ? 'requisito' : 'requisições'}`;
-              let statusText = 'Status: Ok';
+              let badgeText = 'OK';
+              let statusText = `Disponível: ${okModels.join(', ')}`;
               let statusColor = G.muted;
               let cardBorder = G.border;
               let badgeColor = G.accent;
 
-              if (errorStatus === 'quota_exceeded') {
-                badgeText = 'ESGOTADA';
-                statusText = 'Limite de uso diário atingido.';
-                statusColor = '#ef4444';
-                cardBorder = 'rgba(239, 68, 68, 0.6)';
-                badgeColor = '#ef4444';
-              } else if (errorStatus === 'rate_limited') {
-                // Passageiro: limite de chamadas/minuto, não cota diária — some sozinho assim
-                // que a chave for usada de novo com sucesso (ver isKeyThrottled/throttle proativo).
-                badgeText = 'AGUARDANDO';
-                statusText = 'Limite por minuto — libera sozinha em instantes.';
-                statusColor = '#f59e0b';
-                cardBorder = 'rgba(245, 158, 11, 0.5)';
-                badgeColor = '#f59e0b';
-              } else if (errorStatus === 'blocked') {
-                badgeText = 'BLOQUEADA';
-                statusText = 'Chave suspensa / Denied Access.';
-                statusColor = '#ef4444';
-                cardBorder = 'rgba(239, 68, 68, 0.6)';
-                badgeColor = '#ef4444';
-              } else if (errorStatus === 'invalid') {
-                badgeText = 'INVÁLIDA';
-                statusText = 'Chave incorreta ou expirada.';
-                statusColor = '#ef4444';
-                cardBorder = 'rgba(239, 68, 68, 0.6)';
-                badgeColor = '#ef4444';
-              } else if (errorStatus === 'server_error') {
-                // Falha transitória (sobrecarga do Google ou resposta descartada por loop/truncamento).
-                // A chave continua ativa no pool e tende a se recuperar sozinha na próxima página.
-                badgeText = 'OSCILANDO';
-                statusText = 'Falha temporária — tentando novamente automaticamente.';
-                statusColor = '#f59e0b';
-                cardBorder = 'rgba(245, 158, 11, 0.5)';
-                badgeColor = '#f59e0b';
-              } else if (!isOk) {
-                badgeText = 'FALHA';
-                statusText = 'Erro detectado na requisição.';
-                statusColor = '#ef4444';
-                cardBorder = 'rgba(239, 68, 68, 0.6)';
-                badgeColor = '#ef4444';
+              if (allDown) {
+                badgeText = 'INDISPONÍVEL';
+                statusText = k.lastError ? String(k.lastError).replace(/\s+/g, ' ').slice(0, 90) : 'Sem acesso a nenhum modelo.';
+                statusColor = '#ef4444'; cardBorder = 'rgba(239, 68, 68, 0.6)'; badgeColor = '#ef4444';
+              } else if (hasDaily || hasWait || bad.length > 0) {
+                badgeText = hasDaily ? 'PARCIAL' : hasWait ? 'AGUARDANDO' : 'PARCIAL';
+                statusText = `Fora: ${bad.map(([m, v]) => `${short(m)} (${v})`).join(', ')}`;
+                statusColor = '#f59e0b'; cardBorder = 'rgba(245, 158, 11, 0.5)'; badgeColor = '#f59e0b';
               }
 
               return (
-                <div key={hash} style={{
-                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${isPriorityKey ? '#f0b429' : cardBorder}`,
+                <div key={k.id} style={{
+                  background: G.surface, borderRadius: '10px', padding: '8px 10px', border: `1px solid ${k.paid ? '#f0b429' : cardBorder}`,
                   display: 'flex', flexDirection: 'column', gap: '4px'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: '10px', color: G.text, fontWeight: 500 }}>
-                      API #{idx + 1} (..{hash}) {isPriorityKey && <span style={{ color: '#f0b429' }}>💰 PAGA</span>}
+                      API #{idx + 1} ({k.fim}) {k.paid && <span style={{ color: '#f0b429' }}>💰 PAGA</span>}
                     </span>
                     <span style={{ fontSize: '9px', color: badgeColor, fontWeight: '600' }}>{badgeText}</span>
                   </div>

@@ -1,13 +1,12 @@
 // @ts-nocheck
 import { useApp } from '../AppContext';
 import { G } from '../lib/theme';
-import { getAvailableGeminiKeys } from '../lib/apiKeys';
 import { detectFailedPages, getRealConfidence } from '../lib/textQuality';
 import { downloadTXT, downloadPDF, forceDownload } from '../lib/browserHelpers';
 import { supabase } from '../lib/supabaseClient';
 
 export default function ScannerTab() {
-  const { aiMode, clients, confColor, currentQueueIndex, discardDraft, drag, editedText, file, fileRefImg, fileRefPdf, goldStandard, handleCompressAndDownload, handleDownloadLite, handleDrop, handleFiles, handleNativeCameraCapture, handleRefineTextWithAI, handleSaveManualEdit, hasRecoverableBatch, isAborting, isBatchModalOpen, isEditingText, isFolderArchived, isRecovering, isRefiningText, nativeCameraRef, preview, process, processBatch, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, result, saveWithoutOCR, selectedClient, setAiMode, setDrag, setEditedText, setFile, setGoldStandard, setIsAborting, setIsCropping, setIsEditingText, setMovingItem, setPreview, setProgressMsg, setQueue, setResult, setSelectedClient, setStartPage, startAppendingPages, startPage, storageWarning, tab, uploadBatchWithoutOCR } = useApp();
+  const { serverKeys, aiMode, clients, confColor, currentQueueIndex, discardDraft, drag, editedText, file, fileRefImg, fileRefPdf, goldStandard, handleCompressAndDownload, handleDownloadLite, handleDrop, handleFiles, handleNativeCameraCapture, handleRefineTextWithAI, handleSaveManualEdit, hasRecoverableBatch, isAborting, isBatchModalOpen, isEditingText, isFolderArchived, isRecovering, isRefiningText, nativeCameraRef, preview, process, processBatch, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, result, saveWithoutOCR, selectedClient, setAiMode, setDrag, setEditedText, setFile, setGoldStandard, setIsAborting, setIsCropping, setIsEditingText, setMovingItem, setPreview, setProgressMsg, setQueue, setResult, setSelectedClient, setStartPage, startAppendingPages, startPage, storageWarning, tab, uploadBatchWithoutOCR } = useApp();
   return (
     <>
 {tab === "scanner" && (
@@ -237,7 +236,7 @@ export default function ScannerTab() {
                       <span style={{ fontWeight: 600, color: G.accent }}>
                         Motor Híbrido Inteligente (Recomendado)
                         <span style={{ background: '#2d3340', color: G.success, padding: '2px 8px', borderRadius: '12px', fontSize: '10px', marginLeft: '8px', border: `1px solid ${G.success}40` }}>
-                           🟢 {getAvailableGeminiKeys().length} {getAvailableGeminiKeys().length === 1 ? 'API Disponível' : 'APIs Disponíveis'}
+                           🟢 {serverKeys.filter((k) => Object.values(k.models || {}).some((v) => v === 'ok')).length} {serverKeys.filter((k) => Object.values(k.models || {}).some((v) => v === 'ok')).length === 1 ? 'API Disponível' : 'APIs Disponíveis'}
                         </span>
                       </span>
                       <span style={{ fontSize: '11px', color: G.muted }}>Faz Roteamento Inteligente com Auto-Failover: Extrai texto perfeito e aciona as APIs ativas sequencialmente em manuscritos.</span>

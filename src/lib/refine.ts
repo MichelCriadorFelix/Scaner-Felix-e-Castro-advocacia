@@ -1,15 +1,8 @@
 // @ts-nocheck
-import { GoogleGenAI } from "@google/genai";
-import { getSortedApiKeys, isKeyThrottled, getKeyCooldownRemainingMs, KEY_MINUTE_LIMIT, recordKeyMinuteCall } from './apiKeys';
-import { getModelFallbackCascade, getThinkingConfigForModel } from './geminiModels';
+import { generateTextViaServer } from './serverOcr';
 import { extractNamesFromText, cleanRepeatedWordsInName, applyLocalOCRCorrections } from './textQuality';
 
 export async function refineTextWithGemini(mangledText) {
-  const finalSortedKeys = getSortedApiKeys();
-  if (finalSortedKeys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI configurada.");
-  }
-
   const systemInstruction = `Você é um corretor e reconstrutor de textos ortográficos de altíssima precisão e inteligência do escritório Felix & Castro Advocacia.
 Sua tarefa é analisar um texto transcrito por leitores automáticos (OCR) que veio com ruídos, símbolos corrompidos, letras trocadas por números ou pontuações bizarras, e RECONSTRUIR o texto de forma limpa, fluida e impecável em português correto e formal.
 
@@ -32,51 +25,16 @@ REGRAS CRÍTICAS DE REFINAMENTO:
 4. MANTER MARCADORES DE PÁGINA:
    - Se o texto contiver marcadores estruturais de página como "[PÁGINA 1 - TEXTO DIGITAL NATIVO]" ou "[PÁGINA X - OCR BRUTO (Y%)]", mantenha-os idênticos, apenas atualizando o título para "[PÁGINA X - REFINADO VIA IA JURÍDICA]" para indicar que o texto foi otimizado e refinado com inteligência artificial.`;
 
-  const modelsToTry = getModelFallbackCascade();
-
-  for (let i = 0; i < finalSortedKeys.length; i++) {
-    const apiKey = finalSortedKeys[i];
-    const keyHash = apiKey.slice(-6);
-
-    if (isKeyThrottled(apiKey)) {
-      const waitMs = getKeyCooldownRemainingMs(apiKey);
-      if (waitMs > 0) {
-        console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
-        await new Promise(r => setTimeout(r, waitMs));
-      }
-    }
-    recordKeyMinuteCall(apiKey);
-
-    for (let m = 0; m < modelsToTry.length; m++) {
-      const modelName = modelsToTry[m];
-      try {
-        const ai = new GoogleGenAI({ apiKey });
-
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: [
-            { text: "Por favor, reconstrua e refine este texto ruidoso de OCR, corrigindo as palavras no vocabulário oficial em português, removendo símbolos estranhos de tabelas, mas preservando TODOS os nomes, CPFs, números e datas de forma verbatim e idêntica:\n\n" + mangledText }
-          ],
-          config: {
-            systemInstruction,
-            temperature: 0.1,
-            maxOutputTokens: 65536,
-            thinkingConfig: getThinkingConfigForModel(modelName, "low"),
-          }
-        });
-
-        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-
-        if (response && response.text) {
-          return response.text.trim();
-        }
-      } catch (err) {
-        console.warn(`[Refinamento IA Failover] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
-      }
-    }
-  }
-
-  throw new Error("Não foi possível refinar o texto utilizando as chaves Gemini disponíveis.");
+  const refined = await generateTextViaServer({
+    text: "Por favor, reconstrua e refine este texto ruidoso de OCR, corrigindo as palavras no vocabulário oficial em português, removendo símbolos estranhos de tabelas, mas preservando TODOS os nomes, CPFs, números e datas de forma verbatim e idêntica:\n\n" + mangledText,
+    systemInstruction,
+    temperature: 0.1,
+    maxOutputTokens: 65536,
+    thinking: 'low',
+    timeoutMs: 90000,
+  }).catch((err) => { console.warn('[Refinamento IA] Falha no servidor:', err); return ''; });
+  if (refined) return refined.trim();
+  throw new Error("Não foi possível refinar o texto com a IA agora.");
 }
 
 export function splitTextIntoCleanChunks(text: string, maxChunkSize: number = 12000): string[] {
@@ -133,8 +91,6 @@ export async function refineChunkWithGemini(
   sortedKeys: string[],
   addLogCallback?: (msg: string) => void
 ): Promise<string> {
-  const modelsToTry = getModelFallbackCascade();
-
   const systemInstruction = `Você é um refinador de textos jurídicos do escritório Félix & Castro Advocacia, especialista em revisão gramatical profunda e correção minuciosa de ruídos de OCR.
 Sua missão única é revisar o trecho de texto fornecido pelo usuário e entregar uma versão impecável, livre de erros ortográficos, concordâncias truncadas ou caracteres espúrios gerados pelo escaneamento.
 
@@ -161,40 +117,19 @@ DIRETRIZES CRÍTICAS PARA REVISÃO DO TRECHO:
 4. RETORNO LIMPO:
    - Retorne APENAS o texto revisado final correspondente ao trecho fornecido, sem qualquer comentário explicativo, introdução ou conclusão.`;
 
-  for (let i = 0; i < sortedKeys.length; i++) {
-    const apiKey = sortedKeys[i];
-    const keyHash = apiKey.slice(-6);
-    
-    for (let m = 0; m < modelsToTry.length; m++) {
-      const modelName = modelsToTry[m];
-      try {
-        const ai = new GoogleGenAI({ apiKey });
-        
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: [
-            { text: `Por favor, revise o seguinte trecho de texto jurídico de forma minuciosa, corrigindo erros de OCR, ortografia profunda e unificando nomes. NÃO CORTE O FIM DO TEXTO, PRESERVE ATÉ A ÚLTIMA PALAVRA:\n\n${chunkText}` }
-          ],
-          config: {
-            systemInstruction,
-            temperature: 0.1,
-            maxOutputTokens: 65536,
-            thinkingConfig: getThinkingConfigForModel(modelName, "low"),
-          }
-        });
+  const refinedChunk = await generateTextViaServer({
+    text: `Por favor, revise o seguinte trecho de texto jurídico de forma minuciosa, corrigindo erros de OCR, ortografia profunda e unificando nomes. NÃO CORTE O FIM DO TEXTO, PRESERVE ATÉ A ÚLTIMA PALAVRA:
 
-        if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
+${chunkText}`,
+    systemInstruction,
+    temperature: 0.1,
+    maxOutputTokens: 65536,
+    thinking: 'low',
+    timeoutMs: 90000,
+  }).catch((err) => { console.warn(`[Refinamento Trecho IA] Falha no servidor (trecho ${chunkIndex + 1}):`, err); return ''; });
+  if (refinedChunk) return refinedChunk.trim();
 
-        if (response && response.text) {
-          return response.text.trim();
-        }
-      } catch (err) {
-        console.warn(`[Refinamento Trecho IA Failover] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
-      }
-    }
-  }
-
-  throw new Error(`Não foi possível refinar o trecho ${chunkIndex + 1} de ${totalChunks} com as chaves Gemini disponíveis.`);
+  throw new Error(`Não foi possível refinar o trecho ${chunkIndex + 1} de ${totalChunks} com a IA agora.`);
 }
 
 export async function refineCompiledTextWithGemini(
@@ -203,11 +138,6 @@ export async function refineCompiledTextWithGemini(
   addLogCallback?: (msg: string) => void,
   onProgressCallback?: (progress: number, statusText?: string) => void
 ): Promise<string> {
-  const finalSortedKeys = getSortedApiKeys();
-  if (finalSortedKeys.length === 0) {
-    throw new Error("❌ Nenhuma Chave GEMINI configurada.");
-  }
-
   if (addLogCallback) {
     addLogCallback(`[${new Date().toLocaleTimeString()}] 🔍 Iniciando auditoria e cruzamento inteligente de dados cadastrais...`);
   }
@@ -245,59 +175,22 @@ Retorne APENAS um objeto JSON no formato abaixo, sem qualquer formatação markd
 Se não houver nenhuma inconsistência na lista, retorne apenas um objeto vazio {}.`;
 
     const promptText = `Nomes extraídos da pasta:\n${JSON.stringify(extractedNames, null, 2)}`;
-    const modelsToTry = getModelFallbackCascade();
-    let success = false;
-
-    for (let i = 0; i < finalSortedKeys.length; i++) {
-      const apiKey = finalSortedKeys[i];
-      const keyHash = apiKey.slice(-6);
-
-      if (isKeyThrottled(apiKey)) {
-        const waitMs = getKeyCooldownRemainingMs(apiKey);
-        if (waitMs > 0) {
-          console.warn(`[Rate Limit] Chave ..${keyHash} no limite de ${KEY_MINUTE_LIMIT}/min — aguardando ${Math.ceil(waitMs / 1000)}s...`);
-          await new Promise(r => setTimeout(r, waitMs));
-        }
+    try {
+      const mappingText = await generateTextViaServer({
+        text: promptText,
+        systemInstruction,
+        temperature: 0.1,
+        json: true,
+        timeoutMs: 60000,
+      });
+      try {
+        nameMapping = JSON.parse(mappingText.trim());
+      } catch (jsonErr) {
+        const jsonMatch = mappingText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) nameMapping = JSON.parse(jsonMatch[0].trim());
       }
-      recordKeyMinuteCall(apiKey);
-
-      for (let m = 0; m < modelsToTry.length; m++) {
-        const modelName = modelsToTry[m];
-        try {
-          console.log(`[Compilador IA] Chave ${i + 1}/${finalSortedKeys.length} (..${keyHash}) | Chamando auditoria e harmonização cadastral...`);
-          const ai = new GoogleGenAI({ apiKey });
-          
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: [{ text: promptText }],
-            config: {
-              systemInstruction,
-              temperature: 0.1,
-              responseMimeType: "application/json"
-            }
-          });
-
-          if (window.updateKeyUsage) window.updateKeyUsage(keyHash);
-          
-          if (response && response.text) {
-            try {
-              nameMapping = JSON.parse(response.text.trim());
-              success = true;
-              break;
-            } catch (jsonErr) {
-              const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-              if (jsonMatch) {
-                nameMapping = JSON.parse(jsonMatch[0].trim());
-                success = true;
-                break;
-              }
-            }
-          }
-        } catch (err) {
-          console.warn(`[Failover Name Correction] Falha com Chave ${i + 1} | Modelo ${modelName}:`, err);
-        }
-      }
-      if (success) break;
+    } catch (err) {
+      console.warn('[Compilador IA] Correção de nomes pelo servidor falhou:', err);
     }
   }
 
