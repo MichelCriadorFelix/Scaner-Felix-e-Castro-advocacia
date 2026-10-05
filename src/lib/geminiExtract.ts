@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { GoogleGenAI } from "@google/genai";
+import { buildContinuationInstruction } from '../../shared/ocrCore.js';
 import { temperatureConfigFor, getThinkingConfigForModel, getSelectedGeminiModel, NVIDIA_NEMOTRON_MODEL, MISTRAL_OCR_MODEL, getModelFallbackCascade, getSafeGeminiModel } from './geminiModels';
 import { containsDegenerateRepetition, getRealConfidence, isTruncatedResponse } from './textQuality';
 import { getPadraoOuroPrompt } from './prompts';
@@ -18,23 +19,7 @@ export async function continuePageTranscription(
   systemPrompt: string,
   partialTextSoFar: string
 ): Promise<{ text: string; finishReason?: string }> {
-  const continuationInstruction = `${systemPrompt}
-
-══════════════════════════════════════════════════
-MODO CONTINUAÇÃO (ATENÇÃO MÁXIMA):
-══════════════════════════════════════════════════
-A transcrição desta MESMA página foi CORTADA no meio por limite de tamanho de resposta. Abaixo está o final do
-que você mesmo já transcreveu até agora (pode terminar no meio de uma palavra, frase ou linha de tabela).
-Sua tarefa agora é APENAS continuar a transcrição EXATAMENTE de onde ela parou, olhando a imagem de novo.
-REGRAS OBRIGATÓRIAS:
-1. NÃO repita nada do texto já transcrito abaixo.
-2. NÃO reinicie a transcrição do começo da página.
-3. Responda SOMENTE com a continuação (o texto novo que vem depois do que já foi transcrito).
-4. Se o texto já transcrito terminou no meio de uma palavra, complete a palavra e continue dali.
-
---- FINAL DO TEXTO JÁ TRANSCRITO (NÃO REPETIR ISTO) ---
-${partialTextSoFar.slice(-2500)}
---- FIM DO TRECHO JÁ TRANSCRITO — CONTINUE A PARTIR DAQUI ---`;
+  const continuationInstruction = buildContinuationInstruction(systemPrompt, partialTextSoFar);
 
   const res = await ai.models.generateContent({
     model,

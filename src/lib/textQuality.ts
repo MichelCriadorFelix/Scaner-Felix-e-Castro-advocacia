@@ -4,20 +4,9 @@
 // O limite é propositalmente ALTO (bloco repetido de pelo menos 2000 caracteres) para nunca confundir uma
 // tabela larga legítima (poucas dezenas de colunas) com um loop genuíno, que sempre gera dezenas de milhares
 // de caracteres do mesmo padrão. Um limite baixo demais aqui rejeita texto bom e trava a transcrição inteira.
-export function containsDegenerateRepetition(text: string): boolean {
-  if (!text || text.length < 2000) return false;
-  const match = text.slice(0, 300000).match(/(.{1,50})\1{40,}/);
-  return !!match && match[0].length >= 2000;
-}
 
 // Detecta se a resposta do Gemini foi cortada por estourar o limite de tokens (maxOutputTokens)
-export function isTruncatedResponse(res: any): boolean {
-  try {
-    return res?.candidates?.[0]?.finishReason === 'MAX_TOKENS';
-  } catch (e) {
-    return false;
-  }
-}
+export { containsDegenerateRepetition, isTruncatedResponse } from '../../shared/ocrCore.js';
 
 // Auxiliar para verificar se o canvas da página renderizada é totalmente em branco (ex: verso de certidão, folha vazia)
 export function isCanvasBlank(canvas: HTMLCanvasElement): boolean {

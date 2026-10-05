@@ -14,21 +14,8 @@
 // nenhuma vez durante o apagão. Os Flash-Lite (3.1 e 3.5) entram como sucessores — mais
 // baratos, multimodais, mas de uma geração otimizada pra custo/latência em vez de qualidade
 // máxima, por isso ficam depois do 2.5 na cascata, não antes.
-export const GEMINI_MODEL_OPTIONS = [
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  // 3.8 Flash: o AI Studio leu os laudos manuscritos difíceis com ele (06/10/2026) onde o 2.5
-  // errava. Tinha saído da lista no apagão de setembro; volta em 2º na cascata (se ainda der
-  // 503, a falha é rápida e o fluxo segue pro próximo modelo). Escolha-o no seletor pra
-  // manuscritos difíceis — aí ele é o primeiro leitor.
-  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
-  { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
-  { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
-  // 3.5 Flash (cheio): opção pra manuscrito muito difícil, escolhida à mão no seletor. Fica por
-  // último de propósito: a linha 3.x ainda pode dar 503 de alta demanda, então só entra na
-  // cascata automática depois dos que já provaram estabilidade (e vai primeiro se for escolhido).
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (manuscritos difíceis)" },
-];
-export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, buildModelCascade, temperatureConfigFor, getThinkingConfigForModel } from '../../shared/ocrCore.js';
+export { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, temperatureConfigFor, getThinkingConfigForModel };
 
 // Modelo alternativo (provedor diferente, NVIDIA NIM) — fica FORA da cascata de reforço entre
 // os Gemini porque usa uma API completamente diferente (formato OpenAI, chave própria). Só
@@ -82,18 +69,7 @@ export function getSafeGeminiModel(): string {
 }
 
 export function getModelFallbackCascade(hard: boolean = false): string[] {
-  const geminiSelected = getSafeGeminiModel();
-  const all = GEMINI_MODEL_OPTIONS.map(m => m.value);
-  if (hard) {
-    // Releitura automática de página difícil: os modelos que leram melhor vêm primeiro,
-    // independentemente do seletor — o app decide sozinho, sem depender de o advogado saber qual
-    // escolher. O seletor continua mandando nas páginas normais e quando o checkbox é marcado à mão.
-    const best = ["gemini-3.8-flash", "gemini-3.5-flash"].filter(m => all.includes(m));
-    const ordered = [...best, geminiSelected, ...all];
-    return ordered.filter((m, i) => ordered.indexOf(m) === i);
-  }
-  const others = all.filter(v => v !== geminiSelected);
-  return [geminiSelected, ...others];
+  return buildModelCascade(getSafeGeminiModel(), hard);
 }
 
 // Os Flash-Lite (3.1/3.5) aceitam "thinkingLevel" (semântico: "low"/"medium"), igual toda
@@ -104,17 +80,4 @@ export function getModelFallbackCascade(hard: boolean = false): string[] {
 // Gemini 3.x: a Google recomenda MANTER a temperatura padrão (1.0) — valores baixos (como o 0.1 que
 // o app mandava em tudo) podem causar loop e degradação. O AI Studio usa o padrão; o app não usava.
 // Só a geração anterior (2.5) segue com temperatura baixa pra transcrição mais determinística.
-export function temperatureConfigFor(model: string, desired: number): { temperature?: number } {
-  return /^gemini-3/.test(model) ? {} : { temperature: desired };
-}
 
-export function getThinkingConfigForModel(model: string, level: "low" | "medium" | "high"): Record<string, any> {
-  if (model === "gemini-2.5-flash") {
-    // "high" = orçamento FIXO de 12288 tokens de raciocínio (o teto do 2.5-flash é 24576).
-    // "low" (páginas normais) = 1024: antes era 0 (raciocínio DESLIGADO), diferente do AI Studio, que
-    // deixa o 2.5 raciocinar por padrão — desligado, ele perde justamente a desambiguação de letra
-    // difícil. 1024 é pequeno e de custo previsível; "medium" deixa o modelo decidir (-1).
-    return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 1024 };
-  }
-  return { thinkingLevel: level };
-}
