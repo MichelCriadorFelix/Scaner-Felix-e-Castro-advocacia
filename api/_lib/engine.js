@@ -51,6 +51,8 @@ export class OcrEngine {
   }
 
   note(s) { this.steps.push(s); this.logFn(s); }
+  // Mensagem só pra tela (andamento em tempo real); não entra na lista de passos do resultado.
+  say(s) { this.logFn(s); }
   remaining() { return this.deadline - Date.now(); }
 
   // Uma chamada generateContent com uma chave específica.
@@ -68,7 +70,7 @@ export class OcrEngine {
     const stale = this.pool.staleKeys(model);
     if (!stale.length || this.remaining() < 60000) return;
     this.note(`Verificando quais chaves aceitam ${model} (${stale.length})...`);
-    await Promise.all(stale.map(async (key) => {
+    const probes = stale.map(async (key) => {
       try {
         await this.callOnce(key, model, {
           contents: [{ text: 'Responda apenas: ok' }],
@@ -84,7 +86,9 @@ export class OcrEngine {
         else if (c.kind === 'overload') this.pool.markCapable(key.hash, model); // 503: o modelo existe pra essa chave
         // 'bad'/'other': sem conclusão — a leitura real decide.
       }
-    }));
+    });
+    // Não trava a leitura esperando a sondagem mais lenta: depois de 5s segue com o que já se sabe.
+    await Promise.race([Promise.all(probes), sleep(5000)]);
   }
 
   // Lê com o MODELO ESCOLHIDO e só desiste dele depois de esgotar as chaves.
@@ -117,6 +121,7 @@ export class OcrEngine {
           if (Date.now() > phaseEnd) break;
           if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
           const t0 = Date.now();
+          this.say(`${label}: ${model} · chave ${cands.indexOf(key) + 1}/${cands.length}${pass > 0 ? ` · rodada ${pass + 1}/${passes}` : ''}...`);
           try {
             const req = build(model);
             const callTimeout = Math.max(15000, Math.min(timeoutMs, phaseEnd - Date.now() + 10000));
@@ -258,6 +263,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     let second = null;
     if (engine.remaining() > 75000) {
       try {
+        engine.say('2ª leitura independente (mesmo modelo)...');
         const r = await engine.generate({
           label: '2ª leitura',
           models: [first.model],
@@ -286,6 +292,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
 
     if (engine.remaining() > 75000) {
       try {
+        engine.say('Conferindo as duas leituras com a imagem...');
         const hoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
         const judgeSystem = core.buildJudgeSystemInstruction(second, clientName, hoje);
         const judgeUser = core.buildJudgeUserText(text, second);

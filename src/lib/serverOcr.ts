@@ -41,6 +41,7 @@ async function shrinkBlobToFit(blob: Blob): Promise<{ base64: string; mimeType: 
 }
 
 // Lê a página no servidor. Retorna { text, usedKey: null, model, quality }; lança erro (com o motivo) se não deu.
+// O servidor manda o ANDAMENTO em tempo real (linhas JSON): qual modelo/chave está tentando, 2ª leitura, conferência.
 export async function extractPageViaServer(
   blob: Blob,
   opts: { hard: boolean; bestFirst: boolean; onProgress?: (p: number | null, msg: string) => void }
@@ -49,15 +50,24 @@ export async function extractPageViaServer(
   const { data } = await supabase.auth.getSession();
   const token = data?.session?.access_token;
   if (!token) throw new Error('Sem sessão: entre no app de novo para usar a leitura por IA.');
+  const tPrep = Date.now();
   const { base64, mimeType } = await shrinkBlobToFit(blob);
-  if (onProgress) onProgress(null, hard ? 'Manuscrito difícil: lendo no servidor (2 leituras + conferência)...' : 'Lendo a página no servidor...');
+  const startedAt = Date.now();
+  let lastMsg = hard ? 'Manuscrito difícil: enviando a página ao servidor...' : 'Enviando a página ao servidor...';
+  const show = (extra?: string) => { if (onProgress) onProgress(null, extra ? `${lastMsg} ${extra}` : lastMsg); };
+  show();
 
   const controller = new AbortController();
-  const poll = setInterval(() => { if (window.lexscan_abort) controller.abort(); }, 500);
+  // A cada 2s: confere se o usuário pausou e atualiza o contador de tempo na mensagem.
+  const tick = setInterval(() => {
+    if (window.lexscan_abort) controller.abort();
+    else show(`(${Math.round((Date.now() - startedAt) / 1000)}s)`);
+  }, 2000);
   const hardTimeout = setTimeout(() => controller.abort(), 295000);
-  let res: Response;
+
+  let result: any = null;
   try {
-    res = await fetch('/api/ocr-page', {
+    const res = await fetch('/api/ocr-page', {
       method: 'POST',
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -66,26 +76,51 @@ export async function extractPageViaServer(
         mimeType,
         hard,
         bestFirst,
+        stream: true,
         clientName: ocrContextClientName || '',
         preferredModel: getSafeGeminiModel(),
         includePaid: isForcePaidKeyEnabled(),
       }),
     });
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('ndjson') && res.body) {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line) continue;
+          let ev: any;
+          try { ev = JSON.parse(line); } catch (e) { continue; }
+          if (ev.type === 'step') { lastMsg = ev.msg; show(`(${Math.round((Date.now() - startedAt) / 1000)}s)`); }
+          else if (ev.type === 'result' || ev.type === 'error') result = ev;
+        }
+      }
+    } else {
+      result = await res.json().catch(() => null);
+      if (result && !res.ok) result.ok = false;
+    }
   } catch (e: any) {
     if (window.lexscan_abort) throw e;
     throw new Error('Não consegui falar com o servidor de leitura: ' + (e?.message || e));
   } finally {
-    clearInterval(poll);
+    clearInterval(tick);
     clearTimeout(hardTimeout);
   }
-  const json = await res.json().catch(() => null);
-  if (!res.ok || !json?.ok || !json.text) {
-    console.warn(`[Leitura servidor] Falhou (HTTP ${res.status}):`, json?.error, json?.attempts);
-    throw new Error(`Leitura no servidor falhou: ${json?.error || 'HTTP ' + res.status}`);
+
+  if (!result?.ok || !result.text) {
+    console.warn('[Leitura servidor] Falhou:', result?.error, result?.attempts);
+    throw new Error(`Leitura no servidor falhou: ${result?.error || 'sem resposta'}`);
   }
-  console.log(`[Leitura servidor] ${json.model} em ${Math.round(json.ms / 1000)}s${json.hard ? ' (manuscrito difícil)' : ''}:`, (json.steps || []).join(' | ') || 'ok', json.attempts);
-  if (onProgress) onProgress(95, `Leitura concluída no servidor (${json.model}).`);
-  return { text: json.text, usedKey: null, model: json.model, quality: json.quality };
+  console.log(`[Leitura servidor] ${result.model} em ${Math.round(result.ms / 1000)}s (preparo da imagem no navegador ${startedAt - tPrep}ms)${result.hard ? ' (manuscrito difícil)' : ''}${result.escalated ? ' [escalou sozinha pro modo difícil]' : ''}:`, (result.steps || []).join(' | ') || 'ok', result.attempts);
+  if (onProgress) onProgress(95, `Leitura concluída no servidor (${result.model}).`);
+  return { text: result.text, usedKey: null, model: result.model, quality: result.quality };
 }
 
 // Chamada de TEXTO ao Gemini pelo servidor (revisão, auditoria, compilação). O servidor cuida de chaves e

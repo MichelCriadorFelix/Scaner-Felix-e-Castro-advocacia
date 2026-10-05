@@ -41,7 +41,7 @@ export default async function handler(req, res) {
 
   let body = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch (_) { body = null; } }
-  const { imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, includePaid } = body || {};
+  const { imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, includePaid, stream } = body || {};
   if (!imageBase64 || typeof imageBase64 !== 'string') return res.status(400).json({ ok: false, error: 'imageBase64 ausente.' });
 
   const keys = loadServerKeys({ includePaid: !!includePaid });
@@ -51,8 +51,19 @@ export default async function handler(req, res) {
   const allowed = GEMINI_MODEL_OPTIONS.map((m) => m.value);
   const selected = allowed.includes(preferredModel) ? preferredModel : DEFAULT_GEMINI_MODEL;
 
+  // Modo streaming (linhas JSON): o navegador vê o andamento em tempo real (qual modelo/chave, 2ª leitura, conferência)
+  // em vez de esperar minutos sem nenhuma resposta.
+  const send = (o) => { try { if (stream) res.write(JSON.stringify(o) + '\n'); } catch (_) { /* conexão fechada */ } };
+  if (stream) {
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('X-Accel-Buffering', 'no');
+    send({ type: 'step', msg: `Servidor recebeu a página (${Date.now() - started} ms). Iniciando leitura...` });
+  }
+
   try {
     const out = await readPage({
+      log: (msg) => send({ type: 'step', msg, t: Date.now() - started }),
       pool,
       imageBase64,
       mimeType,
@@ -63,9 +74,12 @@ export default async function handler(req, res) {
       deadline: started + SAFE_DEADLINE_MS,
     });
     await pool.flush();
+    if (stream) { send({ type: 'result', ok: true, ...out, ms: Date.now() - started }); return res.end(); }
     return res.status(200).json({ ok: true, ...out, ms: Date.now() - started });
   } catch (e) {
     await pool.flush();
-    return res.status(502).json({ ok: false, error: String(e?.message || e).slice(0, 300), attempts: e?.attempts || [], steps: e?.steps || [], ms: Date.now() - started });
+    const failure = { ok: false, error: String(e?.message || e).slice(0, 300), attempts: e?.attempts || [], steps: e?.steps || [], ms: Date.now() - started };
+    if (stream) { send({ type: 'error', ...failure }); return res.end(); }
+    return res.status(502).json(failure);
   }
 }
