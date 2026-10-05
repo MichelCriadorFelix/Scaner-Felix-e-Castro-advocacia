@@ -172,6 +172,7 @@ export class KeyPool {
     return this.keys.map((k, i) => ({
       n: i + 1,
       id: k.hash.slice(0, 6),
+      fim: '..' + k.key.slice(-4), // 4 últimos caracteres: o mesmo trecho que o AI Studio mostra, pra casar chave x projeto
       paid: k.paid,
       models: Object.fromEntries(models.map((m) => {
         const r = this.row(k.hash, m);

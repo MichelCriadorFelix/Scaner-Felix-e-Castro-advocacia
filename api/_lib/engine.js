@@ -288,7 +288,7 @@ export async function probeKeys(pool, models, timeoutMs = 25000) {
       else pool.markOverloaded(key.hash, model);
       result = { s: c.kind, ms: Date.now() - t0, err: c.msg.replace(/\s+/g, ' ').slice(0, 140) };
     }
-    (out[i + 1] ||= { n: i + 1, id: key.hash.slice(0, 6), paid: key.paid, models: {} }).models[model] = result;
+    (out[i + 1] ||= { n: i + 1, id: key.hash.slice(0, 6), fim: '..' + key.key.slice(-4), paid: key.paid, models: {} }).models[model] = result;
   })));
   return Object.values(out).sort((a, b) => a.n - b.n);
 }
