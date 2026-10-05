@@ -1112,7 +1112,7 @@ async function readSecondOpinion(ai: any, firstModel: string, candidateModels: s
           contents: [{ text: buildTranscriptionUserText(true) }, imagePart],
           config: {
             systemInstruction: systemPrompt,
-            temperature,
+            ...temperatureConfigFor(model, temperature),
             maxOutputTokens: 65536,
             thinkingConfig: getThinkingConfigForModel(model, "high"),
           },
@@ -1190,7 +1190,7 @@ COMO TRABALHAR:
         contents: [{ text: userText }, imagePart],
         config: {
           systemInstruction,
-          temperature: 0.1,
+          ...temperatureConfigFor(model, 0.1),
           maxOutputTokens: 65536,
           thinkingConfig: getThinkingConfigForModel(model, "high"),
         },
@@ -1240,12 +1240,20 @@ function getModelFallbackCascade(hard: boolean = false): string[] {
 // "Thinking level is not supported for this model" e a página inteira falha nesse modelo.
 // O 2.5-flash usa o parâmetro antigo em tokens: 0 desliga o raciocínio (equivalente a "low"),
 // -1 deixa o próprio modelo decidir dinamicamente quanto raciocinar (equivalente a "medium").
+// Gemini 3.x: a Google recomenda MANTER a temperatura padrão (1.0) — valores baixos (como o 0.1 que
+// o app mandava em tudo) podem causar loop e degradação. O AI Studio usa o padrão; o app não usava.
+// Só a geração anterior (2.5) segue com temperatura baixa pra transcrição mais determinística.
+function temperatureConfigFor(model: string, desired: number): { temperature?: number } {
+  return /^gemini-3/.test(model) ? {} : { temperature: desired };
+}
+
 function getThinkingConfigForModel(model: string, level: "low" | "medium" | "high"): Record<string, any> {
   if (model === "gemini-2.5-flash") {
-    // "high" = orçamento FIXO de 12288 tokens de raciocínio (o teto do 2.5-flash é 24576):
-    // o suficiente pra ele cruzar o contexto médico/jurídico e decifrar letra ruim, sem o
-    // custo de deixar o modelo decidir sozinho (-1) nem desligar o raciocínio (0).
-    return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 0 };
+    // "high" = orçamento FIXO de 12288 tokens de raciocínio (o teto do 2.5-flash é 24576).
+    // "low" (páginas normais) = 1024: antes era 0 (raciocínio DESLIGADO), diferente do AI Studio, que
+    // deixa o 2.5 raciocinar por padrão — desligado, ele perde justamente a desambiguação de letra
+    // difícil. 1024 é pequeno e de custo previsível; "medium" deixa o modelo decidir (-1).
+    return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 1024 };
   }
   return { thinkingLevel: level };
 }
@@ -1640,7 +1648,7 @@ ${partialTextSoFar.slice(-2500)}
     ],
     config: {
       systemInstruction: continuationInstruction,
-      temperature: 0.1,
+      ...temperatureConfigFor(model, 0.1),
       maxOutputTokens: 65536,
       thinkingConfig: getThinkingConfigForModel(model, "low")
     }
@@ -2164,7 +2172,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               ],
               config: {
                 systemInstruction: prompt,
-                temperature: 0.1,
+                ...temperatureConfigFor(currentModel, 0.1),
                 maxOutputTokens: 65536,
                 thinkingConfig: getThinkingConfigForModel(currentModel, pageThinkingLevel),
               }
@@ -2265,7 +2273,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
                 ],
                 config: {
                   systemInstruction: prompt,
-                  temperature: 0.1,
+                  ...temperatureConfigFor(currentModel, 0.1),
                   maxOutputTokens: 65536,
                   thinkingConfig: getThinkingConfigForModel(currentModel, pageThinkingLevel),
                 }
@@ -2328,7 +2336,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
               ],
               config: {
                 systemInstruction: prompt,
-                temperature: 0.1,
+                ...temperatureConfigFor(getSafeGeminiModel(), 0.1),
                 maxOutputTokens: 65536,
                 thinkingConfig: getThinkingConfigForModel(getSafeGeminiModel(), pageThinkingLevel),
               }
