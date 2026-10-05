@@ -1220,9 +1220,18 @@ function getSafeGeminiModel(): string {
   return GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
 }
 
-function getModelFallbackCascade(): string[] {
+function getModelFallbackCascade(hard: boolean = false): string[] {
   const geminiSelected = getSafeGeminiModel();
-  const others = GEMINI_MODEL_OPTIONS.map(m => m.value).filter(v => v !== geminiSelected);
+  const all = GEMINI_MODEL_OPTIONS.map(m => m.value);
+  if (hard) {
+    // Manuscrito difícil (checkbox ou releitura automática): os modelos que leram melhor vêm
+    // primeiro, independentemente do seletor — o app decide sozinho, sem depender de o advogado
+    // saber qual escolher. O seletor continua mandando nas páginas normais.
+    const best = ["gemini-3.8-flash", "gemini-3.5-flash"].filter(m => all.includes(m));
+    const ordered = [...best, geminiSelected, ...all];
+    return ordered.filter((m, i) => ordered.indexOf(m) === i);
+  }
+  const others = all.filter(v => v !== geminiSelected);
   return [geminiSelected, ...others];
 }
 
@@ -2093,7 +2102,7 @@ async function extractPageWithGemini(blob, onProgress, goldStandard = true, pref
   
   const prompt = hardMode ? getHardHandwritingSystemPrompt() : getPadraoOuroPrompt();
 
-  const modelsToTry = getModelFallbackCascade();
+  const modelsToTry = getModelFallbackCascade(hardMode);
 
   // Modo "Manuscrito difícil": quem escolhe um modelo bom pra ler letra ruim (ex.: 3.8) não quer
   // cair pro 2.5 no primeiro 503. O 503 é intermitente (atinge parte das requisições), então
@@ -3201,6 +3210,73 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// ── Resolução AUTOMÁTICA de divergências de leitura ─────────────────────────────────────────
+// Variações do mesmo número (CRM, CPF, RG) quase sempre são ruído de leitura do mesmo documento.
+// Em vez de travar o compilado pedindo que o advogado escolha item por item, o app resolve sozinho
+// quando um valor é CLARAMENTE dominante; só o que for ambíguo de verdade vai pra tela de decisão.
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+function normalizeIdValue(v: string): string {
+  return v.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function countOccurrences(text: string, needle: string): number {
+  if (!needle) return 0;
+  return text.split(needle).length - 1;
+}
+
+// Agrupa candidatos que só diferem na pontuação ("52.92276-5" = "52-92276-5") e soma as ocorrências.
+function clusterCandidates(text: string, candidates: string[]) {
+  const clusters = new Map<string, { norm: string; total: number; rep: string; repCount: number }>();
+  candidates.forEach(c => {
+    const norm = normalizeIdValue(c);
+    const n = countOccurrences(text, c);
+    const cur = clusters.get(norm);
+    if (!cur) {
+      clusters.set(norm, { norm, total: n, rep: c, repCount: n });
+    } else {
+      cur.total += n;
+      if (n > cur.repCount || (n === cur.repCount && c.length > cur.rep.length)) { cur.rep = c; cur.repCount = n; }
+    }
+  });
+  return Array.from(clusters.values()).sort((a, b) => b.total - a.total);
+}
+
+// Valor mais frequente (grupo único com mais ocorrências e pelo menos 2), usado só como SUGESTÃO pré-marcada.
+function pickDominantValue(text: string, div: { candidates: string[] }): string | null {
+  const cl = clusterCandidates(text, div.candidates);
+  if (cl.length === 0 || cl[0].total < 2) return null;
+  if (cl.length > 1 && cl[1].total === cl[0].total) return null;
+  return cl[0].rep;
+}
+
+// Vencedor CLARO o bastante pra corrigir sem perguntar: aparece 2+ vezes, pelo menos o DOBRO de cada
+// concorrente, e os concorrentes diferem dele por até 2 caracteres (cara de ruído, não de outro número).
+// Também recusa se algum candidato estiver contido em outro (a troca no texto corromperia o valor).
+function pickConfidentWinner(text: string, div: { candidates: string[] }): string | null {
+  const cl = clusterCandidates(text, div.candidates);
+  if (cl.length < 2) return null;
+  const [win, ...losers] = cl;
+  if (win.total < 2) return null;
+  if (losers.some(l => l.total * 2 > win.total)) return null;
+  if (losers.some(l => levenshtein(win.norm, l.norm) > 2)) return null;
+  if (div.candidates.some(c => c !== win.rep && win.rep.includes(c))) return null;
+  return win.rep;
+}
+
 // Substitui, no texto, todos os valores candidatos (exceto o escolhido) pelo valor que o advogado confirmou como correto.
 function applyValueCorrection(text: string, candidates: string[], chosenValue: string): string {
   let result = text;
@@ -3214,7 +3290,8 @@ function applyValueCorrection(text: string, candidates: string[], chosenValue: s
 function buildAuditFormattedReport(
   curationRules: CurationRule[],
   substantiveAlertsToInclude: string[],
-  degradedOcrDocs: string[]
+  degradedOcrDocs: string[],
+  autoCorrectionLines: string[] = []
 ): string {
   let formattedReport = `══════════════════════════════════════════════════════════════════════════════\n`;
   formattedReport += `📋 RELATÓRIO DE AUDITORIA & CURADORIA PRÉ-PETIÇÃO (FÉLIX & CASTRO)\n`;
@@ -3229,6 +3306,14 @@ function buildAuditFormattedReport(
     formattedReport += `\n`;
   } else {
     formattedReport += `✅ SANEAMENTO PREVENTIVO: Documentos em conformidade cadastral unificada.\n\n`;
+  }
+
+  if (autoCorrectionLines.length > 0) {
+    formattedReport += `🤖 DIVERGÊNCIAS DE LEITURA RESOLVIDAS AUTOMATICAMENTE (valor dominante entre os documentos):\n`;
+    autoCorrectionLines.forEach(l => {
+      formattedReport += `${l}\n`;
+    });
+    formattedReport += `\n`;
   }
 
   if (substantiveAlertsToInclude.length > 0) {
@@ -7736,7 +7821,7 @@ export default function ScannerJuridico() {
     auditResult.substantiveAlerts = [...auditResult.substantiveAlerts, ...aiConsistencyResults.map(r => r.alert)];
     // Quando a IA devolveu candidatos exatos (2+), liga o mesmo botão de correção
     // automática do CPF/CRM. Se veio só 1 candidato ou nenhum, mostra só o aviso.
-    const auditResultDivergences: (IdentityDivergence | undefined)[] = [
+    let auditResultDivergences: (IdentityDivergence | undefined)[] = [
       ...auditResult.identityDivergences,
       ...aiConsistencyResults.map(r =>
         r.candidates.length >= 2 ? { label: "Auditoria Geral IA", candidates: r.candidates } : undefined
@@ -7791,6 +7876,37 @@ export default function ScannerJuridico() {
       await new Promise(r => setTimeout(r, 300));
     }
 
+    // Resolve sozinho as divergências de leitura com vencedor claro (não trava o compilado nem
+    // pede escolha). O que sobrar é ambíguo de verdade e segue pra tela de decisão do advogado.
+    // A divergência "Auditoria Geral IA" (ex.: datas de nascimento diferentes) nunca é automática:
+    // pode ser conflito real entre documentos, não ruído.
+    const autoCorrectionLines: string[] = [];
+    {
+      const keepAlerts: string[] = [];
+      const keepDivs: (IdentityDivergence | undefined)[] = [];
+      auditResult.substantiveAlerts.forEach((al, idx) => {
+        const div = auditResultDivergences[idx];
+        const winner = div && !div.label.startsWith("Auditoria Geral IA") ? pickConfidentWinner(docsBodyText, div) : null;
+        if (div && winner) {
+          docsBodyText = applyValueCorrection(docsBodyText, div.candidates, winner);
+          autoCorrectionLines.push(`• ${div.label}: ${div.candidates.filter(c => c !== winner).join(' / ')} → ${winner}`);
+        } else {
+          keepAlerts.push(al);
+          keepDivs.push(div);
+        }
+      });
+      auditResult.substantiveAlerts = keepAlerts;
+      auditResultDivergences = keepDivs;
+    }
+    if (autoCorrectionLines.length > 0) {
+      setCompilationLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🤖 ${autoCorrectionLines.length} divergência(s) de leitura resolvida(s) automaticamente pelo valor dominante:`,
+        ...autoCorrectionLines.map(l => `[${new Date().toLocaleTimeString()}] ↳ ${l}`)
+      ]);
+      await new Promise(r => setTimeout(r, 300));
+    }
+
     let activeSubstantiveAlerts = auditResult.substantiveAlerts;
 
     if (auditResult.substantiveAlerts.length > 0) {
@@ -7804,7 +7920,14 @@ export default function ScannerJuridico() {
       ]);
 
       setSelectedStrategicAlerts(auditResult.substantiveAlerts.map((_, i) => i));
-      setDivergenceChoices({});
+      // Pré-marca o valor mais frequente de cada divergência (o advogado só confirma, em 1 clique).
+      const defaultChoices: Record<number, string> = {};
+      auditResultDivergences.forEach((div, idx) => {
+        if (!div || div.label.startsWith("Auditoria Geral IA")) return;
+        const suggestion = pickDominantValue(docsBodyText, div);
+        if (suggestion) defaultChoices[idx] = suggestion;
+      });
+      setDivergenceChoices(defaultChoices);
       setDivergenceCustomText({});
 
       const reviewResult = await new Promise<{ keptAlerts: string[]; corrections: { candidates: string[]; chosenValue: string }[] }>((resolve) => {
@@ -7851,7 +7974,8 @@ export default function ScannerJuridico() {
     const finalHeaderReport = buildAuditFormattedReport(
       auditResult.curationRules,
       activeSubstantiveAlerts,
-      auditResult.degradedOcrDocs
+      auditResult.degradedOcrDocs,
+      autoCorrectionLines
     );
 
     let rawCompiledText = `COMPILADO DE DOCUMENTOS - LEXSCAN\n`;
