@@ -235,12 +235,15 @@ export function looksHandwritten(text) {
 }
 
 // Lê UMA página. Retorna { text, model, hard, quality, steps, attempts }.
-export async function readPage({ pool, imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, deadline, log, skipEscalation = false }) {
+export async function readPage({ pool, imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, deadline, log, skipEscalation = false, opts = {} }) {
   const engine = new OcrEngine({ pool, deadline, log });
   const imagePart = { inlineData: { data: imageBase64, mimeType: mimeType || 'image/jpeg' }, mediaResolution: { level: 'MEDIA_RESOLUTION_HIGH' } };
   const systemPrompt = hard ? core.getHardHandwritingSystemPrompt() : core.getPadraoOuroPrompt();
   const hojeBr = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  const userText = core.buildTranscriptionUserText(!!hard, clientName, hojeBr);
+  const zoomParts = (Array.isArray(opts.zoom) ? opts.zoom : []).slice(0, 4).map((b) => ({ inlineData: { data: b, mimeType: 'image/jpeg' }, mediaResolution: { level: 'MEDIA_RESOLUTION_HIGH' } }));
+  const userText = core.buildTranscriptionUserText(!!hard, clientName, hojeBr, { vocab: opts.vocab, zoomCount: hard ? zoomParts.length : 0 });
+  const imgs = hard ? [imagePart, ...zoomParts] : [imagePart];
+  const thinkBudget = opts.thinkingBudget;
   const models = core.buildModelCascade(preferredModel, !!(hard && bestFirst));
   const level = hard ? 'high' : 'low';
 
@@ -253,15 +256,15 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     passes: hard ? 4 : 3,
     budgetMs: hard ? 120000 : 90000,
     fast: hard && bestFirst ? ['gemini-3.8-flash', 'gemini-3.5-flash'].filter((m) => m !== preferredModel) : [],
-    imageParts: [imagePart],
+    imageParts: imgs,
     systemPrompt,
     build: (model) => ({
-      contents: [{ text: userText }, imagePart],
+      contents: [{ text: userText }, ...imgs],
       config: {
         systemInstruction: systemPrompt,
         ...core.temperatureConfigFor(model, 0.1),
         maxOutputTokens: 65536,
-        thinkingConfig: core.getThinkingConfigForModel(model, level),
+        thinkingConfig: core.getThinkingConfigForModel(model, level, thinkBudget),
       },
     }),
   });
@@ -283,7 +286,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   if (!hard && !skipEscalation && looksHandwritten(text) && engine.remaining() > 90000) {
     engine.note('Página manuscrita detectada — relendo em modo difícil (2 leituras + conferência).');
     try {
-      const deep = await readPage({ pool, imageBase64, mimeType, hard: true, clientName, bestFirst: true, preferredModel, deadline, log, skipEscalation: true });
+      const deep = await readPage({ pool, imageBase64, mimeType, hard: true, clientName, bestFirst: true, preferredModel, deadline, log, skipEscalation: true, opts });
       if (deep?.text) {
         return {
           ...deep,
@@ -307,18 +310,18 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
           label: '2ª leitura',
           models: [first.model],
           timeoutMs: 75000,
-          imageParts: [imagePart],
+          imageParts: imgs,
           systemPrompt,
           passes: 2,
           budgetMs: 45000,
           accept: (t) => core.isHardHandwritingTextSane(t, text, 1.8),
           build: (model) => ({
-            contents: [{ text: userText }, imagePart],
+            contents: [{ text: userText }, ...imgs],
             config: {
               systemInstruction: systemPrompt,
               ...core.temperatureConfigFor(model, 0.8),
               maxOutputTokens: 65536,
-              thinkingConfig: core.getThinkingConfigForModel(model, 'high'),
+              thinkingConfig: core.getThinkingConfigForModel(model, 'high', thinkBudget),
             },
           }),
         });
@@ -333,24 +336,24 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
       try {
         engine.say('Conferindo as duas leituras com a imagem...');
         const hoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-        const judgeSystem = core.buildJudgeSystemInstruction(second, clientName, hoje);
+        const judgeSystem = core.buildJudgeSystemInstruction(second, clientName, hoje, { vocab: opts.vocab });
         const judgeUser = core.buildJudgeUserText(text, second);
         const r = await engine.generate({
           label: 'Conferência',
           models: [first.model],
           timeoutMs: 90000,
-          imageParts: [imagePart],
+          imageParts: imgs,
           systemPrompt: judgeSystem,
           passes: 2,
           budgetMs: 45000,
           accept: (t) => core.isHardHandwritingTextSane(t, text, 2.2),
           build: (model) => ({
-            contents: [{ text: judgeUser }, imagePart],
+            contents: [{ text: judgeUser }, ...imgs],
             config: {
               systemInstruction: judgeSystem,
               ...core.temperatureConfigFor(model, 0.1),
               maxOutputTokens: 65536,
-              thinkingConfig: core.getThinkingConfigForModel(model, 'high'),
+              thinkingConfig: core.getThinkingConfigForModel(model, 'high', thinkBudget),
             },
           }),
         });

@@ -34,8 +34,9 @@ export function temperatureConfigFor(model, desired) {
 // Os Flash-Lite (3.1/3.5) e toda a linha 3.x aceitam "thinkingLevel". O 2.5-flash NÃO aceita (400
 // "Thinking level is not supported for this model"): usa thinkingBudget em tokens.
 // "low" (páginas normais) = 1024; "medium" = dinâmico (-1); "high" = 12288 (teto do 2.5 é 24576).
-export function getThinkingConfigForModel(model, level) {
+export function getThinkingConfigForModel(model, level, budgetOverride) {
   if (/^gemini-2\.5/.test(model)) {
+    if (level === "high" && budgetOverride) return { thinkingBudget: Math.max(1024, Math.min(24576, Math.floor(budgetOverride))) };
     return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 1024 };
   }
   return { thinkingLevel: level };
@@ -172,13 +173,28 @@ export function buildDateHint(hoje) {
   return `\n- Datas manuscritas: leia o ANO dígito por dígito (confusões típicas: 0/6, 1/7, 3/5/8). Hoje é ${hoje}; documentos de um cliente costumam ser recentes. Se o ano lido deixar a data muito distante de hoje (mais de 3 anos) e o dígito for ambíguo, reconfira o desenho do dígito; persistindo a dúvida, escreva as duas leituras assim: [?: 13/05/2026 | 13/05/2020]. Nunca troque o ano só porque "parece melhor": o que está escrito no papel manda.`;
 }
 
-export function buildTranscriptionUserText(hard, clientName, hoje) {
+// Vocabulário de apoio pro modo difícil: o modelo erra letra de médico ao "completar" com palavra plausível porém absurda
+// (visto: "Pretensão à Aposentadoria" no lugar de "Protusão"). Isto só serve pra DESEMPATAR leituras parecidas.
+export const MEDICAL_VOCAB_HINT = `
+- VOCABULÁRIO DE APOIO (use SÓ para desempatar leituras parecidas; NUNCA escreva um termo que não esteja no papel):
+  Coluna: lombalgia, cervicalgia, dorsalgia, lombociatalgia, radiculopatia, hérnia de disco, protusão discal, abaulamento discal, discopatia degenerativa, artrose, osteoartrose, espondilose, espondilolistese, estenose de canal, escoliose, osteofitose.
+  Articulações/membros: tendinite, bursite, manguito rotador, epicondilite, síndrome do túnel do carpo (STC), tenossinovite, gonartrose, coxartrose, condropatia, lesão de menisco, artrite reumatoide, fibromialgia, lúpus, gota.
+  Neuro: AVC, epilepsia, enxaqueca, neuropatia, parestesia, paresia, hemiparesia, Parkinson, Alzheimer, esclerose múltipla, ENMG.
+  Psiquiatria: depressão, transtorno depressivo recorrente, transtorno de ansiedade, bipolar, esquizofrenia, TDAH, síndrome do pânico, sertralina, fluoxetina, clonazepam.
+  Clínica/cirurgia: HAS, DM, diabetes mellitus, insuficiência cardíaca, IAM, arritmia, DPOC, insuficiência renal crônica, hemodiálise, litotripsia, cálculo ureteral, cateter duplo J, hérnia inguinal, neoplasia, quimioterapia, radioterapia.
+  Visão/audição: catarata, glaucoma, retinopatia diabética, descolamento de retina, perda auditiva neurossensorial.
+  Abreviações: CID, CRM, RM, TC, USG, ENMG, MMSS, MMII, ATB, EV, VO, SOS, AINE, HD, Dx, Rx, Sd.
+  CID-10 frequentes: M54.2 cervicalgia, M54.4 lumbago com ciática, M54.5 dor lombar, M51.1 disco lombar com radiculopatia, M50 discos cervicais, M75 ombro, M79.7 fibromialgia, G56.0 túnel do carpo, M17 gonartrose, M16 coxartrose, F32 depressão, F41 ansiedade, I10 hipertensão, E11 diabetes tipo 2, N20 cálculo urinário, H25 catarata, H40 glaucoma, C50 mama.`;
+
+export function buildTranscriptionUserText(hard, clientName, hoje, opts = {}) {
   if (!hard) return BASE_TRANSCRIPTION_TEXT + buildDateHint(hoje);
-  return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildDateHint(hoje) + buildClientNameHint(clientName);
+  const vocabText = opts.vocab === false ? "" : MEDICAL_VOCAB_HINT;
+  const zoomText = opts.zoomCount > 0 ? `\n- Além da página inteira, há ${opts.zoomCount} AMPLIAÇÕES de faixas da MESMA página (de cima para baixo, com sobreposição). Use-as para ler melhor a letra; a transcrição final é UMA só, da página inteira, sem repetir o trecho sobreposto.` : "";
+  return BASE_TRANSCRIPTION_TEXT + "\n" + HARD_HANDWRITING_RULES + buildDateHint(hoje) + vocabText + zoomText + buildClientNameHint(clientName);
 }
 
 // Instrução do JUIZ do modo difícil (compara as leituras e confere pela coerência do conteúdo).
-export function buildJudgeSystemInstruction(secondText, clientName, hoje) {
+export function buildJudgeSystemInstruction(secondText, clientName, hoje, opts = {}) {
   return `Você é o REVISOR-JUIZ de transcrições de documentos manuscritos (médicos, trabalhistas, cíveis, de consumo...) do escritório Félix & Castro Advocacia. Receberá a IMAGEM de uma página e ${secondText ? 'DUAS transcrições independentes (Leitura A e Leitura B)' : 'uma transcrição (Leitura A)'}. Devolva a transcrição FINAL.
 COMO TRABALHAR:
 1. Mantenha o formato da Leitura A (metadados TÍTULO/TIPO/ÁREA/OBS, linha divisória, estrutura). Não resuma, não reordene, não remova o que já está certo.
@@ -190,7 +206,7 @@ COMO TRABALHAR:
    - Siglas e abreviações devem ser lidas no sentido próprio do tipo de documento (ex.: ATB, STC, MMSS num laudo médico; HE, DSR, FGTS num documento trabalhista).
 4. Onde, mesmo assim, houver mais de uma leitura plausível, NÃO escolha em silêncio e NÃO invente: escreva as duas assim: [?: opção1 | opção2]. Dígito/letra sem nenhuma leitura possível: [ILEGÍVEL].
 5. NUNCA invente nomes, números de registro (CRM, OAB...), CPF/CNPJ, valores, horários, datas ou doses que não estejam no papel.
-6. Responda SOMENTE com a transcrição final completa, sem comentários e sem blocos de código.${buildClientNameHint(clientName)}`;
+6. Responda SOMENTE com a transcrição final completa, sem comentários e sem blocos de código.${opts.vocab === false ? '' : MEDICAL_VOCAB_HINT}${buildClientNameHint(clientName)}`;
 }
 
 export function buildJudgeUserText(firstText, secondText) {

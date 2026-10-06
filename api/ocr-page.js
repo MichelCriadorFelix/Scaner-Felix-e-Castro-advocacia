@@ -42,6 +42,13 @@ export default async function handler(req, res) {
   let body = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch (_) { body = null; } }
   const { imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, includePaid, stream } = body || {};
+  // Ajustes opcionais do modo difícil (vocabulário, orçamento de raciocínio, ampliações da página). Limitados e validados.
+  const rawOpts = (body && typeof body.opts === 'object' && body.opts) || {};
+  const opts = {
+    vocab: rawOpts.vocab === false ? false : true,
+    thinkingBudget: Number(rawOpts.thinkingBudget) > 0 ? Math.min(24576, Number(rawOpts.thinkingBudget)) : undefined,
+    zoom: Array.isArray(rawOpts.zoom) ? rawOpts.zoom.filter((z) => typeof z === 'string' && z.length < 1500000).slice(0, 4) : [],
+  };
   if (!imageBase64 || typeof imageBase64 !== 'string') return res.status(400).json({ ok: false, error: 'imageBase64 ausente.' });
 
   const keys = loadServerKeys({ includePaid: !!includePaid });
@@ -64,6 +71,7 @@ export default async function handler(req, res) {
   try {
     const out = await readPage({
       log: (msg) => send({ type: 'step', msg, t: Date.now() - started }),
+      opts,
       pool,
       imageBase64,
       mimeType,
