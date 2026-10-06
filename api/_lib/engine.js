@@ -109,16 +109,33 @@ export class OcrEngine {
 
       for (let pass = 0; pass < passes && !badModel; pass++) {
         if (Date.now() > phaseEnd) break;
-        const cands = this.pool.candidates(model);
+        // Outras leituras em paralelo (outras instâncias) também marcam chaves: relê o estado a cada rodada.
+        if (pass > 0) await this.pool.refresh(model);
+        let cands = this.pool.candidates(model);
         if (!cands.length) {
-          if (pass === 0) this.note(`${label}: ${model} sem chave disponível (cota/espera/indisponível) — pulando.`);
-          break;
+          // Chaves só ESPERANDO (limite por minuto/sobrecarga): espera a primeira voltar em vez de desistir do modelo.
+          const wait = this.pool.nextWaitMs(model);
+          if (wait !== null && Date.now() + wait + 500 < phaseEnd) {
+            const w = Math.min(wait + 300, 20000);
+            this.say(`${label}: todas as chaves de ${model} em espera — aguardando ${Math.round(w / 1000)}s...`);
+            await sleep(w);
+            await this.pool.refresh(model);
+            cands = this.pool.candidates(model);
+          }
+          if (!cands.length) {
+            if (pass === 0) this.note(`${label}: ${model} sem chave disponível (cota/espera/indisponível) — pulando.`);
+            break;
+          }
         }
         let sawOverload = false;
         let overloadedKeys = 0;
+        let triedThisRound = 0;
 
         for (const key of cands) {
           if (Date.now() > phaseEnd) break;
+          // No máximo 5 chaves por rodada: martelar todas em sequência só esgota o limite de todas.
+          if (triedThisRound >= 5) break;
+          triedThisRound++;
           if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
           const t0 = Date.now();
           this.say(`${label}: ${model} · chave ${cands.indexOf(key) + 1}/${cands.length}${pass > 0 ? ` · rodada ${pass + 1}/${passes}` : ''}...`);
@@ -149,12 +166,17 @@ export class OcrEngine {
             else if (c.kind === 'unavailable') this.pool.markUnavailable(key.hash, model, unavailableHoursFor(c.msg), c.msg);
             else if (c.kind === 'bad') { badModel = true; this.note(`${label}: ${model} recusou o pedido (400: ${c.msg.slice(0, 100)}) — próximo modelo.`); break; }
             else { this.pool.markOverloaded(key.hash, model); sawOverload = true; overloadedKeys++; }
+            // Mostra pros outros processos em paralelo e dá um respiro antes da próxima chave.
+            if (c.kind === 'minute' || c.kind === 'overload' || c.kind === 'other') {
+              this.pool.flushSoon();
+              await sleep(400 + Math.round(Math.random() * 400));
+            }
           }
         }
 
         if (badModel || !sawOverload) break; // nada que valha repetir (cota, chave inválida...)
         if (pass < passes - 1) {
-          const wait = backoffDelay(pass, 2000, 8000);
+          const wait = backoffDelay(pass, 3000, 15000);
           if (Date.now() + wait > phaseEnd) break;
           this.note(`${label}: ${model} sobrecarregado em ${overloadedKeys} chave(s) — nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
           await sleep(wait);
@@ -232,6 +254,9 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   } catch (e) {
     e.attempts = engine.attempts;
     e.steps = engine.steps;
+    // Quanto o navegador deve esperar antes de tentar de novo (chaves só em espera): evita cair no OCR local à toa.
+    const w = pool.nextWaitMs(models[0]);
+    e.retryAfterMs = Math.min(60000, Math.max(15000, (w ?? 0) + 2000));
     throw e;
   }
 

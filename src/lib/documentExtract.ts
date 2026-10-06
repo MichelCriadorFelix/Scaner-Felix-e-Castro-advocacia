@@ -17,17 +17,17 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
   return window.btoa(c.join(''));
 }
 
-// Quantas páginas do PDF podem ser lidas AO MESMO TEMPO (teto). Padrão: 5, com controle adaptativo (começa com 3,
+// Quantas páginas do PDF podem ser lidas AO MESMO TEMPO (teto). Padrão: 4, com controle adaptativo (começa com 2,
 // sobe enquanto tudo responde rápido e desce se o Google começar a recusar ou demorar). Sem nenhum ajuste do usuário.
 // Só pra emergência/diagnóstico: localStorage.lexscan_parallel = '1' volta a ler uma página por vez.
 function getParallelCeiling(): number {
   try {
     const raw = localStorage.getItem('lexscan_parallel');
-    if (raw === null || raw === '') return 5;
+    if (raw === null || raw === '') return 4;
     const v = Number(raw);
     return v >= 2 ? Math.min(6, Math.floor(v)) : 1;
   } catch (e) {
-    return 5;
+    return 4;
   }
 }
 
@@ -65,6 +65,7 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
   const parallelMode = maxParallel > 1;
   let doneCount = 0;
   let lastPercent = 0;
+  let cooldownUntil = 0; // quando o Google recusa, nenhuma página nova começa até aqui
 
   // Barra de progresso: nunca recebe "null" (antes ficava "%" vazio quando o servidor mandava só mensagem).
   const onProgress = (p: number | null, msg: string) => {
@@ -183,7 +184,22 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
             try {
               const mistralFlags: { mistralFailed?: boolean } = {};
               // Só a MENSAGEM do servidor interessa aqui (a porcentagem é do documento, não da página).
-              const aiResult = await extractPageWithGemini(enhancedBlob, (_p: any, msg: string) => pp(i, msg), goldStandard, activeDocumentApiKey, mistralFailedThisPage, mistralFlags);
+              // Se o Google estiver recusando (chaves em espera), ESPERA e tenta a IA de novo (até 3 vezes) antes de cair no
+              // OCR local — que numa página manuscrita dá lixo.
+              let aiResult: any = null;
+              for (let aiTry = 1; ; aiTry++) {
+                try {
+                  aiResult = await extractPageWithGemini(enhancedBlob, (_p: any, msg: string) => pp(i, msg), goldStandard, activeDocumentApiKey, mistralFailedThisPage, mistralFlags);
+                  break;
+                } catch (aiTryErr: any) {
+                  if (window.lexscan_abort || aiTry >= 3) throw aiTryErr;
+                  const retryScale = Number((window as any).lexscan_retry_scale) || 1; // só os testes mexem nisso
+                  const waitMs = Math.round(Math.min(60000, Math.max(Number(aiTryErr?.retryAfterMs) || 15000, 15000 * aiTry)) * retryScale);
+                  cooldownUntil = Math.max(cooldownUntil, Date.now() + waitMs);
+                  pp(i, `Google ocupado — nova tentativa da IA em ${Math.round(waitMs / 1000)}s (${aiTry}/3), sem cair no OCR local...`);
+                  await new Promise(r => setTimeout(r, waitMs));
+                }
+              }
               if (mistralFlags.mistralFailed) mistralFailedThisPage = true;
               let extractedText = typeof aiResult === 'object' && aiResult?.text ? aiResult.text : String(aiResult || '');
               if (typeof aiResult === 'object' && aiResult?.usedKey) {
@@ -273,13 +289,19 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
     const results = new Map<number, PageOutcome>();
     let next = startIdx;
     let running = 0;
-    let limit = Math.min(3, maxParallel);
+    let limit = Math.min(2, maxParallel);
     let okStreak = 0;
     await new Promise<void>((resolveAll) => {
       const finishIfIdle = () => {
         if (running === 0 && (next > endIdx || window.lexscan_abort)) resolveAll();
       };
       const launch = () => {
+        // Google recusando: segura o início de páginas novas até o fim do cooldown (e volta pro ritmo mínimo).
+        if (Date.now() < cooldownUntil && next <= endIdx && !window.lexscan_abort) {
+          limit = 2;
+          setTimeout(launch, Math.max(500, cooldownUntil - Date.now()));
+          return;
+        }
         while (running < limit && next <= endIdx && !window.lexscan_abort) {
           const i = next++;
           running++;

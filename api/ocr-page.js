@@ -78,7 +78,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, ...out, ms: Date.now() - started });
   } catch (e) {
     await pool.flush();
-    const failure = { ok: false, error: String(e?.message || e).slice(0, 300), attempts: e?.attempts || [], steps: e?.steps || [], ms: Date.now() - started };
+    const failure = { ok: false, error: String(e?.message || e).slice(0, 300), attempts: e?.attempts || [], steps: e?.steps || [], retryAfterMs: e?.retryAfterMs || 20000, ms: Date.now() - started };
     if (stream) { send({ type: 'error', ...failure }); return res.end(); }
     return res.status(502).json(failure);
   }

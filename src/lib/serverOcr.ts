@@ -116,7 +116,9 @@ export async function extractPageViaServer(
 
   if (!result?.ok || !result.text) {
     console.warn('[Leitura servidor] Falhou:', result?.error, result?.attempts);
-    throw new Error(`Leitura no servidor falhou: ${result?.error || 'sem resposta'}`);
+    const err: any = new Error(`Leitura no servidor falhou: ${result?.error || 'sem resposta'}`);
+    err.retryAfterMs = Number(result?.retryAfterMs) || 20000;
+    throw err;
   }
   console.log(`[Leitura servidor] ${result.model} em ${Math.round(result.ms / 1000)}s (preparo da imagem no navegador ${startedAt - tPrep}ms)${result.hard ? ' (manuscrito difícil)' : ''}${result.escalated ? ' [escalou sozinha pro modo difícil]' : ''}:`, (result.steps || []).join(' | ') || 'ok', result.attempts);
   if (onProgress) onProgress(95, `Leitura concluída no servidor (${result.model}).`);

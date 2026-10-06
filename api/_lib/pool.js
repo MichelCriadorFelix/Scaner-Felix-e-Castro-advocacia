@@ -67,6 +67,47 @@ export class KeyPool {
     toLoad.forEach((m) => this.loaded.add(m));
   }
 
+  // Quanto falta (ms) até a primeira chave "em espera" deste modelo voltar; null se nenhuma está só esperando.
+  nextWaitMs(model) {
+    const now = Date.now();
+    let best = null;
+    for (const k of this.keys) {
+      const r = this.row(k.hash, model);
+      if (r.daily_exhausted_date && r.daily_exhausted_date >= this.today) continue;
+      if (r.unavailable_until && new Date(r.unavailable_until).getTime() > now) continue;
+      if (r.exhausted_until) {
+        const w = new Date(r.exhausted_until).getTime() - now;
+        if (w > 0 && (best === null || w < best)) best = w;
+      }
+    }
+    return best;
+  }
+
+  // Relê do banco o estado do modelo (outras leituras em paralelo, em outras instâncias, podem ter marcado chaves).
+  // Linhas que mudamos aqui e ainda não gravamos têm prioridade.
+  async refresh(model) {
+    if (!this.db || !this.keys.length) return;
+    try {
+      const { data, error } = await this.db.from('lexscan_key_state').select('*').eq('model', model).in('key_hash', this.keys.map((k) => k.hash));
+      if (error || !data) return;
+      for (const row of data) {
+        const k = `${row.key_hash}|${row.model}`;
+        if (this.dirty.has(k)) continue;
+        this.state.set(k, row);
+      }
+    } catch (_) { /* segue com o que já sabe */ }
+  }
+
+  // Grava já (sem esperar) o que mudou, pra outras leituras simultâneas enxergarem. O flush final espera estas gravações.
+  flushSoon() {
+    if (!this.db || !this.dirty.size) return;
+    const rows = [...this.dirty.values()].map((r) => ({ ...r, updated_at: new Date().toISOString() }));
+    this.dirty.clear();
+    this.pending = (this.pending || []).concat(
+      Promise.resolve(this.db.from('lexscan_key_state').upsert(rows, { onConflict: 'key_hash,model' })).catch(() => {})
+    );
+  }
+
   row(hash, model) {
     const k = `${hash}|${model}`;
     let r = this.state.get(k);
@@ -149,7 +190,7 @@ export class KeyPool {
     });
   }
 
-  markRateLimited(hash, model, seconds = 65) {
+  markRateLimited(hash, model, seconds = 25) {
     const r = this.row(hash, model);
     r.exhausted_until = new Date(Date.now() + seconds * 1000).toISOString();
     r.last_error = '429 limite por minuto';
@@ -185,6 +226,7 @@ export class KeyPool {
 
   // Grava o estado alterado ANTES de responder (função serverless congela depois de responder).
   async flush() {
+    if (this.pending && this.pending.length) { await Promise.allSettled(this.pending); this.pending = []; }
     if (!this.db || !this.dirty.size) return;
     const rows = [...this.dirty.values()].map((r) => ({ ...r, updated_at: new Date().toISOString() }));
     this.dirty.clear();
