@@ -11,6 +11,10 @@ const PAID_ENV_NAME = 'API_KEY_PAGA';
 const SOFT_RPM = { 'gemini-2.5-flash': 8 };
 const DEFAULT_SOFT_RPM = 8;
 
+// Linha especial por modelo (não é uma chave): guarda a "saúde" do modelo como um todo. Serve pra pular, por alguns
+// minutos e para TODAS as leituras, um modelo que acabou de recusar com todas as chaves (ex.: 3.8 sobrecarregado).
+const MODEL_ROW = '__model__';
+
 export function hashKey(key) {
   return createHash('sha256').update(key).digest('hex').slice(0, 16);
 }
@@ -61,10 +65,30 @@ export class KeyPool {
         .from('lexscan_key_state')
         .select('*')
         .in('model', toLoad)
-        .in('key_hash', this.keys.map((k) => k.hash));
+        .in('key_hash', [...this.keys.map((k) => k.hash), MODEL_ROW]);
       if (!error && data) for (const row of data) this.state.set(`${row.key_hash}|${row.model}`, row);
     } catch (_) { /* sem estado compartilhado: segue com rodízio aleatório */ }
     toLoad.forEach((m) => this.loaded.add(m));
+  }
+
+  modelCooling(model) {
+    const r = this.row(MODEL_ROW, model);
+    return !!(r.exhausted_until && new Date(r.exhausted_until).getTime() > Date.now());
+  }
+
+  coolModel(model, ms = 10 * 60 * 1000) {
+    const r = this.row(MODEL_ROW, model);
+    r.exhausted_until = new Date(Date.now() + ms).toISOString();
+    r.last_error = 'modelo instável agora (pausa)';
+    this.touch(MODEL_ROW, model);
+    this.flushSoon();
+  }
+
+  clearModelCooling(model) {
+    const r = this.row(MODEL_ROW, model);
+    if (!r.exhausted_until) return;
+    r.exhausted_until = null;
+    this.touch(MODEL_ROW, model);
   }
 
   // Quanto falta (ms) até a primeira chave "em espera" deste modelo voltar; null se nenhuma está só esperando.
@@ -88,7 +112,7 @@ export class KeyPool {
   async refresh(model) {
     if (!this.db || !this.keys.length) return;
     try {
-      const { data, error } = await this.db.from('lexscan_key_state').select('*').eq('model', model).in('key_hash', this.keys.map((k) => k.hash));
+      const { data, error } = await this.db.from('lexscan_key_state').select('*').eq('model', model).in('key_hash', [...this.keys.map((k) => k.hash), MODEL_ROW]);
       if (error || !data) return;
       for (const row of data) {
         const k = `${row.key_hash}|${row.model}`;

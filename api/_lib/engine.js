@@ -97,17 +97,28 @@ export class OcrEngine {
   // então a próxima chave é tentada. Se a rodada inteira falhar por sobrecarga, espera um pouco e faz outra rodada.
   // Só depois de gastar as rodadas ou o orçamento de tempo do modelo é que cai pro próximo da lista.
   //  - passes: quantas rodadas por modelo. budgetMs: tempo máximo no 1º modelo (os demais têm teto próprio).
-  async generate({ models, build, timeoutMs, accept, imageParts, systemPrompt, label, passes = 3, budgetMs = 100000 }) {
+  //  - fast: modelos 'melhores mas instáveis' (ex.: 3.8 na releitura de manuscrito): UMA tentativa rápida (25s, até 3 chaves);
+  //    se falhar, o modelo entra em pausa de 10 min pra todas as leituras e o app segue pro modelo escolhido sem perder tempo.
+  async generate({ models, build, timeoutMs, accept, imageParts, systemPrompt, label, passes = 3, budgetMs = 100000, fast = [] }) {
     await this.pool.load(models);
     let lastErr = null;
 
     for (let mi = 0; mi < models.length; mi++) {
       const model = models[mi];
+      const isFast = fast.includes(model);
+      if (isFast && this.pool.modelCooling(model)) {
+        this.say(`${label}: ${model} instável agora (em pausa) — indo direto ao próximo modelo.`);
+        continue;
+      }
       await this.discover(model);
-      const phaseEnd = Math.min(this.deadline - 15000, Date.now() + (mi === 0 ? budgetMs : Math.min(budgetMs, 90000)));
+      const phaseEnd = isFast
+        ? Math.min(this.deadline - 15000, Date.now() + 25000)
+        : Math.min(this.deadline - 15000, Date.now() + (mi === 0 ? budgetMs : Math.min(budgetMs, 90000)));
+      const maxPasses = isFast ? 1 : passes;
+      const keysPerRound = isFast ? 3 : 5;
       let badModel = false;
 
-      for (let pass = 0; pass < passes && !badModel; pass++) {
+      for (let pass = 0; pass < maxPasses && !badModel; pass++) {
         if (Date.now() > phaseEnd) break;
         // Outras leituras em paralelo (outras instâncias) também marcam chaves: relê o estado a cada rodada.
         if (pass > 0) await this.pool.refresh(model);
@@ -134,7 +145,7 @@ export class OcrEngine {
         for (const key of cands) {
           if (Date.now() > phaseEnd) break;
           // No máximo 5 chaves por rodada: martelar todas em sequência só esgota o limite de todas.
-          if (triedThisRound >= 5) break;
+          if (triedThisRound >= keysPerRound) break;
           triedThisRound++;
           if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
           const t0 = Date.now();
@@ -154,6 +165,7 @@ export class OcrEngine {
             }
             if (accept && !accept(text)) throw Object.assign(new Error('resposta descartada pela checagem de sanidade'), { soft: true });
             this.pool.markSuccess(key.hash, model);
+            if (isFast) this.pool.clearModelCooling(model);
             this.attempts.push({ label, model, key: key.hash.slice(0, 6), ok: true, ms: Date.now() - t0 });
             return { text, model, key };
           } catch (e) {
@@ -175,14 +187,15 @@ export class OcrEngine {
         }
 
         if (badModel || !sawOverload) break; // nada que valha repetir (cota, chave inválida...)
-        if (pass < passes - 1) {
+        if (pass < maxPasses - 1) {
           const wait = backoffDelay(pass, 3000, 15000);
           if (Date.now() + wait > phaseEnd) break;
           this.note(`${label}: ${model} sobrecarregado em ${overloadedKeys} chave(s) — nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
           await sleep(wait);
         }
       }
-      if (models.length > mi + 1) this.note(`${label}: ${model} não respondeu com nenhuma chave — próximo modelo.`);
+      if (isFast) { this.pool.coolModel(model); this.note(`${label}: ${model} não respondeu agora — em pausa por 10 min para todas as leituras.`); }
+      else if (models.length > mi + 1) this.note(`${label}: ${model} não respondeu com nenhuma chave — próximo modelo.`);
     }
     throw lastErr || new Error('nenhum modelo/chave disponível');
   }
@@ -239,6 +252,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     timeoutMs: hard ? 90000 : 80000,
     passes: hard ? 4 : 3,
     budgetMs: hard ? 120000 : 90000,
+    fast: hard && bestFirst ? ['gemini-3.8-flash', 'gemini-3.5-flash'].filter((m) => m !== preferredModel) : [],
     imageParts: [imagePart],
     systemPrompt,
     build: (model) => ({
