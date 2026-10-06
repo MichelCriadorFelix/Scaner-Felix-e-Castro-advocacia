@@ -17,15 +17,17 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
   return window.btoa(c.join(''));
 }
 
-// Quantas páginas do PDF podem ser lidas AO MESMO TEMPO (teto). 1 = uma por vez (comportamento original).
-// Liga com localStorage.lexscan_parallel = '5' (2 a 6). Com teto > 1 o controle é adaptativo: começa com 3, sobe
-// enquanto tudo responde rápido e desce se o Google começar a recusar ou demorar.
+// Quantas páginas do PDF podem ser lidas AO MESMO TEMPO (teto). Padrão: 5, com controle adaptativo (começa com 3,
+// sobe enquanto tudo responde rápido e desce se o Google começar a recusar ou demorar). Sem nenhum ajuste do usuário.
+// Só pra emergência/diagnóstico: localStorage.lexscan_parallel = '1' volta a ler uma página por vez.
 function getParallelCeiling(): number {
   try {
-    const v = Number(localStorage.getItem('lexscan_parallel'));
+    const raw = localStorage.getItem('lexscan_parallel');
+    if (raw === null || raw === '') return 5;
+    const v = Number(raw);
     return v >= 2 ? Math.min(6, Math.floor(v)) : 1;
   } catch (e) {
-    return 1;
+    return 5;
   }
 }
 
