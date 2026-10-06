@@ -244,7 +244,17 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   const userText = core.buildTranscriptionUserText(!!hard, clientName, hojeBr, { vocab: opts.vocab, zoomCount: hard ? zoomParts.length : 0 });
   const imgs = hard ? [imagePart, ...zoomParts] : [imagePart];
   const thinkBudget = opts.thinkingBudget;
-  const models = core.buildModelCascade(preferredModel, !!(hard && bestFirst));
+  // Modo difícil: medido com laudos reais, o 2.5 Flash lê letra de médico MUITO pior (7/13, inventa palavras) que a
+  // 3.5 Flash-Lite (11-12/13, ~25s). Então, quando o modelo escolhido é o 2.5, o difícil tenta antes: 3.8 e 3.5 (uma
+  // tentativa rápida cada, com pausa de 10 min se instáveis) e a 3.5 Flash-Lite; o 2.5 fica como reserva.
+  // Quem escolheu outro modelo (3.8, 3.5, Flash-Lite) tem a escolha respeitada.
+  const FAST_BEST = ['gemini-3.8-flash', 'gemini-3.5-flash'];
+  const LITE = 'gemini-3.5-flash-lite';
+  const preferBetter = !!(hard && (bestFirst || preferredModel === 'gemini-2.5-flash'));
+  let models = core.buildModelCascade(preferredModel, preferBetter);
+  if (hard && preferredModel === 'gemini-2.5-flash') {
+    models = [...models.filter((m) => FAST_BEST.includes(m)), LITE, ...models.filter((m) => !FAST_BEST.includes(m) && m !== LITE)];
+  }
   const level = hard ? 'high' : 'low';
 
   let first;
@@ -255,7 +265,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     timeoutMs: hard ? 90000 : 80000,
     passes: hard ? 4 : 3,
     budgetMs: hard ? 120000 : 90000,
-    fast: hard && bestFirst ? ['gemini-3.8-flash', 'gemini-3.5-flash'].filter((m) => m !== preferredModel) : [],
+    fast: preferBetter ? FAST_BEST.filter((m) => m !== preferredModel) : [],
     imageParts: imgs,
     systemPrompt,
     build: (model) => ({
