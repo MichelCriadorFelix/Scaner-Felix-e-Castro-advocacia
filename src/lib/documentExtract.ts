@@ -154,7 +154,8 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
         } else {
           pp(i, `Pág ${i}/${endIdx}: Renderizando imagem escaneada...`);
 
-          let viewport = page.getViewport({ scale: wantsHighResImage() ? (attempt === 1 ? 3.0 : 2.0) : (attempt === 1 ? 1.5 : 1.0) });
+          // Renderiza a página em escala 2.0x (alta definição ~200 DPI) para máxima fidelidade de leitura e transcrição
+          let viewport = page.getViewport({ scale: wantsHighResImage() ? 3.0 : 2.0 });
           let canvas = document.createElement("canvas");
           canvas.width = Math.floor(viewport.width);
           canvas.height = Math.floor(viewport.height);

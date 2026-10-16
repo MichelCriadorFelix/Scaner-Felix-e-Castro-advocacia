@@ -260,7 +260,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   // SEMPRE respeita o modelo preferido pelo advogado (ex: gemini-2.5-flash) como PRIORIDADE MÁXIMA.
   // Modelos alternativos só entram como fallback se o preferido esgotar todas as chaves.
   let models = core.buildModelCascade(preferredModel, false);
-  const level = hard ? 'high' : 'low';
+  const level = hard ? 'high' : 'medium';
 
   let first;
   try {

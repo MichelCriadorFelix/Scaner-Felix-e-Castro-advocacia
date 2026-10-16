@@ -35,7 +35,7 @@ export function temperatureConfigFor(model, desired) {
 export function getThinkingConfigForModel(model, level, budgetOverride) {
   if (/^gemini-2\.5/.test(model)) {
     if (level === "high" && budgetOverride) return { thinkingBudget: Math.max(1024, Math.min(24576, Math.floor(budgetOverride))) };
-    return { thinkingBudget: level === "high" ? 12288 : level === "medium" ? -1 : 1024 };
+    return { thinkingBudget: level === "high" ? 12288 : -1 };
   }
   return { thinkingLevel: level };
 }

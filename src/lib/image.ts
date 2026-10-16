@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 // Aumenta o contraste, nitidez e saturação para PDFs ou imagens de baixa qualidade antes do OCR/IA, sem perder as cores originais importantes para CNH/RG.
-export async function enhanceImageForGemini(imageInput: any, maxDimension: number = 1600, jpegQuality: number = 0.82, applyFilter: boolean = true): Promise<Blob> {
+export async function enhanceImageForGemini(imageInput: any, maxDimension: number = 2000, jpegQuality: number = 0.90, applyFilter: boolean = true): Promise<Blob> {
   try {
     const MAX_DIMENSION = maxDimension;
 
@@ -26,7 +26,7 @@ export async function enhanceImageForGemini(imageInput: any, maxDimension: numbe
       canvas.height = height;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
-        if (applyFilter) ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
+        if (applyFilter) ctx.filter = 'contrast(106%) brightness(101%)';
         ctx.drawImage(srcCanvas, 0, 0, width, height);
       }
       const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", jpegQuality));
@@ -46,7 +46,7 @@ export async function enhanceImageForGemini(imageInput: any, maxDimension: numbe
     const canvas = document.createElement("canvas");
     let { width, height } = img;
     
-    // Resize adaptativo para não explodir tokens e acelerar a base64 (Max 1600px na maior dimensão)
+    // Resize adaptativo em alta definição (Max 2000px na maior dimensão, JPEG 90%)
     if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
       if (width > height) {
         height = Math.round((height * MAX_DIMENSION) / width);
@@ -61,8 +61,7 @@ export async function enhanceImageForGemini(imageInput: any, maxDimension: numbe
     canvas.height = height;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (ctx) {
-      // Filtro profissional inteligente
-      if (applyFilter) ctx.filter = 'contrast(120%) brightness(102%) saturate(110%)';
+      if (applyFilter) ctx.filter = 'contrast(106%) brightness(101%)';
       ctx.drawImage(img, 0, 0, width, height);
     }
     const resBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/jpeg", jpegQuality));
