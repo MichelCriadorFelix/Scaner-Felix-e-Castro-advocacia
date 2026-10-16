@@ -171,7 +171,19 @@ export class KeyPool {
     // 2º: Chave descansada há mais tempo (lastUsed menor)
     // 3º: Aleatório como desempate fino
     const byLoad = (a, b) => a.count - b.count || a.lastUsed - b.lastUsed || a.tie - b.tie;
-    return [...ok.sort(byLoad), ...over.sort(byLoad)];
+    const list = [...ok.sort(byLoad), ...over.sort(byLoad)];
+    if (list.length > 0) return list;
+
+    // Se todas as chaves estão marcadas como esgotadas (por exemplo, por travamento falso do passado),
+    // desbloqueia e testa as chaves que não estão explicitamente indisponíveis (evita ficar sem chaves)
+    for (const k of this.keys) {
+      const r = this.row(k.hash, model);
+      if (r.unavailable_until && new Date(r.unavailable_until).getTime() > now) continue;
+      const count = this.minuteCount(r, now);
+      const lastUsed = r.last_used_at || 0;
+      over.push({ ...k, count, lastUsed, tie: Math.random() });
+    }
+    return over.sort(byLoad);
   }
 
   // Modelo todo fora do ar pra todas as chaves (ex.: 2.5 não liberado pro projeto)?

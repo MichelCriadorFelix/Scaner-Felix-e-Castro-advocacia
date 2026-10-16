@@ -137,8 +137,14 @@ export class OcrEngine {
             await this.pool.refresh(model);
             cands = this.pool.candidates(model);
           }
+          if (!cands.length && Date.now() + 6000 < phaseEnd) {
+            this.say(`${label}: aguardando liberação de limite para ${model}...`);
+            await sleep(5000);
+            await this.pool.refresh(model);
+            cands = this.pool.candidates(model);
+          }
           if (!cands.length) {
-            if (pass === 0) this.note(`${label}: ${model} sem chave disponível (cota/espera/indisponível) — pulando.`);
+            if (pass === 0) this.note(`${label}: ${model} sem chave disponível (cota/espera/indisponível).`);
             break;
           }
         }

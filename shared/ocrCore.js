@@ -12,11 +12,14 @@ export const GEMINI_MODEL_OPTIONS = [
 ];
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
-// Ordem de tentativa: o modelo escolhido pelo advogado SEMPRE vem em 1º lugar.
-// Os demais entram apenas como contingência se o modelo escolhido estiver indisponível.
-export function buildModelCascade(selected, _bestFirst = false) {
+// Ordem de tentativa: o modelo escolhido pelo advogado NUNCA é trocado por outro modelo.
+// Se o advogado escolheu Gemini 2.5 Flash, o sistema utiliza ESTRITAMENTE ele.
+export function buildModelCascade(selected, fallback = false) {
   const all = GEMINI_MODEL_OPTIONS.map(m => m.value);
   const sel = all.includes(selected) ? selected : DEFAULT_GEMINI_MODEL;
+  if (!fallback) {
+    return [sel];
+  }
   return [sel, ...all.filter(v => v !== sel)];
 }
 
