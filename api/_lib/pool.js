@@ -8,8 +8,8 @@ const PAID_ENV_NAME = 'API_KEY_PAGA';
 
 // Pedidos por minuto que tentamos não passar por chave+modelo (limite grátis real fica na conta Google;
 // isto só espalha a carga). Passar disso não proíbe: vira o último recurso da fila.
-const SOFT_RPM = { 'gemini-2.5-flash': 8 };
-const DEFAULT_SOFT_RPM = 8;
+const SOFT_RPM = { 'gemini-2.5-flash': 12 };
+const DEFAULT_SOFT_RPM = 10;
 
 // Linha especial por modelo (não é uma chave): guarda a "saúde" do modelo como um todo. Serve pra pular, por alguns
 // minutos e para TODAS as leituras, um modelo que acabou de recusar com todas as chaves (ex.: 3.8 sobrecarregado).
@@ -40,8 +40,7 @@ export function loadServerKeys({ includePaid = false } = {}) {
       (isPaidVar ? paid : free).push({ key, hash: hashKey(key), paid: isPaidVar });
     }
   }
-  // Trava de segurança: o Google vê com maus olhos muitas chaves/projetos somando cota. Teto de chaves
-  // gratuitas em uso (GEMINI_MAX_KEYS na Vercel; padrão 20 = sem corte até a lista ser enxugada). A chave paga não conta nesse limite.
+  // Trava de segurança: teto de chaves gratuitas em uso (padrão 20 = sem corte para todas as contas distintas).
   const cap = Math.max(1, Number(process.env.GEMINI_MAX_KEYS) || 20);
   const limitedFree = free.slice(0, cap);
   return includePaid ? [...paid, ...limitedFree] : limitedFree;
@@ -136,7 +135,7 @@ export class KeyPool {
     const k = `${hash}|${model}`;
     let r = this.state.get(k);
     if (!r) {
-      r = { key_hash: hash, model, minute_window_start: null, minute_count: 0, exhausted_until: null, daily_exhausted_date: null, unavailable_until: null, last_ok_at: null, last_error: null };
+      r = { key_hash: hash, model, minute_window_start: null, minute_count: 0, last_used_at: 0, exhausted_until: null, daily_exhausted_date: null, unavailable_until: null, last_ok_at: null, last_error: null };
       this.state.set(k, r);
     }
     return r;
@@ -151,7 +150,7 @@ export class KeyPool {
     return r.minute_count || 0;
   }
 
-  // Chaves utilizáveis AGORA pra esse modelo, melhor primeiro (menos usadas no último minuto; desempate aleatório).
+  // Chaves utilizáveis AGORA pra esse modelo, melhor primeiro (menos usadas no último minuto; desempate pelo tempo que descansou - LRU).
   // Segunda lista: as que só estão acima do limite suave de pedidos/minuto (último recurso).
   candidates(model) {
     const now = Date.now();
@@ -164,9 +163,14 @@ export class KeyPool {
       if (r.exhausted_until && new Date(r.exhausted_until).getTime() > now) continue;
       if (r.unavailable_until && new Date(r.unavailable_until).getTime() > now) continue;
       const count = this.minuteCount(r, now);
-      (count >= soft ? over : ok).push({ ...k, count, tie: Math.random() });
+      const lastUsed = r.last_used_at || 0;
+      (count >= soft ? over : ok).push({ ...k, count, lastUsed, tie: Math.random() });
     }
-    const byLoad = (a, b) => a.count - b.count || a.tie - b.tie;
+    // Distribuição balanceada (Round-Robin Real):
+    // 1º: Menos chamadas no minuto atual
+    // 2º: Chave descansada há mais tempo (lastUsed menor)
+    // 3º: Aleatório como desempate fino
+    const byLoad = (a, b) => a.count - b.count || a.lastUsed - b.lastUsed || a.tie - b.tie;
     return [...ok.sort(byLoad), ...over.sort(byLoad)];
   }
 
@@ -183,6 +187,7 @@ export class KeyPool {
       r.minute_count = 0;
     }
     r.minute_count = (r.minute_count || 0) + 1;
+    r.last_used_at = now;
     this.touch(hash, model);
   }
 
@@ -214,7 +219,7 @@ export class KeyPool {
     });
   }
 
-  markRateLimited(hash, model, seconds = 25) {
+  markRateLimited(hash, model, seconds = 20) {
     const r = this.row(hash, model);
     r.exhausted_until = new Date(Date.now() + seconds * 1000).toISOString();
     r.last_error = '429 limite por minuto';

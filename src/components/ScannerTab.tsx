@@ -6,7 +6,7 @@ import { downloadTXT, downloadPDF, forceDownload } from '../lib/browserHelpers';
 import { supabase } from '../lib/supabaseClient';
 
 export default function ScannerTab() {
-  const { serverKeys, aiMode, clients, confColor, currentQueueIndex, discardDraft, drag, editedText, file, fileRefImg, fileRefPdf, goldStandard, handleCompressAndDownload, handleDownloadLite, handleDrop, handleFiles, handleNativeCameraCapture, handleRefineTextWithAI, handleSaveManualEdit, hasRecoverableBatch, isAborting, isBatchModalOpen, isEditingText, isFolderArchived, isRecovering, isRefiningText, nativeCameraRef, preview, process, processBatch, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, result, saveWithoutOCR, selectedClient, setAiMode, setDrag, setEditedText, setFile, setGoldStandard, setIsAborting, setIsCropping, setIsEditingText, setMovingItem, setPreview, setProgressMsg, setQueue, setResult, setSelectedClient, setStartPage, startAppendingPages, startPage, storageWarning, tab, uploadBatchWithoutOCR } = useApp();
+  const { serverKeys, aiMode, clients, confColor, currentQueueIndex, discardDraft, drag, editedText, file, fileRefImg, fileRefPdf, goldStandard, handleCompressAndDownload, handleDownloadLite, handleDrop, handleFiles, handleNativeCameraCapture, handleRefineTextWithAI, handleSaveManualEdit, hasRecoverableBatch, isAborting, isBatchModalOpen, isEditingText, isFolderArchived, isRecovering, isRefiningText, nativeCameraRef, openInAppCamera, preview, process, processBatch, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, result, saveWithoutOCR, selectedClient, setAiMode, setDrag, setEditedText, setFile, setGoldStandard, setIsAborting, setIsCropping, setIsEditingText, setMovingItem, setPreview, setProgressMsg, setQueue, setResult, setSelectedClient, setStartPage, startAppendingPages, startPage, storageWarning, tab, uploadBatchWithoutOCR } = useApp();
   return (
     <>
 {tab === "scanner" && (
@@ -81,14 +81,14 @@ export default function ScannerTab() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                    <button className="action-card action-card-full" onClick={openInAppCamera} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
                       <div className="action-icon" style={{ color: G.accent }}>📸</div>
-                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera do Celular</div>
-                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Alta Qualidade, Não trava o dispositivo</div>
+                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Integrada Anti-Crash</div>
+                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Digitalização contínua sem travar nem reiniciar o celular</div>
                     </button>
                   </div>
 
-                  {/* Alerta de Desempenho / Motorola */}
+                  {/* Dica de Performance */}
                   <div style={{
                     marginTop: '16px',
                     padding: '12px 16px',
@@ -102,12 +102,9 @@ export default function ScannerTab() {
                     alignItems: 'flex-start',
                     gap: '10px'
                   }}>
-                    <span style={{ fontSize: '14px' }}>💡</span>
+                    <span style={{ fontSize: '14px' }}>⚡</span>
                     <div>
-                      <strong style={{ color: G.text }}>Dica para Motorola e celulares com pouca memória:</strong> Se o seu celular fechar o aplicativo ou reiniciar a página ao tirar fotos com a câmera nativa, isso ocorre porque o Android fecha o navegador para liberar espaço. 
-                      <span style={{ display: 'block', marginTop: '4px' }}>
-                        Para resolver isso de forma definitiva: <strong>tire as fotos das páginas antes utilizando a Câmera normal do seu celular</strong> (com o foco e qualidade originais de fábrica) e depois use a opção <strong>Upload de Imagem</strong> ou <strong>Upload de PDF</strong> para enviá-las a partir da Galeria.
-                      </span>
+                      <strong style={{ color: G.text }}>Modo Câmera Inteligente Ativado:</strong> A digitalização agora roda diretamente na tela sem fechar o navegador, garantindo que celulares de qualquer modelo capturem múltiplas páginas seguidas com total fluidez.
                     </div>
                   </div>
                 </div>

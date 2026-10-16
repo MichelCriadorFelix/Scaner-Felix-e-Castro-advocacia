@@ -23,7 +23,9 @@ export function classifyError(e) {
   const status = Number(e?.status || e?.code || (m.match(/\b(4\d\d|5\d\d)\b/) || [])[1] || 0);
   if (m.includes('api key not valid') || m.includes('api_key_invalid') || m.includes('api key expired') || m.includes('api key not found')) return { kind: 'invalid', msg };
   if (status === 429 || m.includes('429') || m.includes('quota') || m.includes('exhausted') || m.includes('rate limit')) {
-    const daily = (m.includes('perday') || m.includes('per day') || m.includes('daily') || m.includes(' day'));
+    // Só é cota diária se explicitamente referir-se à cota diária por projeto (RequestsPerDayPerProject).
+    // Limites transitórios por minuto (RequestsPerMinute) duram apenas segundos e NUNCA devem matar a chave pro dia todo!
+    const daily = /per\s*day\s*per\s*project|generatecontentrequestsperday|daily\s*(?:quota|limit|request)|cota\s*di[aá]ria/i.test(m);
     return { kind: daily ? 'daily' : 'minute', msg };
   }
   if (status === 404 || m.includes('not found') || m.includes('no longer available') || m.includes('not available to new users') || m.includes('new users')) return { kind: 'unavailable', msg };
@@ -64,18 +66,18 @@ export class OcrEngine {
   }
 
   // Descobre, ANTES de ler de verdade, quais chaves aceitam este modelo: uma chamada mínima (texto, ~5 tokens) por
-  // chave ainda não verificada, em paralelo. O resultado fica guardado (Supabase) por dias, então isso acontece uma
-  // vez por chave+modelo — depois a leitura nunca mais gasta tentativa numa chave que não aceita o modelo.
+  // chave ainda não verificada. O resultado fica guardado (Supabase) por dias.
+  // Pacing suave para evitar rajadas desnecessárias contra o Google.
   async discover(model) {
     const stale = this.pool.staleKeys(model);
     if (!stale.length || this.remaining() < 60000) return;
     this.note(`Verificando quais chaves aceitam ${model} (${stale.length})...`);
-    const probes = stale.map(async (key) => {
+    const runProbe = async (key) => {
       try {
         await this.callOnce(key, model, {
           contents: [{ text: 'Responda apenas: ok' }],
           config: { maxOutputTokens: 64, ...core.temperatureConfigFor(model, 0.1), thinkingConfig: core.getThinkingConfigForModel(model, 'low') },
-        }, 20000);
+        }, 15000);
         this.pool.markCapable(key.hash, model);
       } catch (e) {
         const c = classifyError(e);
@@ -84,11 +86,13 @@ export class OcrEngine {
         else if (c.kind === 'daily') { this.pool.markCapable(key.hash, model); this.pool.markDailyExhausted(key.hash, model); }
         else if (c.kind === 'minute') { this.pool.markCapable(key.hash, model); this.pool.markRateLimited(key.hash, model); }
         else if (c.kind === 'overload') this.pool.markCapable(key.hash, model); // 503: o modelo existe pra essa chave
-        // 'bad'/'other': sem conclusão — a leitura real decide.
       }
-    });
-    // Não trava a leitura esperando a sondagem mais lenta: depois de 5s segue com o que já se sabe.
-    await Promise.race([Promise.all(probes), sleep(5000)]);
+    };
+    // Executa sondagens em pequenos blocos de 2 com pequeno espaçamento
+    for (let i = 0; i < stale.length; i += 2) {
+      await Promise.all(stale.slice(i, i + 2).map(runProbe));
+      if (i + 2 < stale.length) await sleep(100);
+    }
   }
 
   // Lê com o MODELO ESCOLHIDO e só desiste dele depois de esgotar as chaves.
@@ -97,8 +101,7 @@ export class OcrEngine {
   // então a próxima chave é tentada. Se a rodada inteira falhar por sobrecarga, espera um pouco e faz outra rodada.
   // Só depois de gastar as rodadas ou o orçamento de tempo do modelo é que cai pro próximo da lista.
   //  - passes: quantas rodadas por modelo. budgetMs: tempo máximo no 1º modelo (os demais têm teto próprio).
-  //  - fast: modelos 'melhores mas instáveis' (ex.: 3.8 na releitura de manuscrito): UMA tentativa rápida (25s, até 3 chaves);
-  //    se falhar, o modelo entra em pausa de 10 min pra todas as leituras e o app segue pro modelo escolhido sem perder tempo.
+  //  - fast: modelos 'melhores mas instáveis': UMA tentativa rápida (25s); se falhar, entra em pausa de 10 min.
   async generate({ models, build, timeoutMs, accept, imageParts, systemPrompt, label, passes = 3, budgetMs = 100000, fast = [] }) {
     await this.pool.load(models);
     let lastErr = null;
@@ -115,7 +118,8 @@ export class OcrEngine {
         ? Math.min(this.deadline - 15000, Date.now() + 25000)
         : Math.min(this.deadline - 15000, Date.now() + (mi === 0 ? budgetMs : Math.min(budgetMs, 90000)));
       const maxPasses = isFast ? 1 : passes;
-      const keysPerRound = isFast ? 3 : 5;
+      // Permite usar todas as chaves disponíveis no pool (sem cortar na 5ª chave!)
+      const keysPerRound = isFast ? 3 : Math.max(12, this.pool.keys.length);
       let badModel = false;
 
       for (let pass = 0; pass < maxPasses && !badModel; pass++) {
@@ -144,7 +148,6 @@ export class OcrEngine {
 
         for (const key of cands) {
           if (Date.now() > phaseEnd) break;
-          // No máximo 5 chaves por rodada: martelar todas em sequência só esgota o limite de todas.
           if (triedThisRound >= keysPerRound) break;
           triedThisRound++;
           if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
@@ -181,17 +184,20 @@ export class OcrEngine {
             // Mostra pros outros processos em paralelo e dá um respiro antes da próxima chave.
             if (c.kind === 'minute' || c.kind === 'overload' || c.kind === 'other') {
               this.pool.flushSoon();
-              await sleep(400 + Math.round(Math.random() * 400));
+              await sleep(300 + Math.round(Math.random() * 300));
             }
           }
         }
 
-        if (badModel || !sawOverload) break; // nada que valha repetir (cota, chave inválida...)
-        if (pass < maxPasses - 1) {
-          const wait = backoffDelay(pass, 3000, 15000);
+        // Se o modelo deu erro 400 definitivo, pula. Se não sobrou nenhuma chave utilizável, encerra.
+        if (badModel) break;
+        if (pass < maxPasses - 1 && (sawOverload || cands.length > triedThisRound)) {
+          const wait = backoffDelay(pass, 2000, 10000);
           if (Date.now() + wait > phaseEnd) break;
-          this.note(`${label}: ${model} sobrecarregado em ${overloadedKeys} chave(s) — nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
+          this.note(`${label}: ${model} ocupado em ${overloadedKeys} chave(s) — tentando nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
           await sleep(wait);
+        } else if (!sawOverload && cands.length <= triedThisRound) {
+          break;
         }
       }
       if (isFast) { this.pool.coolModel(model); this.note(`${label}: ${model} não respondeu agora — em pausa por 10 min para todas as leituras.`); }
@@ -244,17 +250,10 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   const userText = core.buildTranscriptionUserText(!!hard, clientName, hojeBr, { vocab: opts.vocab, zoomCount: hard ? zoomParts.length : 0 });
   const imgs = hard ? [imagePart, ...zoomParts] : [imagePart];
   const thinkBudget = opts.thinkingBudget;
-  // Modo difícil: medido com laudos reais, o 2.5 Flash lê letra de médico MUITO pior (7/13, inventa palavras) que a
-  // 3.5 Flash-Lite (11-12/13, ~25s). Então, quando o modelo escolhido é o 2.5, o difícil tenta antes: 3.8 e 3.5 (uma
-  // tentativa rápida cada, com pausa de 10 min se instáveis) e a 3.5 Flash-Lite; o 2.5 fica como reserva.
-  // Quem escolheu outro modelo (3.8, 3.5, Flash-Lite) tem a escolha respeitada.
-  const FAST_BEST = ['gemini-3.8-flash', 'gemini-3.5-flash'];
-  const LITE = 'gemini-3.5-flash-lite';
-  const preferBetter = !!(hard && (bestFirst || preferredModel === 'gemini-2.5-flash'));
-  let models = core.buildModelCascade(preferredModel, preferBetter);
-  if (hard && preferredModel === 'gemini-2.5-flash') {
-    models = [...models.filter((m) => FAST_BEST.includes(m)), LITE, ...models.filter((m) => !FAST_BEST.includes(m) && m !== LITE)];
-  }
+
+  // SEMPRE respeita o modelo preferido pelo advogado (ex: gemini-2.5-flash) como PRIORIDADE MÁXIMA.
+  // Modelos alternativos só entram como fallback se o preferido esgotar todas as chaves.
+  let models = core.buildModelCascade(preferredModel, false);
   const level = hard ? 'high' : 'low';
 
   let first;
@@ -265,7 +264,6 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     timeoutMs: hard ? 90000 : 80000,
     passes: hard ? 4 : 3,
     budgetMs: hard ? 120000 : 90000,
-    fast: preferBetter ? FAST_BEST.filter((m) => m !== preferredModel) : [],
     imageParts: imgs,
     systemPrompt,
     build: (model) => ({
@@ -290,13 +288,11 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   let text = core.cleanTranscription(first.text);
   let finalModel = first.model;
 
-  // Página normal que a própria IA descreve como MANUSCRITA: leitura simples erra (medido: inventou "Pretensão à
-  // Aposentadoria", trocou sobrenome e ano). Escala sozinha pro modo difícil (2 leituras + conferência, melhor modelo
-  // primeiro). Se o modo difícil falhar, mantém a leitura simples — nunca piora o que já tinha.
+  // Página normal que a própria IA descreve como MANUSCRITA: releitura em modo detalhado no MESMO modelo
   if (!hard && !skipEscalation && looksHandwritten(text) && engine.remaining() > 90000) {
-    engine.note('Página manuscrita detectada — relendo em modo difícil (2 leituras + conferência).');
+    engine.note('Página manuscrita detectada — relendo em modo detalhado (conferência dupla)...');
     try {
-      const deep = await readPage({ pool, imageBase64, mimeType, hard: true, clientName, bestFirst: true, preferredModel, deadline, log, skipEscalation: true, opts });
+      const deep = await readPage({ pool, imageBase64, mimeType, hard: true, clientName, bestFirst: false, preferredModel, deadline, log, skipEscalation: true, opts });
       if (deep?.text) {
         return {
           ...deep,
@@ -306,7 +302,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
         };
       }
     } catch (e) {
-      engine.note('Releitura em modo difícil falhou — mantendo a leitura simples: ' + String(e?.message || e).slice(0, 100));
+      engine.note('Releitura falhou — mantendo a leitura inicial: ' + String(e?.message || e).slice(0, 100));
     }
   }
 

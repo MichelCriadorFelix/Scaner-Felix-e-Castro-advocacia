@@ -3,7 +3,7 @@ import { useApp } from '../AppContext';
 import { G } from '../lib/theme';
 
 export default function BatchCameraModal() {
-  const { appendingDoc, batchDocName, cameraPages, clearCloudBatchSession, clients, compileCameraBatch, fileRefBatchImg, getStableThumbUrl, handleBatchImageAdd, handleEditPage, isBatchModalOpen, isFolderArchived, movePage, nativeCameraRef, pdfQuality, removePageFromCloudBackup, selectedClient, setAppendingDoc, setBatchDocName, setCameraPages, setIsBatchModalOpen, setPdfQuality, setSelectedClient, setViewingBatchPage, showToast, viewingBatchPage, viewingPageLoading, viewingPageUrl } = useApp();
+  const { appendingDoc, batchDocName, cameraPages, clearCloudBatchSession, clients, compileCameraBatch, fileRefBatchImg, getStableThumbUrl, handleBatchImageAdd, handleEditPage, isBatchModalOpen, isFolderArchived, movePage, nativeCameraRef, openInAppCamera, pdfQuality, removePageFromCloudBackup, selectedClient, setAppendingDoc, setBatchDocName, setCameraPages, setIsBatchModalOpen, setPdfQuality, setSelectedClient, setViewingBatchPage, showToast, viewingBatchPage, viewingPageLoading, viewingPageUrl } = useApp();
   return (
     <>
 {isBatchModalOpen && (
@@ -93,9 +93,9 @@ export default function BatchCameraModal() {
                 <button 
                   className="modal-btn" 
                   style={{flex: 1, background: `${G.accent}12`, color: G.accent, border: `1px solid ${G.accent}`, fontSize: '12px', fontWeight: 'bold'}} 
-                  onClick={() => { setIsBatchModalOpen(false); nativeCameraRef.current?.click(); }}
+                  onClick={() => { setIsBatchModalOpen(false); openInAppCamera(); }}
                 >
-                  📸 Câmera do Celular
+                  📸 Tirar Mais Fotos
                 </button>
                 <button 
                   className="modal-btn" 

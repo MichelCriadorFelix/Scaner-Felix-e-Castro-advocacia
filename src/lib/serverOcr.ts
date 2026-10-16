@@ -7,8 +7,8 @@ import { ocrContextClientName } from './handwritingMode';
 // ── Leitura no servidor (/api/ocr-page e /api/gemini-text) ──────────────────────────────────
 // As chaves Gemini ficam só no servidor; o estado de cota/espera de cada uma é compartilhado entre abas e sócios.
 
-// A Vercel recusa corpo de requisição acima de ~4,5 MB. Reduz a imagem (JPEG) até caber em ~4 M de caracteres base64.
-const MAX_BASE64_CHARS = 4_000_000;
+// A Vercel recusa corpo de requisição acima de ~4,5 MB. Reduz a imagem (JPEG) até caber em ~2 M de caracteres base64 (ótima resolução e baixo consumo de RAM).
+const MAX_BASE64_CHARS = 2_000_000;
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

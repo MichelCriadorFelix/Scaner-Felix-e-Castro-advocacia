@@ -12,16 +12,11 @@ export const GEMINI_MODEL_OPTIONS = [
 ];
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
-// Ordem de tentativa: o modelo escolhido primeiro; no modo "melhor primeiro" (releitura automática)
-// os que leram melhor vêm na frente, independentemente do seletor.
-export function buildModelCascade(selected, bestFirst = false) {
+// Ordem de tentativa: o modelo escolhido pelo advogado SEMPRE vem em 1º lugar.
+// Os demais entram apenas como contingência se o modelo escolhido estiver indisponível.
+export function buildModelCascade(selected, _bestFirst = false) {
   const all = GEMINI_MODEL_OPTIONS.map(m => m.value);
   const sel = all.includes(selected) ? selected : DEFAULT_GEMINI_MODEL;
-  if (bestFirst) {
-    const best = ["gemini-3.8-flash", "gemini-3.5-flash"].filter(m => all.includes(m));
-    const ordered = [...best, sel, ...all];
-    return ordered.filter((m, i) => ordered.indexOf(m) === i);
-  }
   return [sel, ...all.filter(v => v !== sel)];
 }
 

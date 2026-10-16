@@ -33,6 +33,7 @@ import ApiStatusPanel from './components/ApiStatusPanel';
 import ScannerTab from './components/ScannerTab';
 import HistoryTab from './components/HistoryTab';
 import CompileModal from './components/CompileModal';
+import InAppCameraModal from './components/InAppCameraModal';
 
 
 // ── Componente principal ──────────────────────────────────────────────────────
@@ -348,9 +349,29 @@ export default function ScannerJuridico() {
   };
 
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+  const [isInAppCameraOpen, setIsInAppCameraOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
   const [appendingDoc, setAppendingDoc] = useState(null); // Documento original que está sendo expandido/continuado
+
+  const openInAppCamera = () => {
+    if (navigator?.mediaDevices?.getUserMedia) {
+      setIsInAppCameraOpen(true);
+    } else {
+      nativeCameraRef.current?.click();
+    }
+  };
+
+  const handleInAppCapturePage = (blob: Blob) => {
+    setCameraPages((prev: any[]) => [...prev, blob]);
+    backupPageToCloudInBackground(blob);
+    showToast(`✓ Página capturada com sucesso! (${cameraPages.length + 1} no lote)`, "success");
+  };
+
+  const handleFinishInAppBatch = () => {
+    setIsInAppCameraOpen(false);
+    setIsBatchModalOpen(true);
+  };
 
   // --- Auto-Save & Recovery Draft for Multi-Page Scans ---
   const [hasRecoverableBatch, setHasRecoverableBatch] = useState(false);
@@ -2117,56 +2138,40 @@ export default function ScannerJuridico() {
   // PRÓPRIO decodificador do navegador já entrega a imagem reduzida, sem nunca alocar o bitmap
   // gigante original — só then desenhamos essa versão já pequena num canvas pra gerar o arquivo
   // final que efetivamente usamos daqui em diante (preview, corte, lote, compilação).
-  const downscaleImageForSafeMemory = async (file, maxDim = 3000, quality = 0.92) => {
+  const downscaleImageForSafeMemory = async (file, maxDim = 1600, quality = 0.82) => {
     try {
-      const { width, height } = await new Promise((resolve, reject) => {
-        const probeUrl = URL.createObjectURL(file);
-        const probeImg = new Image();
-        probeImg.onload = () => {
-          const d = { width: probeImg.naturalWidth, height: probeImg.naturalHeight };
-          URL.revokeObjectURL(probeUrl);
-          resolve(d);
-        };
-        probeImg.onerror = (e) => { URL.revokeObjectURL(probeUrl); reject(e); };
-        probeImg.src = probeUrl;
-      });
-
-      if (!width || !height || Math.max(width, height) <= maxDim) {
-        return file; // Já está em tamanho seguro, não precisa reprocessar.
-      }
-
-      const scale = maxDim / Math.max(width, height);
-      const targetW = Math.max(1, Math.round(width * scale));
-      const targetH = Math.max(1, Math.round(height * scale));
-
-      const canvas = document.createElement('canvas');
-      canvas.width = targetW;
-      canvas.height = targetH;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return file;
-      ctx.imageSmoothingQuality = 'high';
-
       if (typeof createImageBitmap === "function") {
-        const bitmap = await createImageBitmap(file, { resizeWidth: targetW, resizeHeight: targetH, resizeQuality: "high" });
+        // Proba as dimensões diretamente pelo motor interno do navegador sem alocar imagem descompactada na RAM
+        const probe = await createImageBitmap(file);
+        const { width, height } = probe;
+        probe.close();
+
+        if (!width || !height) return file;
+        if (Math.max(width, height) <= maxDim) return file;
+
+        const scale = maxDim / Math.max(width, height);
+        const targetW = Math.max(1, Math.round(width * scale));
+        const targetH = Math.max(1, Math.round(height * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return file;
+        ctx.imageSmoothingQuality = 'medium';
+
+        const bitmap = await createImageBitmap(file, { resizeWidth: targetW, resizeHeight: targetH, resizeQuality: "medium" });
         ctx.drawImage(bitmap, 0, 0, targetW, targetH);
         bitmap.close();
-      } else {
-        // Fallback para navegadores muito antigos sem suporte a resize no createImageBitmap.
-        const img = await new Promise((resolve, reject) => {
-          const url = URL.createObjectURL(file);
-          const el = new Image();
-          el.onload = () => { resolve(el); };
-          el.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
-          el.src = url;
+
+        const blob: any = await new Promise((resolve, reject) => {
+          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falhou"))), "image/jpeg", quality);
         });
-        ctx.drawImage(img, 0, 0, targetW, targetH);
+        canvas.width = 0; canvas.height = 0;
+        return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: "image/jpeg" });
       }
 
-      const blob: any = await new Promise((resolve, reject) => {
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falhou"))), "image/jpeg", quality);
-      });
-      canvas.width = 0; canvas.height = 0;
-      return new File([blob], file.name, { type: "image/jpeg" });
+      return file;
     } catch (e) {
       console.error("[Downscale] Falha ao reduzir a foto com segurança, usando o arquivo original:", e);
       return file;
@@ -3721,7 +3726,7 @@ export default function ScannerJuridico() {
     );
   }
 
-  const appContextValue = { serverKeys, aiMode, appendingDoc, applyCrop, applyImagePreset, batchDocName, cameraPages, clearCloudBatchSession, clientSearch, clients, compilationCurrentIndex, compilationLogs, compilationLogsEndRef, compilationProgress, compilationStatusText, compilationTotal, compileCameraBatch, compileFolderTXT, confColor, crop, croppedImgRef, currentQueueIndex, deleteBatchDocumentsHandler, deleteClientHandler, deleteFromHistory, discardDraft, divergenceChoices, divergenceCustomText, docSearch, downloadFolderPDFsZip, drag, editedText, effectiveFolderTab, file, fileRefBatchImg, fileRefImg, fileRefPdf, forcePaidKey, getStableThumbUrl, goldStandard, handleBatchImageAdd, handleCompressAndDownload, handleCreateClient, handleDownloadLite, handleDownloadTXTFromHistory, handleDrop, handleEditPage, handleFiles, handleForcePaidKeyChange, handleHardHandwritingChange, handleModelChange, handleNativeCameraCapture, handleRefineTextWithAI, handleRenameClient, handleRenameDocument, handleSaveManualEdit, hardHandwriting, hasRecoverableBatch, history, imageBrightness, imageContrast, imagePreset, imageSaturation, isAborting, isBatchModalOpen, isCompiling, isCreatingClient, isCropping, isEditingText, isFineTuningOpen, isFolderArchived, isGrayscale, isMovingBatch, isRecovering, isRefiningText, keyErrors, keyUsage, loadFromHistory, moveBatchDocumentsHandler, moveDocumentHandler, movePage, moveSearch, movingItem, nativeCameraRef, newClientName, newClientRenameValue, newDocumentName, pdfQuality, pendingStrategicReview, preview, process, processBatch, processFolderOCR, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, removePageFromCloudBackup, renamingClient, renamingItem, result, rotateImage90, saveWithoutOCR, selectedClient, selectedDocIds, selectedModel, selectedStrategicAlerts, setAiMode, setAppendingDoc, setBatchDocName, setCameraPages, setClientSearch, setCompletedCrop, setCrop, setCroppingPageIndex, setDivergenceChoices, setDivergenceCustomText, setDocSearch, setDrag, setEditedText, setFile, setFolderTab, setGoldStandard, setImageBrightness, setImageContrast, setImagePreset, setImageSaturation, setIsAborting, setIsAuthSettingsOpen, setIsBatchModalOpen, setIsCompiling, setIsCreatingClient, setIsCropping, setIsEditingText, setIsFineTuningOpen, setIsGrayscale, setIsMovingBatch, setKeyErrors, setKeyUsage, setMoveSearch, setMovingItem, setNewClientName, setNewClientRenameValue, setNewDocumentName, setPdfQuality, setPreview, setProgressMsg, setQueue, setRenamingClient, setRenamingItem, setResult, setSelectedClient, setSelectedDocIds, setSelectedStrategicAlerts, setShowApiKeyDetails, setSortOrder, setStartPage, setTab, setUser, setViewingBatchPage, setViewingClient, showApiKeyDetails, showToast, skipCropAndAddPage, sortOrder, startAppendingPages, startPage, storageWarning, tab, toggleArchiveClient, uploadBatchWithoutOCR, user, viewingBatchPage, viewingClient, viewingPageLoading, viewingPageUrl };
+  const appContextValue = { serverKeys, aiMode, appendingDoc, applyCrop, applyImagePreset, batchDocName, cameraPages, clearCloudBatchSession, clientSearch, clients, compilationCurrentIndex, compilationLogs, compilationLogsEndRef, compilationProgress, compilationStatusText, compilationTotal, compileCameraBatch, compileFolderTXT, confColor, crop, croppedImgRef, currentQueueIndex, deleteBatchDocumentsHandler, deleteClientHandler, deleteFromHistory, discardDraft, divergenceChoices, divergenceCustomText, docSearch, downloadFolderPDFsZip, drag, editedText, effectiveFolderTab, file, fileRefBatchImg, fileRefImg, fileRefPdf, forcePaidKey, getStableThumbUrl, goldStandard, handleBatchImageAdd, handleCompressAndDownload, handleCreateClient, handleDownloadLite, handleDownloadTXTFromHistory, handleDrop, handleEditPage, handleFiles, handleForcePaidKeyChange, handleHardHandwritingChange, handleInAppCapturePage, handleFinishInAppBatch, handleModelChange, handleNativeCameraCapture, handleRefineTextWithAI, handleRenameClient, handleRenameDocument, handleSaveManualEdit, hardHandwriting, hasRecoverableBatch, history, imageBrightness, imageContrast, imagePreset, imageSaturation, isAborting, isBatchModalOpen, isCompiling, isCreatingClient, isCropping, isEditingText, isFineTuningOpen, isFolderArchived, isGrayscale, isInAppCameraOpen, isMovingBatch, isRecovering, isRefiningText, keyErrors, keyUsage, loadFromHistory, moveBatchDocumentsHandler, moveDocumentHandler, movePage, moveSearch, movingItem, nativeCameraRef, newClientName, newClientRenameValue, newDocumentName, openInAppCamera, pdfQuality, pendingStrategicReview, preview, process, processBatch, processFolderOCR, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, removePageFromCloudBackup, renamingClient, renamingItem, result, rotateImage90, saveWithoutOCR, selectedClient, selectedDocIds, selectedModel, selectedStrategicAlerts, setAiMode, setAppendingDoc, setBatchDocName, setCameraPages, setClientSearch, setCompletedCrop, setCrop, setCroppingPageIndex, setDivergenceChoices, setDivergenceCustomText, setDocSearch, setDrag, setEditedText, setFile, setFolderTab, setGoldStandard, setImageBrightness, setImageContrast, setImagePreset, setImageSaturation, setIsAborting, setIsAuthSettingsOpen, setIsBatchModalOpen, setIsCompiling, setIsCreatingClient, setIsCropping, setIsEditingText, setIsFineTuningOpen, setIsGrayscale, setIsInAppCameraOpen, setIsMovingBatch, setKeyErrors, setKeyUsage, setMoveSearch, setMovingItem, setNewClientName, setNewClientRenameValue, setNewDocumentName, setPdfQuality, setPreview, setProgressMsg, setQueue, setRenamingClient, setRenamingItem, setResult, setSelectedClient, setSelectedDocIds, setSelectedStrategicAlerts, setShowApiKeyDetails, setSortOrder, setStartPage, setTab, setUser, setViewingBatchPage, setViewingClient, showApiKeyDetails, showToast, skipCropAndAddPage, sortOrder, startAppendingPages, startPage, storageWarning, tab, toggleArchiveClient, uploadBatchWithoutOCR, user, viewingBatchPage, viewingClient, viewingPageLoading, viewingPageUrl };
 
   return (
     <AppContext.Provider value={appContextValue}>
@@ -3730,17 +3735,21 @@ export default function ScannerJuridico() {
       {/* Câmera em tempo real escondida no canvas e renderização */}
       <canvas ref={canvasRef} style={{ display: "none" }} />
 
-
-
-
-
-
-
       {/* Crop Modal */}
       <CropModal />
 
       {/* Batch Compile Modal */}
       <BatchCameraModal />
+
+      {/* In-App Camera Modal (Anti-crash / WebCam integrada) */}
+      <InAppCameraModal
+        isOpen={isInAppCameraOpen}
+        onClose={() => setIsInAppCameraOpen(false)}
+        onCapturePage={handleInAppCapturePage}
+        onFinishBatch={handleFinishInAppBatch}
+        pageCount={cameraPages.length}
+        onFallbackNative={() => nativeCameraRef.current?.click()}
+      />
 
       {/* Toast */}
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
