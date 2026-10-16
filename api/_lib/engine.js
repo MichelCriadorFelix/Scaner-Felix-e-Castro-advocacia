@@ -161,11 +161,31 @@ export class OcrEngine {
           this.say(`${label}: ${model} · chave ${cands.indexOf(key) + 1}/${cands.length}${pass > 0 ? ` · rodada ${pass + 1}/${passes}` : ''}...`);
           try {
             const req = build(model);
-            const callTimeout = Math.max(15000, Math.min(timeoutMs, phaseEnd - Date.now() + 10000));
+            const callTimeout = Math.max(35000, Math.min(timeoutMs, phaseEnd - Date.now() + 10000));
             const res = await this.callOnce(key, model, req, callTimeout);
-            let text = (res?.text || '').trim();
-            const finish = res?.candidates?.[0]?.finishReason;
-            if (!text) throw Object.assign(new Error('resposta vazia'), { soft: true });
+
+            let text = '';
+            const candidate = res?.candidates?.[0];
+            const finish = candidate?.finishReason;
+            const parts = candidate?.content?.parts || [];
+
+            if (finish === 'SAFETY') {
+              throw new Error('Página bloqueada pelo filtro de segurança do Google (conteúdo sensível/médico)');
+            }
+
+            const realParts = parts.filter((p) => !p.thought && typeof p.text === 'string');
+            if (realParts.length > 0) {
+              text = realParts.map((p) => p.text).join('').trim();
+            } else if (typeof res?.text === 'string' && res.text.trim()) {
+              text = res.text.trim();
+            } else if (parts.length > 0) {
+              text = parts.map((p) => p.text || '').join('').trim();
+            }
+
+            if (!text) {
+              const reason = finish ? ` (motivo: ${finish})` : '';
+              throw Object.assign(new Error(`resposta vazia da IA${reason}`), { emptyResponse: true });
+            }
             if (core.containsDegenerateRepetition(text)) throw Object.assign(new Error('resposta com repetição degenerada'), { soft: true });
             if (finish === 'MAX_TOKENS' && !imageParts) throw Object.assign(new Error('resposta cortada por limite de tokens'), { soft: true });
             if (finish === 'MAX_TOKENS') {
@@ -179,7 +199,7 @@ export class OcrEngine {
             return { text, model, key };
           } catch (e) {
             lastErr = e;
-            const c = e?.soft ? { kind: 'overload', msg: e.message } : classifyError(e);
+            const c = e?.emptyResponse ? { kind: 'other', msg: e.message } : (e?.soft ? { kind: 'overload', msg: e.message } : classifyError(e));
             this.attempts.push({ label, model, key: key.hash.slice(0, 6), ok: false, kind: c.kind, err: c.msg.slice(0, 120), ms: Date.now() - t0 });
             if (c.kind === 'invalid') this.pool.markInvalid(key.hash, c.msg.slice(0, 80));
             else if (c.kind === 'daily') this.pool.markDailyExhausted(key.hash, model);
@@ -227,9 +247,18 @@ export class OcrEngine {
           ...core.temperatureConfigFor(model, 0.1),
           maxOutputTokens: 65536,
           thinkingConfig: core.getThinkingConfigForModel(model, 'low'),
+          safetySettings: [
+            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
+          ],
         },
       }, 90000);
-      const more = (res?.text || '').trim();
+      const parts = res?.candidates?.[0]?.content?.parts || [];
+      const realParts = parts.filter((p) => !p.thought && typeof p.text === 'string');
+      const more = (realParts.length ? realParts.map((p) => p.text).join('') : (res?.text || '')).trim();
       if (!more || core.containsDegenerateRepetition(more)) return null;
       combined += more;
       if (res?.candidates?.[0]?.finishReason !== 'MAX_TOKENS') return core.containsDegenerateRepetition(combined) ? null : combined;
@@ -267,9 +296,9 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   first = await engine.generate({
     label: 'Leitura',
     models,
-    timeoutMs: hard ? 90000 : 80000,
+    timeoutMs: hard ? 100000 : 85000,
     passes: hard ? 4 : 3,
-    budgetMs: hard ? 120000 : 90000,
+    budgetMs: hard ? 220000 : 180000,
     imageParts: imgs,
     systemPrompt,
     build: (model) => ({
@@ -279,6 +308,13 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
         ...core.temperatureConfigFor(model, 0.1),
         maxOutputTokens: 65536,
         thinkingConfig: core.getThinkingConfigForModel(model, level, thinkBudget),
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
+        ],
       },
     }),
   });
