@@ -6,7 +6,7 @@ import { downloadTXT, downloadPDF, forceDownload } from '../lib/browserHelpers';
 import { supabase } from '../lib/supabaseClient';
 
 export default function ScannerTab() {
-  const { serverKeys, aiMode, clients, confColor, currentQueueIndex, discardDraft, drag, editedText, file, fileRefImg, fileRefPdf, goldStandard, handleCompressAndDownload, handleDownloadLite, handleDrop, handleFiles, handleNativeCameraCapture, handleRefineTextWithAI, handleSaveManualEdit, hasRecoverableBatch, isAborting, isBatchModalOpen, isEditingText, isFolderArchived, isRecovering, isRefiningText, nativeCameraRef, openInAppCamera, preview, process, processBatch, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, result, saveWithoutOCR, selectedClient, setAiMode, setDrag, setEditedText, setFile, setGoldStandard, setIsAborting, setIsCropping, setIsEditingText, setMovingItem, setPreview, setProgressMsg, setQueue, setResult, setSelectedClient, setStartPage, startAppendingPages, startPage, storageWarning, tab, uploadBatchWithoutOCR } = useApp();
+  const { serverKeys, aiMode, clients, confColor, currentQueueIndex, discardDraft, drag, editedText, file, fileRefImg, fileRefPdf, goldStandard, handleCompressAndDownload, handleDownloadLite, handleDrop, handleFiles, handleNativeCameraCapture, handleRefineTextWithAI, handleSaveManualEdit, hasRecoverableBatch, isAborting, isBatchModalOpen, isEditingText, isFolderArchived, isRecovering, isRefiningText, nativeCameraRef, preview, process, processBatch, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, result, saveWithoutOCR, selectedClient, setAiMode, setDrag, setEditedText, setFile, setGoldStandard, setIsAborting, setIsCropping, setIsEditingText, setMovingItem, setPreview, setProgressMsg, setQueue, setResult, setSelectedClient, setStartPage, startAppendingPages, startPage, storageWarning, tab, uploadBatchWithoutOCR } = useApp();
   return (
     <>
 {tab === "scanner" && (
@@ -81,10 +81,10 @@ export default function ScannerTab() {
                       <div className="action-desc">OCR inteligente</div>
                     </button>
 
-                    <button className="action-card action-card-full" onClick={openInAppCamera} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
+                    <button className="action-card action-card-full" onClick={() => nativeCameraRef.current?.click()} style={{ border: `1.5px solid ${G.accent}`, background: `${G.accent}12` }}>
                       <div className="action-icon" style={{ color: G.accent }}>📸</div>
-                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera Integrada Anti-Crash</div>
-                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Digitalização contínua sem travar nem reiniciar o celular</div>
+                      <div className="action-title" style={{ color: G.accent, fontWeight: 'bold' }}>Câmera do Celular</div>
+                      <div className="action-desc" style={{ color: G.text, opacity: 0.85 }}>Alta Qualidade, Abre Ajustes e Nitidez Imediatamente</div>
                     </button>
                   </div>
 
@@ -102,9 +102,9 @@ export default function ScannerTab() {
                     alignItems: 'flex-start',
                     gap: '10px'
                   }}>
-                    <span style={{ fontSize: '14px' }}>⚡</span>
+                    <span style={{ fontSize: '14px' }}>💡</span>
                     <div>
-                      <strong style={{ color: G.text }}>Modo Câmera Inteligente Ativado:</strong> A digitalização agora roda diretamente na tela sem fechar o navegador, garantindo que celulares de qualquer modelo capturem múltiplas páginas seguidas com total fluidez.
+                      <strong style={{ color: G.text }}>Modo Câmera do Celular:</strong> Ao tirar a foto com a câmera do celular, ela é otimizada e abre a tela de ajustes para recortar bordas, girar e aplicar filtros de nitidez e contraste.
                     </div>
                   </div>
                 </div>
@@ -601,7 +601,10 @@ export default function ScannerTab() {
               <input ref={fileRefPdf} type="file" accept="application/pdf" multiple style={{ display: "none" }}
                 onChange={e => handleFiles(e.target.files)} />
               <input ref={nativeCameraRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
-                onChange={e => handleNativeCameraCapture(e.target.files)} />
+                onChange={e => {
+                  handleNativeCameraCapture(e.target.files);
+                  e.target.value = '';
+                }} />
             </div>
           )}
     </>

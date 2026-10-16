@@ -7,7 +7,7 @@ export default function CropModal() {
   const { applyCrop, applyImagePreset, crop, croppedImgRef, file, imageBrightness, imageContrast, imagePreset, imageSaturation, isCropping, isFineTuningOpen, isGrayscale, preview, rotateImage90, setCompletedCrop, setCrop, setCroppingPageIndex, setImageBrightness, setImageContrast, setImagePreset, setImageSaturation, setIsBatchModalOpen, setIsCropping, setIsFineTuningOpen, setIsGrayscale, skipCropAndAddPage } = useApp();
   return (
     <>
-{isCropping && preview && file && file.type.startsWith("image/") && (
+{isCropping && preview && (
         <div className="modal-overlay" style={{zIndex: 110}}>
           <div style={{background: G.card, padding: '20px', borderRadius: '16px', width: '100%', maxWidth: '440px', border: `1px solid ${G.border}`, boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)'}}>
             <h3 style={{marginBottom: 14, fontFamily: 'Playfair Display', color: G.accent, fontSize: '18px', textAlign: 'center'}}>

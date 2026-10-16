@@ -33,7 +33,6 @@ import ApiStatusPanel from './components/ApiStatusPanel';
 import ScannerTab from './components/ScannerTab';
 import HistoryTab from './components/HistoryTab';
 import CompileModal from './components/CompileModal';
-import InAppCameraModal from './components/InAppCameraModal';
 
 
 // ── Componente principal ──────────────────────────────────────────────────────
@@ -349,29 +348,9 @@ export default function ScannerJuridico() {
   };
 
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
-  const [isInAppCameraOpen, setIsInAppCameraOpen] = useState(false);
   const [batchDocName, setBatchDocName] = useState("Documento_Escaneado");
   const [pdfQuality, setPdfQuality] = useState("media"); // leve, media, alta
   const [appendingDoc, setAppendingDoc] = useState(null); // Documento original que está sendo expandido/continuado
-
-  const openInAppCamera = () => {
-    if (navigator?.mediaDevices?.getUserMedia) {
-      setIsInAppCameraOpen(true);
-    } else {
-      nativeCameraRef.current?.click();
-    }
-  };
-
-  const handleInAppCapturePage = (blob: Blob) => {
-    setCameraPages((prev: any[]) => [...prev, blob]);
-    backupPageToCloudInBackground(blob);
-    showToast(`✓ Página capturada com sucesso! (${cameraPages.length + 1} no lote)`, "success");
-  };
-
-  const handleFinishInAppBatch = () => {
-    setIsInAppCameraOpen(false);
-    setIsBatchModalOpen(true);
-  };
 
   // --- Auto-Save & Recovery Draft for Multi-Page Scans ---
   const [hasRecoverableBatch, setHasRecoverableBatch] = useState(false);
@@ -2029,8 +2008,8 @@ export default function ScannerJuridico() {
         let cropWidth = completedCrop.width * scaleX;
         let cropHeight = completedCrop.height * scaleY;
 
-        // Limitar o tamanho final para não crashar a memória (max 3000px na maior dimensão para altíssima qualidade) no celular
-        const MAX_DIM = 3000;
+        // Limitar o tamanho final para não crashar a memória (max 2000px na maior dimensão para excelente nitidez sem OOM) no celular
+        const MAX_DIM = 2000;
         let scaleOutput = 1;
         if (cropWidth > MAX_DIM || cropHeight > MAX_DIM) {
           scaleOutput = Math.min(MAX_DIM / cropWidth, MAX_DIM / cropHeight);
@@ -2094,7 +2073,7 @@ export default function ScannerJuridico() {
     const canvas = document.createElement("canvas");
     
     // Limite rígido para evitar OOM (Out Of Memory) no rotate em celulares (Tela Branca)
-    const MAX_DIM = 3000;
+    const MAX_DIM = 2000;
     let scale = 1;
     if (img.naturalWidth > MAX_DIM || img.naturalHeight > MAX_DIM) {
        scale = Math.min(MAX_DIM / img.naturalWidth, MAX_DIM / img.naturalHeight);
@@ -2138,13 +2117,59 @@ export default function ScannerJuridico() {
   // PRÓPRIO decodificador do navegador já entrega a imagem reduzida, sem nunca alocar o bitmap
   // gigante original — só then desenhamos essa versão já pequena num canvas pra gerar o arquivo
   // final que efetivamente usamos daqui em diante (preview, corte, lote, compilação).
-  const downscaleImageForSafeMemory = async (file, maxDim = 1600, quality = 0.82) => {
+  // Lê dimensões do cabeçalho JPEG/PNG em < 5ms sem alocar a imagem descompactada na RAM
+  const getImageDimensionsFromBlob = async (blob: Blob): Promise<{ width: number; height: number }> => {
+    try {
+      const slice = await blob.slice(0, 65536).arrayBuffer();
+      const view = new DataView(slice);
+      if (view.byteLength > 4 && view.getUint16(0) === 0xFFD8) {
+        // JPEG SOI
+        let offset = 2;
+        while (offset < view.byteLength - 8) {
+          const marker = view.getUint16(offset);
+          offset += 2;
+          if (marker === 0xFFC0 || marker === 0xFFC1 || marker === 0xFFC2) {
+            const height = view.getUint16(offset + 3);
+            const width = view.getUint16(offset + 5);
+            if (width > 0 && height > 0) return { width, height };
+          }
+          if (marker === 0xFFDA || marker === 0xFFD9) break;
+          const len = view.getUint16(offset);
+          offset += len;
+        }
+      } else if (view.byteLength > 24 && view.getUint32(0) === 0x89504E47) {
+        // PNG
+        const width = view.getUint32(16);
+        const height = view.getUint32(20);
+        if (width > 0 && height > 0) return { width, height };
+      }
+    } catch (_) {}
+
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(blob);
+      img.onload = () => {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        URL.revokeObjectURL(url);
+        resolve({ width: w, height: h });
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve({ width: 0, height: 0 });
+      };
+      img.src = url;
+    });
+  };
+
+  // Câmeras de celulares atuais tiram fotos de 48, 64 ou até 108 megapixels.
+  // Usamos getImageDimensionsFromBlob para obter as dimensões sem decodificar pixels na RAM,
+  // e então usamos createImageBitmap(file, { resizeWidth, resizeHeight }) para que o decodificador nativo
+  // entregue a imagem diretamente na resolução alvo (1800px), evitando o pico de 200MB de RAM.
+  const downscaleImageForSafeMemory = async (file: any, maxDim = 1800, quality = 0.85) => {
     try {
       if (typeof createImageBitmap === "function") {
-        // Proba as dimensões diretamente pelo motor interno do navegador sem alocar imagem descompactada na RAM
-        const probe = await createImageBitmap(file);
-        const { width, height } = probe;
-        probe.close();
+        const { width, height } = await getImageDimensionsFromBlob(file);
 
         if (!width || !height) return file;
         if (Math.max(width, height) <= maxDim) return file;
@@ -2168,7 +2193,7 @@ export default function ScannerJuridico() {
           canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falhou"))), "image/jpeg", quality);
         });
         canvas.width = 0; canvas.height = 0;
-        return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: "image/jpeg" });
+        return new File([blob], (file.name || 'foto.jpg').replace(/\.[^.]+$/, '.jpg'), { type: "image/jpeg" });
       }
 
       return file;
@@ -2235,7 +2260,7 @@ export default function ScannerJuridico() {
         const image = croppedImgRef.current;
         const canvas = document.createElement('canvas');
         
-        const MAX_DIM = 3000;
+        const MAX_DIM = 2000;
         let scaleOutput = 1;
         if (image.naturalWidth > MAX_DIM || image.naturalHeight > MAX_DIM) {
            scaleOutput = Math.min(MAX_DIM / image.naturalWidth, MAX_DIM / image.naturalHeight);
@@ -2284,6 +2309,9 @@ export default function ScannerJuridico() {
     let pageBlob;
     try {
       pageBlob = await resolvePageBlob(page);
+      if (pageBlob && (!pageBlob.type || !pageBlob.type.startsWith("image/"))) {
+        pageBlob = new Blob([pageBlob], { type: "image/jpeg" });
+      }
     } catch (e) {
       console.error(e);
       showToast("Não foi possível baixar esta página da nuvem para editar.", "error");
@@ -3726,7 +3754,7 @@ export default function ScannerJuridico() {
     );
   }
 
-  const appContextValue = { serverKeys, aiMode, appendingDoc, applyCrop, applyImagePreset, batchDocName, cameraPages, clearCloudBatchSession, clientSearch, clients, compilationCurrentIndex, compilationLogs, compilationLogsEndRef, compilationProgress, compilationStatusText, compilationTotal, compileCameraBatch, compileFolderTXT, confColor, crop, croppedImgRef, currentQueueIndex, deleteBatchDocumentsHandler, deleteClientHandler, deleteFromHistory, discardDraft, divergenceChoices, divergenceCustomText, docSearch, downloadFolderPDFsZip, drag, editedText, effectiveFolderTab, file, fileRefBatchImg, fileRefImg, fileRefPdf, forcePaidKey, getStableThumbUrl, goldStandard, handleBatchImageAdd, handleCompressAndDownload, handleCreateClient, handleDownloadLite, handleDownloadTXTFromHistory, handleDrop, handleEditPage, handleFiles, handleForcePaidKeyChange, handleHardHandwritingChange, handleInAppCapturePage, handleFinishInAppBatch, handleModelChange, handleNativeCameraCapture, handleRefineTextWithAI, handleRenameClient, handleRenameDocument, handleSaveManualEdit, hardHandwriting, hasRecoverableBatch, history, imageBrightness, imageContrast, imagePreset, imageSaturation, isAborting, isBatchModalOpen, isCompiling, isCreatingClient, isCropping, isEditingText, isFineTuningOpen, isFolderArchived, isGrayscale, isInAppCameraOpen, isMovingBatch, isRecovering, isRefiningText, keyErrors, keyUsage, loadFromHistory, moveBatchDocumentsHandler, moveDocumentHandler, movePage, moveSearch, movingItem, nativeCameraRef, newClientName, newClientRenameValue, newDocumentName, openInAppCamera, pdfQuality, pendingStrategicReview, preview, process, processBatch, processFolderOCR, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, removePageFromCloudBackup, renamingClient, renamingItem, result, rotateImage90, saveWithoutOCR, selectedClient, selectedDocIds, selectedModel, selectedStrategicAlerts, setAiMode, setAppendingDoc, setBatchDocName, setCameraPages, setClientSearch, setCompletedCrop, setCrop, setCroppingPageIndex, setDivergenceChoices, setDivergenceCustomText, setDocSearch, setDrag, setEditedText, setFile, setFolderTab, setGoldStandard, setImageBrightness, setImageContrast, setImagePreset, setImageSaturation, setIsAborting, setIsAuthSettingsOpen, setIsBatchModalOpen, setIsCompiling, setIsCreatingClient, setIsCropping, setIsEditingText, setIsFineTuningOpen, setIsGrayscale, setIsInAppCameraOpen, setIsMovingBatch, setKeyErrors, setKeyUsage, setMoveSearch, setMovingItem, setNewClientName, setNewClientRenameValue, setNewDocumentName, setPdfQuality, setPreview, setProgressMsg, setQueue, setRenamingClient, setRenamingItem, setResult, setSelectedClient, setSelectedDocIds, setSelectedStrategicAlerts, setShowApiKeyDetails, setSortOrder, setStartPage, setTab, setUser, setViewingBatchPage, setViewingClient, showApiKeyDetails, showToast, skipCropAndAddPage, sortOrder, startAppendingPages, startPage, storageWarning, tab, toggleArchiveClient, uploadBatchWithoutOCR, user, viewingBatchPage, viewingClient, viewingPageLoading, viewingPageUrl };
+  const appContextValue = { serverKeys, aiMode, appendingDoc, applyCrop, applyImagePreset, batchDocName, cameraPages, clearCloudBatchSession, clientSearch, clients, compilationCurrentIndex, compilationLogs, compilationLogsEndRef, compilationProgress, compilationStatusText, compilationTotal, compileCameraBatch, compileFolderTXT, confColor, crop, croppedImgRef, currentQueueIndex, deleteBatchDocumentsHandler, deleteClientHandler, deleteFromHistory, discardDraft, divergenceChoices, divergenceCustomText, docSearch, downloadFolderPDFsZip, drag, editedText, effectiveFolderTab, file, fileRefBatchImg, fileRefImg, fileRefPdf, forcePaidKey, getStableThumbUrl, goldStandard, handleBatchImageAdd, handleCompressAndDownload, handleCreateClient, handleDownloadLite, handleDownloadTXTFromHistory, handleDrop, handleEditPage, handleFiles, handleForcePaidKeyChange, handleHardHandwritingChange, handleModelChange, handleNativeCameraCapture, handleRefineTextWithAI, handleRenameClient, handleRenameDocument, handleSaveManualEdit, hardHandwriting, hasRecoverableBatch, history, imageBrightness, imageContrast, imagePreset, imageSaturation, isAborting, isBatchModalOpen, isCompiling, isCreatingClient, isCropping, isEditingText, isFineTuningOpen, isFolderArchived, isGrayscale, isMovingBatch, isRecovering, isRefiningText, keyErrors, keyUsage, loadFromHistory, moveBatchDocumentsHandler, moveDocumentHandler, movePage, moveSearch, movingItem, nativeCameraRef, newClientName, newClientRenameValue, newDocumentName, pdfQuality, pendingStrategicReview, preview, process, processBatch, processFolderOCR, processHistoryItem, processing, progress, progressMsg, queue, recoverDraft, recoverFailedPages, removePageFromCloudBackup, renamingClient, renamingItem, result, rotateImage90, saveWithoutOCR, selectedClient, selectedDocIds, selectedModel, selectedStrategicAlerts, setAiMode, setAppendingDoc, setBatchDocName, setCameraPages, setClientSearch, setCompletedCrop, setCrop, setCroppingPageIndex, setDivergenceChoices, setDivergenceCustomText, setDocSearch, setDrag, setEditedText, setFile, setFolderTab, setGoldStandard, setImageBrightness, setImageContrast, setImagePreset, setImageSaturation, setIsAborting, setIsAuthSettingsOpen, setIsBatchModalOpen, setIsCompiling, setIsCreatingClient, setIsCropping, setIsEditingText, setIsFineTuningOpen, setIsGrayscale, setIsMovingBatch, setKeyErrors, setKeyUsage, setMoveSearch, setMovingItem, setNewClientName, setNewClientRenameValue, setNewDocumentName, setPdfQuality, setPreview, setProgressMsg, setQueue, setRenamingClient, setRenamingItem, setResult, setSelectedClient, setSelectedDocIds, setSelectedStrategicAlerts, setShowApiKeyDetails, setSortOrder, setStartPage, setTab, setUser, setViewingBatchPage, setViewingClient, showApiKeyDetails, showToast, skipCropAndAddPage, sortOrder, startAppendingPages, startPage, storageWarning, tab, toggleArchiveClient, uploadBatchWithoutOCR, user, viewingBatchPage, viewingClient, viewingPageLoading, viewingPageUrl };
 
   return (
     <AppContext.Provider value={appContextValue}>
@@ -3741,15 +3769,7 @@ export default function ScannerJuridico() {
       {/* Batch Compile Modal */}
       <BatchCameraModal />
 
-      {/* In-App Camera Modal (Anti-crash / WebCam integrada) */}
-      <InAppCameraModal
-        isOpen={isInAppCameraOpen}
-        onClose={() => setIsInAppCameraOpen(false)}
-        onCapturePage={handleInAppCapturePage}
-        onFinishBatch={handleFinishInAppBatch}
-        pageCount={cameraPages.length}
-        onFallbackNative={() => nativeCameraRef.current?.click()}
-      />
+
 
       {/* Toast */}
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
