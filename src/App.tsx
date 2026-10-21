@@ -16,7 +16,7 @@ import { IdentityDivergence, generateFolderPrePetitionAudit, generateAiConsisten
 import { supabase } from './lib/supabaseClient';
 import { G, css } from './lib/theme';
 import { compressImage, compressPDF } from './lib/pdfCompress';
-import { fetchItemBlob, convertSingleImageToPDF, extractPDFHybrid, extractImageHybrid } from './lib/documentExtract';
+import { fetchItemBlob, convertSingleImageToPDF, calculateFitDimensions, extractPDFHybrid, extractImageHybrid } from './lib/documentExtract';
 import { calculateDocumentHash, getCachedOCR, setCachedOCR } from './lib/ocrCache';
 import { detectFailedPages, extractStructuredTextFromPDFPage, isGenuineDigitalText, getRealConfidence, cleanRepeatedWordsInName } from './lib/textQuality';
 import { loadPDFJS, PDFJS_BASE_OPTIONS } from './lib/loaders';
@@ -2420,27 +2420,22 @@ export default function ScannerJuridico() {
       else { maxW = 3200; q = 0.95; } // Alta - Extraordinariamente nítida
 
       let scaleCanvas = 1;
-      if (img.width > maxW) scaleCanvas = maxW / img.width;
+      const maxDim = maxW;
+      if (img.width > maxDim || img.height > maxDim) {
+        scaleCanvas = Math.min(maxDim / img.width, maxDim / img.height);
+      }
 
       const compCanvas = document.createElement("canvas");
-      compCanvas.width = img.width * scaleCanvas;
-      compCanvas.height = img.height * scaleCanvas;
+      compCanvas.width = Math.floor(img.width * scaleCanvas);
+      compCanvas.height = Math.floor(img.height * scaleCanvas);
       const compCtx = compCanvas.getContext("2d");
       compCtx.drawImage(img, 0, 0, compCanvas.width, compCanvas.height);
       const compressedDataUrl = compCanvas.toDataURL("image/jpeg", q);
 
       const pdfW = 210;
       const pdfH = 297;
-      let imgW = pdfW;
-      let imgH = (compCanvas.height * pdfW) / compCanvas.width;
       
-      if (imgH > pdfH) {
-         imgH = pdfH;
-         imgW = (compCanvas.width * pdfH) / compCanvas.height;
-      }
-      
-      const x = (pdfW - imgW) / 2;
-      const y = (pdfH - imgH) / 2;
+      const { imgW, imgH, x, y } = calculateFitDimensions(compCanvas.width, compCanvas.height, pdfW, pdfH);
 
       doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, pdfQuality === 'alta' ? 'SLOW' : 'FAST');
       

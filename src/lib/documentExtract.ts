@@ -355,6 +355,59 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
     fromCache: false
   };
 }
+/**
+ * Calcula as dimensões e posicionamento de uma imagem em uma folha A4 (210x297mm)
+ * garantindo:
+ * 1. Margens de segurança elegantes (evita colar nas extremidades e corte por impressoras/PJe).
+ * 2. Proporção exata (aspect ratio) 100% preservada, sem distorcer nem esticar.
+ * 3. Documentos horizontais/pequenos (como RG aberto, CNH, carteirinhas) não são esticados
+ *    até a largura total da folha (210mm), ficando no tamanho real natural (~15.5cm).
+ */
+export function calculateFitDimensions(
+  imgWidth: number,
+  imgHeight: number,
+  pdfW: number = 210,
+  pdfH: number = 297
+): { imgW: number; imgH: number; x: number; y: number } {
+  if (!imgWidth || !imgHeight) {
+    return { imgW: pdfW, imgH: pdfH, x: 0, y: 0 };
+  }
+
+  const imgAspect = imgWidth / imgHeight;
+
+  // Margens de segurança na folha A4 (10mm lateral, 12mm superior/inferior)
+  const marginX = 10;
+  const marginY = 12;
+
+  const maxContentW = pdfW - (marginX * 2); // 190mm
+  const maxContentH = pdfH - (marginY * 2); // 273mm
+
+  let targetMaxW = maxContentW;
+  let targetMaxH = maxContentH;
+
+  // Se for documento horizontal (ex: RG aberto, CNH, carteirinha ou comprovante deitado):
+  // Não estica até 190/210mm de borda a borda. Limita a ~155mm, que é a largura física real
+  // de um RG aberto (14.8cm x 10.2cm).
+  if (imgAspect > 1.15) {
+    targetMaxW = Math.min(maxContentW, 155);
+  }
+
+  let imgW = targetMaxW;
+  let imgH = imgW / imgAspect;
+
+  // Se a altura calculada exceder o limite vertical disponível, ajusta pela altura
+  if (imgH > targetMaxH) {
+    imgH = targetMaxH;
+    imgW = imgH * imgAspect;
+  }
+
+  // Centralização precisa na página A4
+  const x = (pdfW - imgW) / 2;
+  const y = (pdfH - imgH) / 2;
+
+  return { imgW, imgH, x, y };
+}
+
 export async function convertSingleImageToPDF(file) {
   const jsPDF = await loadJSPDF();
   const doc = new jsPDF({ unit: "mm", format: "a4" });
@@ -373,31 +426,24 @@ export async function convertSingleImageToPDF(file) {
   const compCanvas = document.createElement("canvas");
   const compCtx = compCanvas.getContext("2d");
   
-  // Compressão Média
   let scale = 1;
-  const MAX_SIZE = 1200;
+  const MAX_SIZE = 2048;
   if (img.width > MAX_SIZE || img.height > MAX_SIZE) {
      scale = Math.min(MAX_SIZE / img.width, MAX_SIZE / img.height);
   }
   
-  compCanvas.width = img.width * scale;
-  compCanvas.height = img.height * scale;
+  compCanvas.width = Math.floor(img.width * scale);
+  compCanvas.height = Math.floor(img.height * scale);
   compCtx.drawImage(img, 0, 0, compCanvas.width, compCanvas.height);
   
-  const compressedDataUrl = compCanvas.toDataURL("image/jpeg", 0.7);
+  const compressedDataUrl = compCanvas.toDataURL("image/jpeg", 0.88);
   
-  let imgW = (compCanvas.width * pdfH) / compCanvas.height;
-  let imgH = (compCanvas.height * pdfW) / compCanvas.width;
-  
-  if (imgH > pdfH) {
-     imgH = pdfH;
-     imgW = (compCanvas.width * pdfH) / compCanvas.height;
-  }
-  
-  const x = (pdfW - imgW) / 2;
-  const y = (pdfH - imgH) / 2;
+  const { imgW, imgH, x, y } = calculateFitDimensions(compCanvas.width, compCanvas.height, pdfW, pdfH);
 
   doc.addImage(compressedDataUrl, 'JPEG', x, y, imgW, imgH, undefined, 'FAST');
+  
+  compCanvas.width = 0;
+  compCanvas.height = 0;
   URL.revokeObjectURL(blobUrl);
 
   const pdfBlob = doc.output('blob');
