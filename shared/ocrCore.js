@@ -9,9 +9,7 @@ export const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
   { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
   { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (manuscritos difíceis)" },
-  { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (novo, eficiente)" },
-  { value: "gemini-4-argon", label: "Gemini 4 Argon (só chave paga)" },
-  { value: "gemini-4-carbon", label: "Gemini 4 Carbon (só chave paga)" },
+  { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (novo, grátis)" },
 ];
 // Modelos SEM cota gratuita na Gemini API: só funcionam com a chave paga (as gratuitas dão 429). O servidor usa só ela.
 export const PAID_ONLY_MODELS = ["gemini-4-argon", "gemini-4-carbon"];
