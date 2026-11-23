@@ -9,7 +9,12 @@ export const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
   { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
   { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (manuscritos difíceis)" },
+  { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (novo, eficiente)" },
+  { value: "gemini-4-argon", label: "Gemini 4 Argon (só chave paga)" },
+  { value: "gemini-4-carbon", label: "Gemini 4 Carbon (só chave paga)" },
 ];
+// Modelos SEM cota gratuita na Gemini API: só funcionam com a chave paga (as gratuitas dão 429). O servidor usa só ela.
+export const PAID_ONLY_MODELS = ["gemini-4-argon", "gemini-4-carbon"];
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
 // Ordem de tentativa: o modelo escolhido pelo advogado NUNCA é trocado por outro modelo.
@@ -26,7 +31,7 @@ export function buildModelCascade(selected, fallback = false) {
 // Gemini 3.x: a Google recomenda MANTER a temperatura padrão (1.0) — valores baixos podem causar
 // loop e degradação. Só a geração anterior (2.5) segue com temperatura baixa.
 export function temperatureConfigFor(model, desired) {
-  return /^gemini-3/.test(model) ? {} : { temperature: desired };
+  return /^gemini-[34]/.test(model) ? {} : { temperature: desired };
 }
 
 // Os Flash-Lite (3.1/3.5) e toda a linha 3.x aceitam "thinkingLevel". O 2.5-flash NÃO aceita (400

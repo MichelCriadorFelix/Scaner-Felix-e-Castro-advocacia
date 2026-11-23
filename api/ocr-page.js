@@ -4,7 +4,7 @@
 import { authenticate } from './_lib/auth.js';
 import { KeyPool, loadServerKeys } from './_lib/pool.js';
 import { readPage, probeKeys } from './_lib/engine.js';
-import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL } from '../shared/ocrCore.js';
+import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, PAID_ONLY_MODELS } from '../shared/ocrCore.js';
 
 export const config = {
   maxDuration: 290,
@@ -51,12 +51,15 @@ export default async function handler(req, res) {
   };
   if (!imageBase64 || typeof imageBase64 !== 'string') return res.status(400).json({ ok: false, error: 'imageBase64 ausente.' });
 
-  const keys = loadServerKeys({ includePaid: !!includePaid });
-  if (!keys.length) return res.status(500).json({ ok: false, error: 'Nenhuma chave Gemini configurada no servidor.' });
-
-  const pool = new KeyPool(auth.db, keys);
   const allowed = GEMINI_MODEL_OPTIONS.map((m) => m.value);
   const selected = allowed.includes(preferredModel) ? preferredModel : DEFAULT_GEMINI_MODEL;
+  // Argon/Carbon não têm cota grátis: usa SÓ a chave paga (as gratuitas só dariam 429).
+  const paidOnly = PAID_ONLY_MODELS.includes(selected);
+  let keys = loadServerKeys({ includePaid: !!includePaid || paidOnly });
+  if (paidOnly) keys = keys.filter((k) => k.paid);
+  if (!keys.length) return res.status(500).json({ ok: false, error: paidOnly ? 'Este modelo exige a chave paga (API_KEY_PAGA), que não está configurada.' : 'Nenhuma chave Gemini configurada no servidor.' });
+
+  const pool = new KeyPool(auth.db, keys);
 
   // Modo streaming (linhas JSON): o navegador vê o andamento em tempo real (qual modelo/chave, 2ª leitura, conferência)
   // em vez de esperar minutos sem nenhuma resposta.

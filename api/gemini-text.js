@@ -3,7 +3,7 @@
 import { authenticate } from './_lib/auth.js';
 import { KeyPool, loadServerKeys } from './_lib/pool.js';
 import { OcrEngine } from './_lib/engine.js';
-import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, buildModelCascade, temperatureConfigFor, getThinkingConfigForModel } from '../shared/ocrCore.js';
+import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, PAID_ONLY_MODELS, buildModelCascade, temperatureConfigFor, getThinkingConfigForModel } from '../shared/ocrCore.js';
 
 export const config = {
   maxDuration: 120,
@@ -23,11 +23,12 @@ export default async function handler(req, res) {
   if (!text || typeof text !== 'string') return res.status(400).json({ ok: false, error: 'text ausente.' });
   if (text.length > 400000) return res.status(413).json({ ok: false, error: 'texto grande demais.' });
 
-  const keys = loadServerKeys({ includePaid: !!includePaid });
-  if (!keys.length) return res.status(500).json({ ok: false, error: 'Nenhuma chave Gemini configurada no servidor.' });
-
   const allowed = GEMINI_MODEL_OPTIONS.map((m) => m.value);
   const selected = allowed.includes(preferredModel) ? preferredModel : DEFAULT_GEMINI_MODEL;
+  const paidOnly = PAID_ONLY_MODELS.includes(selected);
+  let keys = loadServerKeys({ includePaid: !!includePaid || paidOnly });
+  if (paidOnly) keys = keys.filter((k) => k.paid);
+  if (!keys.length) return res.status(500).json({ ok: false, error: paidOnly ? 'Este modelo exige a chave paga (API_KEY_PAGA), que não está configurada.' : 'Nenhuma chave Gemini configurada no servidor.' });
   const models = buildModelCascade(selected, false);
   const level = ['low', 'medium', 'high'].includes(thinking) ? thinking : null;
   const perCall = Math.min(100000, Math.max(10000, Number(timeoutMs) || 60000));
