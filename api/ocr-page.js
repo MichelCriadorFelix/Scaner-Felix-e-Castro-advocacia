@@ -46,6 +46,7 @@ export default async function handler(req, res) {
   const rawOpts = (body && typeof body.opts === 'object' && body.opts) || {};
   const opts = {
     vocab: rawOpts.vocab === false ? false : true,
+    noEscalate: rawOpts.noEscalate === true, // só pra medir: não relê sozinho em modo difícil
     thinkingBudget: Number(rawOpts.thinkingBudget) > 0 ? Math.min(24576, Number(rawOpts.thinkingBudget)) : undefined,
     zoom: Array.isArray(rawOpts.zoom) ? rawOpts.zoom.filter((z) => typeof z === 'string' && z.length < 1500000).slice(0, 4) : [],
   };

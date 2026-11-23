@@ -332,7 +332,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   let finalModel = first.model;
 
   // Página normal que a própria IA descreve como MANUSCRITA: releitura em modo detalhado no MESMO modelo
-  if (!hard && !skipEscalation && looksHandwritten(text) && engine.remaining() > 90000) {
+  if (!hard && !skipEscalation && !opts.noEscalate && looksHandwritten(text) && engine.remaining() > 90000) {
     engine.note('Página manuscrita detectada — relendo em modo detalhado (conferência dupla)...');
     try {
       const deep = await readPage({ pool, imageBase64, mimeType, hard: true, clientName, bestFirst: false, preferredModel, deadline, log, skipEscalation: true, opts });
