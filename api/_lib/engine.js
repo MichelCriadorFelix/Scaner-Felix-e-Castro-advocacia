@@ -195,7 +195,8 @@ export class OcrEngine {
             if (accept && !accept(text)) throw Object.assign(new Error('resposta descartada pela checagem de sanidade'), { soft: true });
             this.pool.markSuccess(key.hash, model);
             if (isFast) this.pool.clearModelCooling(model);
-            this.attempts.push({ label, model, key: key.hash.slice(0, 6), ok: true, ms: Date.now() - t0 });
+            const um = res?.usageMetadata || {};
+            this.attempts.push({ label, model, key: key.hash.slice(0, 6), ok: true, ms: Date.now() - t0, tok: { in: um.promptTokenCount || 0, out: um.candidatesTokenCount || 0, think: um.thoughtsTokenCount || 0 } });
             return { text, model, key };
           } catch (e) {
             lastErr = e;
