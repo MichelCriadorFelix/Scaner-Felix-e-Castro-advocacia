@@ -349,7 +349,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     }
   }
 
-  if (hard) {
+  if (hard && !opts.lean) {
     // 2ª leitura independente, no MESMO modelo da 1ª (temperatura alta, pra errar diferente).
     let second = null;
     if (engine.remaining() > 75000) {

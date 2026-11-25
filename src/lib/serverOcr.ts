@@ -116,7 +116,19 @@ export async function extractPageViaServer(
 
   if (!result?.ok || !result.text) {
     console.warn('[Leitura servidor] Falhou:', result?.error, result?.attempts);
+    // Resumo humano do que aconteceu em cada modelo (ex.: "3.8-flash: sobrecarregado (503) em 12 chaves"), pra tela
+    // mostrar o MOTIVO em vez de só "falhou".
+    const label: Record<string, string> = { overload: 'sobrecarregado (503)', minute: 'limite por minuto (429)', daily: 'cota do dia esgotada', unavailable: 'sem acesso', invalid: 'chave inválida', bad: 'pedido recusado (400)', other: 'sem resposta' };
+    const groups: Record<string, Record<string, number>> = {};
+    for (const a of (result?.attempts || [])) {
+      if (a.ok) continue;
+      const m = String(a.model || '?').replace('gemini-', '');
+      groups[m] = groups[m] || {};
+      groups[m][a.kind || 'other'] = (groups[m][a.kind || 'other'] || 0) + 1;
+    }
+    const summary = Object.entries(groups).map(([m, ks]) => `${m}: ` + Object.entries(ks).map(([k, n]) => `${label[k] || k} ×${n}`).join(', ')).join(' | ') || String(result?.error || 'sem resposta').slice(0, 120);
     const err: any = new Error(`Leitura no servidor falhou: ${result?.error || 'sem resposta'}`);
+    err.summary = summary;
     err.retryAfterMs = Number(result?.retryAfterMs) || 20000;
     throw err;
   }

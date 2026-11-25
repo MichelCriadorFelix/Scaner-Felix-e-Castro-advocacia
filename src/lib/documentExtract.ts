@@ -75,8 +75,8 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
   const pagePercent = (i: number) => parallelMode ? Math.round((doneCount / totalPages) * 100) : Math.round(((i - startIdx + 1) / totalPages) * 100);
   const pp = (i: number, msg: string) => onProgress(pagePercent(i), parallelMode ? `[Pág ${i}] ${msg}` : msg);
 
-  const ocrFallback = async (pageNum: number, blob: Blob): Promise<{ frag: string; conf: number; evaluated: number }> => {
-    pp(pageNum, `Pág ${pageNum}: Falha na IA. Acionando OCR Local (Contingência)...`);
+  const ocrFallback = async (pageNum: number, blob: Blob, reason: string = ''): Promise<{ frag: string; conf: number; evaluated: number }> => {
+    pp(pageNum, `Pág ${pageNum}: Falha na IA${reason ? ` (${reason})` : ''}. Acionando OCR Local (Contingência)...`);
     if (!tesseractWorker) {
       tesseractWorker = await Tesseract.createWorker("por+eng", 1, { logger: () => {} });
     }
@@ -196,7 +196,7 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
                   const retryScale = Number((window as any).lexscan_retry_scale) || 1; // só os testes mexem nisso
                   const waitMs = Math.round(Math.min(60000, Math.max(Number(aiTryErr?.retryAfterMs) || 15000, 15000 * aiTry)) * retryScale);
                   cooldownUntil = Math.max(cooldownUntil, Date.now() + waitMs);
-                  pp(i, `Google ocupado — nova tentativa da IA em ${Math.round(waitMs / 1000)}s (${aiTry}/3), sem cair no OCR local...`);
+                  pp(i, `IA indisponível${aiTryErr?.summary ? ` — ${aiTryErr.summary}` : ''}. Nova tentativa em ${Math.round(waitMs / 1000)}s (${aiTry}/3), sem cair no OCR local...`);
                   await new Promise(r => setTimeout(r, waitMs));
                 }
               }
@@ -230,7 +230,7 @@ export async function extractPDFHybrid(file: File | Blob, onProgressRaw: (percen
               console.warn(`[Pág ${i}] Falha geral na IA após tentativas em todas as chaves:`, aiErr);
               if (window.lexscan_abort) throw new Error("ABORT_BY_USER");
               aiFailed = true;
-              const fb = await ocrFallback(i, enhancedBlob);
+              const fb = await ocrFallback(i, enhancedBlob, String((aiErr as any)?.summary || (aiErr as any)?.message || '').slice(0, 160));
               frag += fb.frag; conf += fb.conf; evaluated += fb.evaluated;
               pageSuccess = true;
             }
