@@ -127,6 +127,17 @@ export class OcrEngine {
         if (Date.now() > phaseEnd) break;
         // Outras leituras em paralelo (outras instâncias) também marcam chaves: relê o estado a cada rodada.
         if (pass > 0) await this.pool.refresh(model);
+        // TODAS as chaves em espera (limite por minuto do Google): ESPERA o limite voltar em vez de martelar de novo,
+        // o que só renova o bloqueio (foi assim que a procuração do Waldomiro falhava em ciclo, 14 chamadas x 3 tentativas).
+        if (this.pool.readyCount(model) === 0) {
+          const w0 = this.pool.nextWaitMs(model);
+          if (w0 !== null && Date.now() + w0 + 500 < phaseEnd) {
+            const w = Math.min(w0 + 500, 65000);
+            this.say(`${label}: limite por minuto do Google em todas as chaves de ${model} — aguardando ${Math.round(w / 1000)}s...`);
+            await sleep(w);
+            await this.pool.refresh(model);
+          }
+        }
         let cands = this.pool.candidates(model);
         if (!cands.length) {
           // Chaves só ESPERANDO (limite por minuto/sobrecarga): espera a primeira voltar em vez de desistir do modelo.

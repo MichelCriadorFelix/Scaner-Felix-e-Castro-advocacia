@@ -90,6 +90,21 @@ export class KeyPool {
     this.touch(MODEL_ROW, model);
   }
 
+  // Quantas chaves NÃO estão bloqueadas agora (cota do dia, sem acesso ou em espera de limite por minuto).
+  // candidates() sempre devolve algo (desbloqueio de emergência), então é ESTE número que diz se vale esperar.
+  readyCount(model) {
+    const now = Date.now();
+    let n = 0;
+    for (const k of this.keys) {
+      const r = this.row(k.hash, model);
+      if (r.daily_exhausted_date && r.daily_exhausted_date >= this.today) continue;
+      if (r.unavailable_until && new Date(r.unavailable_until).getTime() > now) continue;
+      if (r.exhausted_until && new Date(r.exhausted_until).getTime() > now) continue;
+      n++;
+    }
+    return n;
+  }
+
   // Quanto falta (ms) até a primeira chave "em espera" deste modelo voltar; null se nenhuma está só esperando.
   nextWaitMs(model) {
     const now = Date.now();
@@ -231,7 +246,7 @@ export class KeyPool {
     });
   }
 
-  markRateLimited(hash, model, seconds = 20) {
+  markRateLimited(hash, model, seconds = 60) {
     const r = this.row(hash, model);
     r.exhausted_until = new Date(Date.now() + seconds * 1000).toISOString();
     r.last_error = '429 limite por minuto';
