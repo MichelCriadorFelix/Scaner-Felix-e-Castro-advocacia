@@ -122,6 +122,7 @@ export class OcrEngine {
       // Permite usar todas as chaves disponíveis no pool (sem cortar na 5ª chave!)
       const keysPerRound = isFast ? 3 : Math.min(6, Math.max(3, this.pool.keys.length));
       let badModel = false;
+      let limitWaits = 0; // esperas por limite por minuto não consomem rodadas
 
       for (let pass = 0; pass < maxPasses && !badModel && callsMade < maxCalls; pass++) {
         if (Date.now() > phaseEnd) break;
@@ -232,12 +233,22 @@ export class OcrEngine {
 
         // Se o modelo deu erro 400 definitivo, pula. Se não sobrou nenhuma chave utilizável, encerra.
         if (badModel) break;
-        if (pass < maxPasses - 1 && (sawOverload || cands.length > triedThisRound)) {
+        // Sobraram só chaves AGUARDANDO o limite por minuto voltar (ex.: 12 bloqueadas e a 13ª também levou 429):
+        // não desiste, volta ao topo da rodada, que espera a primeira voltar (sem gastar uma das rodadas).
+        if (limitWaits < 4 && this.pool.readyCount(model) === 0 && this.pool.nextWaitMs(model) !== null) {
+          limitWaits++;
+          pass--;
+          continue;
+        }
+        // Ainda há o que tentar se: houve sobrecarga, sobraram chaves da lista, OU já voltaram chaves livres (ex.: as outras
+        // ficaram livres enquanto a última levava 429).
+        const hasMoreToTry = sawOverload || cands.length > triedThisRound || this.pool.readyCount(model) > 0;
+        if (pass < maxPasses - 1 && hasMoreToTry) {
           const wait = backoffDelay(pass, 4000, 20000);
           if (Date.now() + wait > phaseEnd) break;
           this.note(`${label}: ${model} ocupado em ${overloadedKeys} chave(s) — tentando nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
           await sleep(wait);
-        } else if (!sawOverload && cands.length <= triedThisRound) {
+        } else if (!hasMoreToTry) {
           break;
         }
       }
