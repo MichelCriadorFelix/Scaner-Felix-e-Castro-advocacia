@@ -102,9 +102,10 @@ export class OcrEngine {
   // Só depois de gastar as rodadas ou o orçamento de tempo do modelo é que cai pro próximo da lista.
   //  - passes: quantas rodadas por modelo. budgetMs: tempo máximo no 1º modelo (os demais têm teto próprio).
   //  - fast: modelos 'melhores mas instáveis': UMA tentativa rápida (25s); se falhar, entra em pausa de 10 min.
-  async generate({ models, build, timeoutMs, accept, imageParts, systemPrompt, label, passes = 3, budgetMs = 100000, fast = [] }) {
+  async generate({ models, build, timeoutMs, accept, imageParts, systemPrompt, label, passes = 3, budgetMs = 100000, fast = [], maxCalls = 14 }) {
     await this.pool.load(models);
     let lastErr = null;
+    let callsMade = 0; // teto de chamadas por leitura: antes chegava a ~35 recusas por página e esgotava o limite de todas as chaves
 
     for (let mi = 0; mi < models.length; mi++) {
       const model = models[mi];
@@ -119,10 +120,10 @@ export class OcrEngine {
         : Math.min(this.deadline - 15000, Date.now() + (mi === 0 ? budgetMs : Math.min(budgetMs, 90000)));
       const maxPasses = isFast ? 1 : passes;
       // Permite usar todas as chaves disponíveis no pool (sem cortar na 5ª chave!)
-      const keysPerRound = isFast ? 3 : Math.max(12, this.pool.keys.length);
+      const keysPerRound = isFast ? 3 : Math.min(6, Math.max(3, this.pool.keys.length));
       let badModel = false;
 
-      for (let pass = 0; pass < maxPasses && !badModel; pass++) {
+      for (let pass = 0; pass < maxPasses && !badModel && callsMade < maxCalls; pass++) {
         if (Date.now() > phaseEnd) break;
         // Outras leituras em paralelo (outras instâncias) também marcam chaves: relê o estado a cada rodada.
         if (pass > 0) await this.pool.refresh(model);
@@ -154,8 +155,9 @@ export class OcrEngine {
 
         for (const key of cands) {
           if (Date.now() > phaseEnd) break;
-          if (triedThisRound >= keysPerRound) break;
+          if (triedThisRound >= keysPerRound || callsMade >= maxCalls) break;
           triedThisRound++;
+          callsMade++;
           if (this.remaining() < 15000) throw new Error('deadline: tempo da função esgotado');
           const t0 = Date.now();
           this.say(`${label}: ${model} · chave ${cands.indexOf(key) + 1}/${cands.length}${pass > 0 ? ` · rodada ${pass + 1}/${passes}` : ''}...`);
@@ -211,7 +213,8 @@ export class OcrEngine {
             // Mostra pros outros processos em paralelo e dá um respiro antes da próxima chave.
             if (c.kind === 'minute' || c.kind === 'overload' || c.kind === 'other') {
               this.pool.flushSoon();
-              await sleep(300 + Math.round(Math.random() * 300));
+              // 429 = limite do Google: dá mais tempo antes da próxima chave (martelar só piora o limite de todas)
+              await sleep(c.kind === 'minute' ? 1500 + Math.round(Math.random() * 1000) : 300 + Math.round(Math.random() * 300));
             }
           }
         }
@@ -219,7 +222,7 @@ export class OcrEngine {
         // Se o modelo deu erro 400 definitivo, pula. Se não sobrou nenhuma chave utilizável, encerra.
         if (badModel) break;
         if (pass < maxPasses - 1 && (sawOverload || cands.length > triedThisRound)) {
-          const wait = backoffDelay(pass, 2000, 10000);
+          const wait = backoffDelay(pass, 4000, 20000);
           if (Date.now() + wait > phaseEnd) break;
           this.note(`${label}: ${model} ocupado em ${overloadedKeys} chave(s) — tentando nova rodada em ~${Math.round(wait / 1000)}s (${pass + 2}/${passes}).`);
           await sleep(wait);
@@ -290,7 +293,8 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   // SEMPRE respeita o modelo preferido pelo advogado (ex: gemini-2.5-flash) como PRIORIDADE MÁXIMA.
   // Modelos alternativos só entram como fallback se o preferido esgotar todas as chaves.
   let models = core.buildModelCascade(preferredModel, false);
-  const level = hard ? 'high' : 'medium';
+  const prof = core.getModelProfile(preferredModel);
+  const level = hard ? prof.thinkingHard : prof.thinkingNormal;
 
   let first;
   try {
@@ -349,7 +353,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
     }
   }
 
-  if (hard && !opts.lean) {
+  if (hard && !opts.lean && core.getModelProfile(first.model).hardExtraReads) {
     // 2ª leitura independente, no MESMO modelo da 1ª (temperatura alta, pra errar diferente).
     let second = null;
     if (engine.remaining() > 75000) {

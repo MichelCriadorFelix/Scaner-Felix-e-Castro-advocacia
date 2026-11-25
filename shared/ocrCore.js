@@ -4,16 +4,35 @@
 
 // ── Modelos ──────────────────────────────────────────────────────────────────────────────
 export const GEMINI_MODEL_OPTIONS = [
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
+  { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (grátis, recomendado hoje)" },
+  { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (novo, grátis, o mais promissor)" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (sai do ar em 01/12/2026)" },
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
-  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (melhor leitura de manuscrito)" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (manuscritos difíceis)" },
-  { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (novo, grátis)" },
+  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
 ];
-// Modelos SEM cota gratuita na Gemini API: só funcionam com a chave paga (as gratuitas dão 429). O servidor usa só ela.
 export const PAID_ONLY_MODELS = ["gemini-4-argon", "gemini-4-carbon"];
-export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+
+// O 2.5 Flash tem desligamento anunciado para 01/12/2026 (o Google passa a mandar os pedidos dele pra 3.5 Flash-Lite).
+// Quem ainda tem o 2.5 escolhido passa sozinho pra 3.5 Flash-Lite a partir dessa data, sem precisar mexer em nada.
+export function resolveModel(model, nowMs = Date.now()) {
+  if (model === "gemini-2.5-flash" && nowMs >= Date.UTC(2026, 11, 1)) return "gemini-3.5-flash-lite";
+  return model;
+}
+
+// Perfil por modelo: o que cada um precisa pra ler bem gastando o mínimo de chamadas.
+//  - thinkingNormal / thinkingHard: nível de raciocínio em página normal / no modo difícil (manuscrito).
+//  - hardExtraReads: no modo difícil, faz também a 2ª leitura independente + o juiz (3 chamadas por página).
+//    Modelos fortes (Hydrogen) leem bem numa chamada SÓ, com as regras de fidelidade no pedido ("não invente,
+//    marque [ILEGÍVEL]"); isso corta o gasto de cota em 2/3 nas páginas manuscritas.
+export const MODEL_PROFILES = {
+  "gemini-4-hydrogen": { thinkingNormal: "medium", thinkingHard: "high", hardExtraReads: false },
+};
+const DEFAULT_PROFILE = { thinkingNormal: "medium", thinkingHard: "high", hardExtraReads: true };
+export function getModelProfile(model) {
+  return { ...DEFAULT_PROFILE, ...(MODEL_PROFILES[model] || {}) };
+}
 
 // Ordem de tentativa: o modelo escolhido pelo advogado NUNCA é trocado por outro modelo.
 // Se o advogado escolheu Gemini 2.5 Flash, o sistema utiliza ESTRITAMENTE ele.

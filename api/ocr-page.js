@@ -4,7 +4,7 @@
 import { authenticate } from './_lib/auth.js';
 import { KeyPool, loadServerKeys } from './_lib/pool.js';
 import { readPage, probeKeys } from './_lib/engine.js';
-import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, PAID_ONLY_MODELS } from '../shared/ocrCore.js';
+import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, PAID_ONLY_MODELS, resolveModel } from '../shared/ocrCore.js';
 
 export const config = {
   maxDuration: 290,
@@ -54,7 +54,7 @@ export default async function handler(req, res) {
   if (!imageBase64 || typeof imageBase64 !== 'string') return res.status(400).json({ ok: false, error: 'imageBase64 ausente.' });
 
   const allowed = GEMINI_MODEL_OPTIONS.map((m) => m.value);
-  const selected = allowed.includes(preferredModel) ? preferredModel : DEFAULT_GEMINI_MODEL;
+  const selected = resolveModel(allowed.includes(preferredModel) ? preferredModel : DEFAULT_GEMINI_MODEL);
   // Argon/Carbon não têm cota grátis: usa SÓ a chave paga (as gratuitas só dariam 429).
   const paidOnly = PAID_ONLY_MODELS.includes(selected);
   let keys = loadServerKeys({ includePaid: !!includePaid || paidOnly });

@@ -14,7 +14,7 @@
 // nenhuma vez durante o apagão. Os Flash-Lite (3.1 e 3.5) entram como sucessores — mais
 // baratos, multimodais, mas de uma geração otimizada pra custo/latência em vez de qualidade
 // máxima, por isso ficam depois do 2.5 na cascata, não antes.
-import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, buildModelCascade, temperatureConfigFor, getThinkingConfigForModel } from '../../shared/ocrCore.js';
+import { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, buildModelCascade, temperatureConfigFor, getThinkingConfigForModel, resolveModel } from '../../shared/ocrCore.js';
 export { GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL, temperatureConfigFor, getThinkingConfigForModel };
 
 // Modelo alternativo (provedor diferente, NVIDIA NIM) — fica FORA da cascata de reforço entre
@@ -65,7 +65,7 @@ export const MISTRAL_IMAGE_JPEG_QUALITY = 0.92;
 
 export function getSafeGeminiModel(): string {
   const selected = getSelectedGeminiModel();
-  return GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL;
+  return resolveModel(GEMINI_MODEL_OPTIONS.some(m => m.value === selected) ? selected : DEFAULT_GEMINI_MODEL);
 }
 
 export function getModelFallbackCascade(hard: boolean = false): string[] {
