@@ -17,16 +17,17 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
   return window.btoa(c.join(''));
 }
 
-// Quantas páginas do PDF podem ser lidas AO MESMO TEMPO (teto). Padrão: 2, equilibrado e seguro para
-// limites por minuto de contas gratuitas (evita picos e 429 simultâneos).
+// Quantas páginas do PDF podem ser lidas AO MESMO TEMPO (teto). Padrão: 1 (modo leve): na camada GRATUITA do Google,
+// duas páginas ao mesmo tempo dobram a rajada de pedidos e disparam 429 em todas as chaves (visto na pasta do Waldomiro).
+// Quem tem cota folgada pode subir com localStorage.lexscan_parallel = '2'..'4'.
 function getParallelCeiling(): number {
   try {
     const raw = localStorage.getItem('lexscan_parallel');
-    if (raw === null || raw === '') return 2;
+    if (raw === null || raw === '') return 1;
     const v = Number(raw);
     return v >= 2 ? Math.min(4, Math.floor(v)) : 1;
   } catch (e) {
-    return 2;
+    return 1;
   }
 }
 

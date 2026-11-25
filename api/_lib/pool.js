@@ -8,8 +8,10 @@ const PAID_ENV_NAME = 'API_KEY_PAGA';
 
 // Pedidos por minuto que tentamos não passar por chave+modelo (limite grátis real fica na conta Google;
 // isto só espalha a carga). Passar disso não proíbe: vira o último recurso da fila.
-const SOFT_RPM = { 'gemini-2.5-flash': 12 };
-const DEFAULT_SOFT_RPM = 10;
+// Modo leve: poucos pedidos por minuto em cada chave+modelo (a camada gratuita tem limites baixos). Passar disso vira
+// último recurso da fila, não proibição.
+const SOFT_RPM = { 'gemini-2.5-flash': 5 };
+const DEFAULT_SOFT_RPM = 4;
 
 // Linha especial por modelo (não é uma chave): guarda a "saúde" do modelo como um todo. Serve pra pular, por alguns
 // minutos e para TODAS as leituras, um modelo que acabou de recusar com todas as chaves (ex.: 3.8 sobrecarregado).
