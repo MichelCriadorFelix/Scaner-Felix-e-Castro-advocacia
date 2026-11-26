@@ -46,6 +46,8 @@ export default async function handler(req, res) {
   const rawOpts = (body && typeof body.opts === 'object' && body.opts) || {};
   const opts = {
     vocab: rawOpts.vocab === false ? false : true,
+    level: ['minimal', 'low', 'medium', 'high'].includes(rawOpts.level) ? rawOpts.level : undefined, // só pra medir
+    resolution: ['MEDIA_RESOLUTION_LOW', 'MEDIA_RESOLUTION_MEDIUM', 'MEDIA_RESOLUTION_HIGH', 'MEDIA_RESOLUTION_ULTRA_HIGH'].includes(rawOpts.resolution) ? rawOpts.resolution : undefined, // só pra medir
     lean: rawOpts.lean === true, // só pra medir: modo difícil em UMA chamada (sem 2ª leitura nem juiz)
     noEscalate: rawOpts.noEscalate === true, // só pra medir: não relê sozinho em modo difícil
     thinkingBudget: Number(rawOpts.thinkingBudget) > 0 ? Math.min(24576, Number(rawOpts.thinkingBudget)) : undefined,

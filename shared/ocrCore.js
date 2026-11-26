@@ -5,6 +5,7 @@
 // ── Modelos ──────────────────────────────────────────────────────────────────────────────
 export const GEMINI_MODEL_OPTIONS = [
   { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (grátis, recomendado hoje)" },
+  { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash (estável, grátis)" },
   { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (novo, grátis, o mais promissor)" },
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (sai do ar em 01/12/2026)" },
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
@@ -26,10 +27,15 @@ export function resolveModel(model, nowMs = Date.now()) {
 //  - hardExtraReads: no modo difícil, faz também a 2ª leitura independente + o juiz (3 chamadas por página).
 //    Modelos fortes (Hydrogen) leem bem numa chamada SÓ, com as regras de fidelidade no pedido ("não invente,
 //    marque [ILEGÍVEL]"); isso corta o gasto de cota em 2/3 nas páginas manuscritas.
+//  - mediaResolution: resolução por imagem (Gemini 3.x): HIGH = 1120 tokens (recomendado pelo Google p/ imagens),
+//    ULTRA_HIGH = 2240. Para PDFs "medium" já satura, mas aqui a imagem é página escaneada/manuscrito → HIGH.
+// Gemini 3.6 Flash (doc. oficial): níveis minimal/low/medium/high (padrão medium); temperature/top_p/top_k são
+// OBSOLETOS e ignorados (já não os enviamos nos 3.x). Mais raciocínio melhora OCR mas custa ~4x em tempo e tokens.
 export const MODEL_PROFILES = {
   "gemini-4-hydrogen": { thinkingNormal: "medium", thinkingHard: "high", hardExtraReads: false },
+  "gemini-3.6-flash": { thinkingNormal: "low", thinkingHard: "high", hardExtraReads: false },
 };
-const DEFAULT_PROFILE = { thinkingNormal: "medium", thinkingHard: "high", hardExtraReads: true };
+const DEFAULT_PROFILE = { thinkingNormal: "medium", thinkingHard: "high", hardExtraReads: true, mediaResolution: "MEDIA_RESOLUTION_HIGH" };
 export function getModelProfile(model) {
   return { ...DEFAULT_PROFILE, ...(MODEL_PROFILES[model] || {}) };
 }

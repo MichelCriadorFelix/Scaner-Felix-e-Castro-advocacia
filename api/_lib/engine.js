@@ -304,10 +304,12 @@ export function looksHandwritten(text) {
 // Lê UMA página. Retorna { text, model, hard, quality, steps, attempts }.
 export async function readPage({ pool, imageBase64, mimeType, hard, clientName, bestFirst, preferredModel, deadline, log, skipEscalation = false, opts = {} }) {
   const engine = new OcrEngine({ pool, deadline, log });
-  const imagePart = { inlineData: { data: imageBase64, mimeType: mimeType || 'image/jpeg' }, mediaResolution: { level: 'MEDIA_RESOLUTION_HIGH' } };
+  const prof = core.getModelProfile(preferredModel);
+  const resLevel = opts.resolution || prof.mediaResolution;
+  const imagePart = { inlineData: { data: imageBase64, mimeType: mimeType || 'image/jpeg' }, mediaResolution: { level: resLevel } };
   const systemPrompt = hard ? core.getHardHandwritingSystemPrompt() : core.getPadraoOuroPrompt();
   const hojeBr = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  const zoomParts = (Array.isArray(opts.zoom) ? opts.zoom : []).slice(0, 4).map((b) => ({ inlineData: { data: b, mimeType: 'image/jpeg' }, mediaResolution: { level: 'MEDIA_RESOLUTION_HIGH' } }));
+  const zoomParts = (Array.isArray(opts.zoom) ? opts.zoom : []).slice(0, 4).map((b) => ({ inlineData: { data: b, mimeType: 'image/jpeg' }, mediaResolution: { level: resLevel } }));
   const userText = core.buildTranscriptionUserText(!!hard, clientName, hojeBr, { vocab: opts.vocab, zoomCount: hard ? zoomParts.length : 0 });
   const imgs = hard ? [imagePart, ...zoomParts] : [imagePart];
   const thinkBudget = opts.thinkingBudget;
@@ -315,8 +317,7 @@ export async function readPage({ pool, imageBase64, mimeType, hard, clientName, 
   // SEMPRE respeita o modelo preferido pelo advogado (ex: gemini-2.5-flash) como PRIORIDADE MÁXIMA.
   // Modelos alternativos só entram como fallback se o preferido esgotar todas as chaves.
   let models = core.buildModelCascade(preferredModel, false);
-  const prof = core.getModelProfile(preferredModel);
-  const level = hard ? prof.thinkingHard : prof.thinkingNormal;
+  const level = opts.level || (hard ? prof.thinkingHard : prof.thinkingNormal);
 
   let first;
   try {
